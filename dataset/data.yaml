@@ -1,0 +1,10 @@
+# Ultralytics YOLO Dataset Configuration
+# Sistema ANPR ECU 911 — Matrículas Vehiculares del Ecuador (Multi-Distancia)
+
+path: C:/Users/ASUS/Desktop/TITULACION/ANPR/dataset
+train: images/train
+val: images/val
+
+# Clases de Detección
+names:
+  0: license_plate

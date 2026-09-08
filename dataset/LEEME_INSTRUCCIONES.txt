@@ -1,0 +1,51 @@
+==============================================================================
+GUIA RAPIDA: CAPTURA DE FOTOS Y ENTRENAMIENTO DEL MODELO DE PLACAS
+==============================================================================
+
+1. DONDE COLOCAR LAS FOTOS:
+   Coloca las fotos que tomes con tu celular en la carpeta:
+   -> dataset/raw/
+   
+   Puedes colocarlas directamente en "raw" o dividirlas en las subcarpetas:
+   - dataset/raw/1_metro/   (Fotos a 1 metro de distancia)
+   - dataset/raw/2_metros/  (Fotos a 2 metros de distancia)
+   - dataset/raw/3_metros/  (Fotos a 3 metros de distancia)
+   - dataset/raw/5_metros/  (Fotos a 5 metros de distancia)
+   - dataset/raw/8_metros/  (Fotos a 8 metros de distancia)
+
+2. RECOMENDACIONES AL TOMAR LAS FOTOS:
+   - NO recortes las fotos. Sube la foto completa tal como sale de la camara del celular.
+   - Toma entre 5 y 10 fotos por cada distancia.
+   - Variaciones sugeridas:
+     * Frontal recta (0 grados).
+     * Inclinada levemente hacia la izquierda (~15 grados).
+     * Inclinada levemente hacia la derecha (~15 grados).
+     * Unas con buena luz y otras con un poco de sombra o contraluz.
+   - Si tienes más de una placa o vehículo, tómale también a las otras para mayor variedad.
+
+3. PASO 1: ETIQUETADO AUTOMATICO
+   Una vez que hayas pegado las fotos en "dataset/raw/", abre una terminal en la raiz y corre:
+   
+   .\services\anpr\.venv\Scripts\python services\anpr\scripts\auto_annotate.py
+
+   ¿Que hace este comando?
+   - Detecta la placa en cada foto automaticamente.
+   - Genera las etiquetas oficiales YOLO (.txt) con coordenadas normalizadas.
+   - Divide automaticamente 80% para entrenamiento (train) y 20% para validacion (val).
+   - Genera una copia visual en "dataset/preview/" con una caja verde dibujada sobre
+     cada foto para que puedas abrirla y verificar visualmente que la placa quedo
+     perfectamente encuadrada.
+
+4. PASO 2: ENTRENAR EL MODELO
+   Despues de revisar las fotos en preview, corre:
+
+   .\services\anpr\.venv\Scripts\python services\anpr\scripts\train_plate_detector.py
+
+   ¿Que hace el entrenamiento?
+   - Entrena con aumentacion de datos multi-escala (zoom, rotacion, variacion de luz).
+   - Ajusta los pesos neuronales para que detecte placas tanto gigantes (1m) como diminutas (8-10m).
+   - Guarda el mejor modelo directamente en:
+     services/anpr/models/license_plate_detector.pt
+   - Exporta una version ultra-rapida ONNX (models/license_plate_detector.onnx) para que
+     el microservicio funcione a menos de 10 milisegundos sin latencia.
+==============================================================================

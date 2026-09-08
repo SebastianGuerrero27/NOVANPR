@@ -1,0 +1,198 @@
+/* CSS Global y Sistema de Diseño - ECU 911 ANPR (Hikvision / Clean Light Theme) */
+
+:root {
+  /* Fondo Principal Blanco / Slate Light */
+  --bg-primary: #f8fafc;        /* Slate 50 muy limpio */
+  --bg-secondary: #ffffff;      /* Blanco puro para tarjetas */
+  --bg-tertiary: #f1f5f9;       /* Slate 100 para contenedores */
+  
+  /* Sidebar Negro Profesional Puro (Zinc/Grafito Neutro — Cero tinte azul) */
+  --sidebar-bg: #121214;        /* Grafito oscuro profesional */
+  --sidebar-header: #0a0a0c;    /* Casi negro puro */
+  --sidebar-item-hover: #1c1c20;/* Grafito hover */
+  --sidebar-active-bg: rgba(239, 68, 68, 0.14);
+  --sidebar-text: #a1a1aa;      /* Zinc 400 para textos inactivos */
+  --sidebar-text-active: #ffffff;
+  
+  /* Colores Corporativos y Acentos */
+  --accent-red: #ef4444;        /* Rojo Institucional ECU 911 / Hikvision */
+  --accent-red-hover: #dc2626;
+  --accent-blue: #2563eb;       /* Azul corporativo */
+  --accent-cyan: #0284c7;       /* Cyan moderno */
+  
+  /* Tipografía */
+  --text-primary: #0f172a;      /* Texto principal oscuro muy nítido */
+  --text-secondary: #475569;    /* Texto secundario slate */
+  --text-muted: #94a3b8;        /* Texto atenuado */
+  
+  /* Colores de Alerta y Estado */
+  --alert-critica: #ef4444;     /* Rojo alerta */
+  --alert-alta: #f97316;        /* Naranja */
+  --alert-media: #eab308;       /* Amarillo */
+  --success: #16a34a;           /* Verde operativo */
+  
+  /* Bordes y Sombras */
+  --border-color: #e2e8f0;      /* Borde suave slate 200 */
+  --border-dark: #cbd5e1;       /* Borde marcado slate 300 */
+  --font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --transition-smooth: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  background-color: var(--bg-primary);
+  color: var(--text-primary);
+  font-family: var(--font-family);
+  overflow-x: hidden;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Scrollbars limpias */
+::-webkit-scrollbar {
+  width: 7px;
+  height: 7px;
+}
+::-webkit-scrollbar-track {
+  background: #f1f5f9;
+}
+::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #94a3b8;
+}
+
+/* Clases de Tarjetas y Sombras Hikvision */
+.glass {
+  background: #ffffff;
+  border: 1px solid var(--border-color);
+  box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.05), 0 1px 2px -1px rgba(0, 0, 0, 0.05);
+}
+
+.shadow-premium {
+  box-shadow: 0 4px 12px -2px rgba(15, 23, 42, 0.06), 0 2px 6px -1px rgba(15, 23, 42, 0.04);
+}
+
+/* Animaciones */
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes pulseBorder {
+  0% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.5); }
+  70% { box-shadow: 0 0 0 8px rgba(239, 68, 68, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0); }
+}
+
+.animate-fade-in {
+  animation: fadeIn 0.25s cubic-bezier(0.4, 0, 0.2, 1) forwards;
+}
+
+.alert-pulse {
+  animation: pulseBorder 1.5s infinite;
+  border: 2px solid var(--alert-critica) !important;
+}
+
+/* Botones */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 8px 16px;
+  border-radius: 6px;
+  font-weight: 700;
+  font-size: 13px;
+  cursor: pointer;
+  transition: var(--transition-smooth);
+  border: none;
+}
+
+.btn-primary {
+  background-color: var(--accent-red);
+  color: white;
+}
+
+.btn-primary:hover {
+  background-color: var(--accent-red-hover);
+  box-shadow: 0 4px 12px rgba(239, 68, 68, 0.3);
+}
+
+.btn-secondary {
+  background-color: #f1f5f9;
+  color: var(--text-primary);
+  border: 1px solid var(--border-color);
+}
+
+.btn-secondary:hover {
+  background-color: #e2e8f0;
+}
+
+.btn-danger {
+  background-color: var(--alert-critica);
+  color: white;
+}
+
+.btn-danger:hover {
+  background-color: #dc2626;
+}
+
+/* Inputs */
+.input {
+  width: 100%;
+  padding: 10px 14px;
+  border-radius: 6px;
+  background-color: #ffffff;
+  border: 1px solid var(--border-dark);
+  color: var(--text-primary);
+  font-family: inherit;
+  font-size: 13px;
+  transition: var(--transition-smooth);
+}
+
+.input:focus {
+  outline: none;
+  border-color: var(--accent-red);
+  box-shadow: 0 0 0 3px rgba(239, 68, 68, 0.15);
+}
+
+/* Layouts */
+.app-container {
+  display: flex;
+  min-height: 100vh;
+  background-color: var(--bg-primary);
+}
+
+.main-content {
+  flex: 1;
+  padding: 24px;
+  max-width: 1600px;
+  width: 100%;
+  margin: 0 auto;
+}
+
+/* Animación Suave de Fondo Rojo Parpadeante para Alerta de Acceso No Autorizado */
+@keyframes softRedPulseBackdrop {
+  0%, 100% {
+    background-color: rgba(185, 28, 28, 0.42);
+    box-shadow: inset 0 0 100px rgba(239, 68, 68, 0.45);
+  }
+  50% {
+    background-color: rgba(220, 38, 38, 0.68);
+    box-shadow: inset 0 0 200px rgba(239, 68, 68, 0.80);
+  }
+}
+
+.unauthorized-modal-backdrop {
+  animation: softRedPulseBackdrop 2.2s ease-in-out infinite;
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+}
+
