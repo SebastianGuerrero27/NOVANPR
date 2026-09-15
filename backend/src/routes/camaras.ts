@@ -42,10 +42,11 @@ router.get('/', authMiddleware, async (req: Request, res: Response) => {
 router.post('/', authMiddleware, async (req: Request, res: Response) => {
   const { nombre, ip, rtsp_url, ubicacion, activa, estado } = req.body;
 
-  if (!nombre || !rtsp_url || !ip) {
-    return res.status(400).json({ error: 'Faltan parámetros requeridos: nombre, ip, rtsp_url.' });
+  if (!nombre || !rtsp_url) {
+    return res.status(400).json({ error: 'Faltan parámetros requeridos: nombre, rtsp_url.' });
   }
 
+  const finalIp = (ip && ip.trim()) ? ip.trim() : (extractHostFromRtsp(rtsp_url) || '127.0.0.1');
   const estadoInicial = estado || (activa !== false ? 'ACTIVA' : 'INACTIVA');
   const activaBit = activa === undefined ? (estadoInicial === 'ACTIVA' ? 1 : 0) : (activa ? 1 : 0);
 
@@ -53,7 +54,7 @@ router.post('/', authMiddleware, async (req: Request, res: Response) => {
     const db = getDB();
     const insert = await db.request()
       .input('nombre', sql.VarChar, nombre.trim())
-      .input('ip', sql.VarChar, ip.trim())
+      .input('ip', sql.VarChar, finalIp)
       .input('rtsp', sql.VarChar, rtsp_url.trim())
       .input('ubicacion', sql.VarChar, ubicacion ? ubicacion.trim() : 'Acceso Principal')
       .input('activa', sql.Bit, activaBit)
@@ -65,7 +66,7 @@ router.post('/', authMiddleware, async (req: Request, res: Response) => {
       `);
 
     const newCam = insert.recordset[0];
-    console.log(`[CAMARAS] Canal registrado: ${nombre} (${ip}) - Estado: ${estadoInicial}`);
+    console.log(`[CAMARAS] Canal registrado: ${nombre} (${finalIp}) - Estado: ${estadoInicial}`);
     emitEvent('camara_creada', newCam);
     return res.status(201).json({ camera: newCam, message: 'Canal registrado exitosamente.' });
   } catch (error: any) {
@@ -81,10 +82,11 @@ router.put('/:id', authMiddleware, async (req: Request, res: Response) => {
   const { id } = req.params;
   const { nombre, ip, rtsp_url, ubicacion, activa, estado } = req.body;
 
-  if (!nombre || !rtsp_url || !ip) {
-    return res.status(400).json({ error: 'Faltan parámetros requeridos: nombre, ip, rtsp_url.' });
+  if (!nombre || !rtsp_url) {
+    return res.status(400).json({ error: 'Faltan parámetros requeridos: nombre, rtsp_url.' });
   }
 
+  const finalIp = (ip && ip.trim()) ? ip.trim() : (extractHostFromRtsp(rtsp_url) || '127.0.0.1');
   const estadoValor = estado || (activa ? 'ACTIVA' : 'INACTIVA');
   const activaBit = estado ? (estado === 'ACTIVA' ? 1 : 0) : (activa ? 1 : 0);
 
@@ -93,7 +95,7 @@ router.put('/:id', authMiddleware, async (req: Request, res: Response) => {
     const update = await db.request()
       .input('id', sql.Int, parseInt(id))
       .input('nombre', sql.VarChar, nombre.trim())
-      .input('ip', sql.VarChar, ip.trim())
+      .input('ip', sql.VarChar, finalIp)
       .input('rtsp', sql.VarChar, rtsp_url.trim())
       .input('ubicacion', sql.VarChar, ubicacion ? ubicacion.trim() : 'Acceso Principal')
       .input('activa', sql.Bit, activaBit)

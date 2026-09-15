@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 
-const ANPR_URL = import.meta.env.VITE_ANPR_URL || 'http://localhost:8000';
+const defaultAnprHost = typeof window !== 'undefined' ? window.location.hostname : 'localhost';
+const ANPR_URL = import.meta.env.VITE_ANPR_URL || `http://${defaultAnprHost}:8000`;
 
 type Props = {
   autoStart?: boolean;

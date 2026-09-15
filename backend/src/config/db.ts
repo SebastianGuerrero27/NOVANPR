@@ -95,6 +95,7 @@ async function initDatabaseSchema() {
     await runMigration('migration_deteccion_tipo_vehiculo.sql');
     await runMigration('migration_placa_varchar20.sql');
     await runMigration('migration_fuente_varchar255.sql');
+    await runMigration('migration_auditoria_descartes.sql');
   } catch (error: any) {
     console.error('[DB] Error al inicializar el esquema de base de datos:', error.message);
   }

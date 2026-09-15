@@ -39,19 +39,31 @@ FRAME_HEIGHT: int = int(os.getenv("FRAME_HEIGHT", "720"))
 # =============================================================================
 YOLO_MODEL_PATH: str = os.getenv("YOLO_MODEL_PATH", "yolo11n.pt")
 PLATE_MODEL_PATH: str = os.getenv("PLATE_MODEL_PATH", "models/license_plate_detector.pt")
-YOLO_CONFIDENCE_THRESHOLD: float = float(os.getenv("YOLO_CONFIDENCE_THRESHOLD", "0.35"))
-PLATE_CONFIDENCE_THRESHOLD: float = float(os.getenv("PLATE_CONFIDENCE_THRESHOLD", "0.35"))
+YOLO_CONFIDENCE_THRESHOLD: float = float(os.getenv("YOLO_CONFIDENCE_THRESHOLD", "0.45"))
+PLATE_CONFIDENCE_THRESHOLD: float = float(os.getenv("PLATE_CONFIDENCE_THRESHOLD", "0.22"))
+
+# Rangos normativos de Relación de Aspecto (Aspect Ratio) - ANT Ecuador
+# Autos/Camionetas: 404x140mm (AR ~ 2.89) o Mercosur/Latam (AR ~ 2.0)
+CAR_PLATE_AR_MIN: float = float(os.getenv("CAR_PLATE_AR_MIN", "1.75"))
+CAR_PLATE_AR_MAX: float = float(os.getenv("CAR_PLATE_AR_MAX", "3.80"))
+# Motocicletas: 200x160mm (AR ~ 1.25)
+MOTO_PLATE_AR_MIN: float = float(os.getenv("MOTO_PLATE_AR_MIN", "1.05"))
+MOTO_PLATE_AR_MAX: float = float(os.getenv("MOTO_PLATE_AR_MAX", "1.55"))
 
 # Clases COCO de vehículos (para modelo genérico)
 _vehicle_classes_str = os.getenv("YOLO_VEHICLE_CLASSES", "2,3,5,7")
 YOLO_VEHICLE_CLASSES: list[int] = [int(c.strip()) for c in _vehicle_classes_str.split(",") if c.strip()]
 
 # =============================================================================
-# Motor OCR
+# Motor OCR & ALPR
 # =============================================================================
-OCR_ENGINE: str = os.getenv("OCR_ENGINE", "easyocr").lower()  # "easyocr" | "tesseract"
+OCR_ENGINE: str = os.getenv("OCR_ENGINE", "hybrid").lower()  # "fastalpr" | "hybrid" | "paddleocr" | "easyocr"
 OCR_CONFIDENCE_THRESHOLD: float = float(os.getenv("OCR_CONFIDENCE_THRESHOLD", "0.30"))
 TESSERACT_CMD: str = os.getenv("TESSERACT_CMD", "")  # Ruta al ejecutable en Windows
+FASTALPR_DET_MODEL: str = os.getenv("FASTALPR_DET_MODEL", "yolo-v9-t-384-license-plate-end2end")
+FASTALPR_OCR_MODEL: str = os.getenv("FASTALPR_OCR_MODEL", "global-plates-mobile-vit-v2-model")
+OPENCV_CLAHE_ENABLED: bool = os.getenv("OPENCV_CLAHE_ENABLED", "true").lower() in ("true", "1", "yes")
+OPENCV_UNSHARP_ENABLED: bool = os.getenv("OPENCV_UNSHARP_ENABLED", "true").lower() in ("true", "1", "yes")
 
 # =============================================================================
 # Tracking y Deduplicación

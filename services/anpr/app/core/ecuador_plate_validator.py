@@ -290,3 +290,12 @@ class EcuadorPlateValidator:
             provincia="Desconocida",
             servicio="No Legible",
         )
+
+
+def validate_ecuadorian_plate(plate_text: str) -> Tuple[bool, str, float]:
+    """
+    Función de conveniencia para validar y normalizar matrículas ecuatorianas.
+    Retorna: (is_valid, formatted_plate, confidence_score)
+    """
+    res = EcuadorPlateValidator.validate(plate_text)
+    return res.is_valid, res.formatted_plate, res.confidence_score

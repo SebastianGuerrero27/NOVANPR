@@ -20,7 +20,8 @@ import {
 } from 'lucide-react';
 import api, { API_URL } from '../services/api';
 
-const ANPR_URL = import.meta.env.VITE_ANPR_URL || 'http://localhost:8000';
+const defaultAnprHost = typeof window !== 'undefined' ? window.location.hostname : 'localhost';
+const ANPR_URL = import.meta.env.VITE_ANPR_URL || `http://${defaultAnprHost}:8000`;
 
 interface CameraItem {
   id: number;
@@ -35,6 +36,16 @@ interface CameraItem {
   mensaje_ping?: string | null;
   created_at: string;
 }
+
+// Función auxiliar para extraer IP/Host de una URL RTSP
+const extractHostFromRtspUrl = (url: string): string => {
+  if (!url) return '';
+  try {
+    const match = url.match(/rtsp:\/\/(?:[^:@]+:[^@]+@)?([a-zA-Z0-9.-]+)(?::\d+)?/i);
+    if (match && match[1]) return match[1];
+  } catch {}
+  return '';
+};
 
 const RegistroCanal: React.FC = () => {
   const [cameras, setCameras] = useState<CameraItem[]>([]);
@@ -116,7 +127,7 @@ const RegistroCanal: React.FC = () => {
     setEditingCamera(null);
     setFormData({
       nombre: '',
-      ip: '',
+      ip: '192.168.1.100',
       rtsp_url: 'rtsp://admin:password@192.168.1.100:554/Streaming/Channels/101',
       ubicacion: 'Acceso Principal - Garita 1',
       activa: true,
@@ -128,11 +139,12 @@ const RegistroCanal: React.FC = () => {
 
   const openEditModal = (cam: CameraItem) => {
     setEditingCamera(cam);
+    const initialIp = cam.ip || extractHostFromRtspUrl(cam.rtsp_url) || '';
     setFormData({
-      nombre: cam.nombre,
-      ip: cam.ip,
-      rtsp_url: cam.rtsp_url,
-      ubicacion: cam.ubicacion,
+      nombre: cam.nombre || '',
+      ip: initialIp,
+      rtsp_url: cam.rtsp_url || '',
+      ubicacion: cam.ubicacion || '',
       activa: Boolean(cam.activa),
     });
     setFormError(null);
@@ -140,23 +152,56 @@ const RegistroCanal: React.FC = () => {
     setModalOpen(true);
   };
 
+  // Manejador para cambio de RTSP con auto-extracción de IP
+  const handleRtspChange = (newUrl: string) => {
+    const extracted = extractHostFromRtspUrl(newUrl);
+    setFormData(prev => ({
+      ...prev,
+      rtsp_url: newUrl,
+      ip: (!prev.ip || prev.ip === extractHostFromRtspUrl(prev.rtsp_url)) && extracted ? extracted : prev.ip
+    }));
+  };
+
+  // Manejador para cambio de IP con sincronización inteligente en RTSP
+  const handleIpChange = (newIp: string) => {
+    setFormData(prev => {
+      let updatedRtsp = prev.rtsp_url;
+      const currentHost = extractHostFromRtspUrl(prev.rtsp_url);
+      if (currentHost && newIp.trim() && currentHost !== newIp.trim()) {
+        updatedRtsp = updatedRtsp.replace(`@${currentHost}:`, `@${newIp.trim()}:`).replace(`@${currentHost}/`, `@${newIp.trim()}/`);
+      }
+      return {
+        ...prev,
+        ip: newIp,
+        rtsp_url: updatedRtsp
+      };
+    });
+  };
+
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
     setFormError(null);
     setFormSuccess(null);
 
-    if (!formData.nombre.trim() || !formData.ip.trim() || !formData.rtsp_url.trim()) {
-      setFormError('Por favor complete todos los campos obligatorios.');
+    const effectiveIp = formData.ip.trim() || extractHostFromRtspUrl(formData.rtsp_url) || '127.0.0.1';
+
+    if (!formData.nombre.trim() || !formData.rtsp_url.trim()) {
+      setFormError('Por favor complete el nombre del canal y la URL RTSP.');
       return;
     }
+
+    const payload = {
+      ...formData,
+      ip: effectiveIp,
+    };
 
     try {
       setSaving(true);
       if (editingCamera) {
-        await api.put(`/camaras/${editingCamera.id}`, formData);
+        await api.put(`/camaras/${editingCamera.id}`, payload);
         setFormSuccess('Canal actualizado exitosamente.');
       } else {
-        await api.post('/camaras', formData);
+        await api.post('/camaras', payload);
         setFormSuccess('Nuevo canal RTSP registrado exitosamente.');
       }
 
@@ -801,57 +846,64 @@ const RegistroCanal: React.FC = () => {
             className="glass shadow-premium animate-fade-in"
             style={{
               width: '100%',
-              maxWidth: '560px',
-              borderRadius: '12px',
+              maxWidth: '580px',
+              borderRadius: '14px',
               padding: '28px',
-              border: '1px solid #e2e8f0',
-              backgroundColor: '#ffffff'
+              border: '1px solid #334155',
+              backgroundColor: '#0f172a',
+              boxShadow: '0 20px 40px rgba(0,0,0,0.5)'
             }}
           >
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
                 <div
                   style={{
-                    width: '32px',
-                    height: '32px',
-                    borderRadius: '6px',
-                    backgroundColor: '#fee2e2',
-                    border: '1px solid #fca5a5',
+                    width: '36px',
+                    height: '36px',
+                    borderRadius: '8px',
+                    backgroundColor: 'rgba(239, 68, 68, 0.15)',
+                    border: '1px solid rgba(239, 68, 68, 0.3)',
                     display: 'flex',
                     alignItems: 'center',
                     justifyContent: 'center',
                     color: '#ef4444'
                   }}
                 >
-                  <Video size={18} />
+                  <Video size={20} />
                 </div>
-                <h3 style={{ fontSize: '17px', fontWeight: 900, color: '#0f172a' }}>
-                  {editingCamera ? 'Editar Canal RTSP' : 'Registrar Nuevo Canal de Video'}
-                </h3>
+                <div>
+                  <h3 style={{ fontSize: '18px', fontWeight: 900, color: '#f8fafc', margin: 0 }}>
+                    {editingCamera ? 'Editar Configuración de Canal RTSP' : 'Registrar Nuevo Canal de Video'}
+                  </h3>
+                  <div style={{ fontSize: '11px', color: '#94a3b8' }}>
+                    {editingCamera ? `ID #${editingCamera.id} - ${editingCamera.nombre}` : 'Integración de flujo IP de ultra-baja latencia'}
+                  </div>
+                </div>
               </div>
               <button
                 onClick={() => setModalOpen(false)}
-                style={{ background: 'none', border: 'none', color: 'var(--text-secondary)', cursor: 'pointer', fontSize: '18px' }}
+                style={{ background: 'none', border: 'none', color: '#94a3b8', cursor: 'pointer', fontSize: '20px', padding: '4px' }}
+                title="Cerrar ventana"
               >
                 ✕
               </button>
             </div>
 
             {formError && (
-              <div style={{ padding: '10px 14px', borderRadius: '6px', backgroundColor: 'rgba(239, 68, 68, 0.2)', border: '1px solid var(--alert-critica)', color: '#fca5a5', fontSize: '12px', marginBottom: '16px' }}>
+              <div style={{ padding: '10px 14px', borderRadius: '6px', backgroundColor: 'rgba(239, 68, 68, 0.2)', border: '1px solid #ef4444', color: '#fca5a5', fontSize: '12px', marginBottom: '16px' }}>
                 ⚠️ {formError}
               </div>
             )}
 
             {formSuccess && (
-              <div style={{ padding: '10px 14px', borderRadius: '6px', backgroundColor: 'rgba(16, 185, 129, 0.2)', border: '1px solid var(--success)', color: '#86efac', fontSize: '12px', marginBottom: '16px' }}>
+              <div style={{ padding: '10px 14px', borderRadius: '6px', backgroundColor: 'rgba(16, 185, 129, 0.2)', border: '1px solid #10b981', color: '#86efac', fontSize: '12px', marginBottom: '16px' }}>
                 ✓ {formSuccess}
               </div>
             )}
 
             <form onSubmit={handleSave} style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
               <div>
-                <label style={{ display: 'block', fontSize: '12px', fontWeight: 700, color: 'var(--text-secondary)', marginBottom: '6px' }}>
+                <label style={{ display: 'block', fontSize: '12px', fontWeight: 700, color: '#e2e8f0', marginBottom: '6px' }}>
                   Nombre Descriptivo del Canal *
                 </label>
                 <input
@@ -860,29 +912,44 @@ const RegistroCanal: React.FC = () => {
                   className="input"
                   value={formData.nombre}
                   onChange={e => setFormData({ ...formData, nombre: e.target.value })}
-                  style={{ width: '100%' }}
+                  style={{ width: '100%', backgroundColor: '#1e293b', borderColor: '#475569', color: '#ffffff' }}
                   required
                 />
               </div>
 
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '14px' }}>
                 <div>
-                  <label style={{ display: 'block', fontSize: '12px', fontWeight: 700, color: 'var(--text-secondary)', marginBottom: '6px' }}>
-                    Dirección IP / Host *
-                  </label>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
+                    <label style={{ fontSize: '12px', fontWeight: 700, color: '#e2e8f0' }}>
+                      Dirección IP / Host *
+                    </label>
+                    {extractHostFromRtspUrl(formData.rtsp_url) && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const host = extractHostFromRtspUrl(formData.rtsp_url);
+                          if (host) setFormData(prev => ({ ...prev, ip: host }));
+                        }}
+                        style={{ background: 'none', border: 'none', color: '#38bdf8', fontSize: '10px', cursor: 'pointer', fontWeight: 700, padding: 0 }}
+                        title="Extraer IP de la URL RTSP"
+                      >
+                        Auto-detectar
+                      </button>
+                    )}
+                  </div>
                   <input
                     type="text"
-                    placeholder="192.168.1.100 o localhost"
+                    placeholder="Ej: 10.126.9.104 o 192.168.1.100"
                     className="input"
                     value={formData.ip}
-                    onChange={e => setFormData({ ...formData, ip: e.target.value })}
-                    style={{ width: '100%' }}
+                    onChange={e => handleIpChange(e.target.value)}
+                    style={{ width: '100%', backgroundColor: '#1e293b', borderColor: '#475569', color: '#ffffff', fontFamily: 'monospace' }}
                     required
                   />
                 </div>
 
                 <div>
-                  <label style={{ display: 'block', fontSize: '12px', fontWeight: 700, color: 'var(--text-secondary)', marginBottom: '6px' }}>
+                  <label style={{ display: 'block', fontSize: '12px', fontWeight: 700, color: '#e2e8f0', marginBottom: '6px' }}>
                     Ubicación / Sector
                   </label>
                   <input
@@ -891,39 +958,39 @@ const RegistroCanal: React.FC = () => {
                     className="input"
                     value={formData.ubicacion}
                     onChange={e => setFormData({ ...formData, ubicacion: e.target.value })}
-                    style={{ width: '100%' }}
+                    style={{ width: '100%', backgroundColor: '#1e293b', borderColor: '#475569', color: '#ffffff' }}
                   />
                 </div>
               </div>
 
               <div>
-                <label style={{ display: 'block', fontSize: '12px', fontWeight: 700, color: 'var(--text-secondary)', marginBottom: '6px' }}>
+                <label style={{ display: 'block', fontSize: '12px', fontWeight: 700, color: '#e2e8f0', marginBottom: '6px' }}>
                   URL RTSP o Stream de Video *
                 </label>
                 <input
                   type="text"
-                  placeholder="rtsp://usuario:clave@192.168.1.100:554/ch1 o http://localhost:8000/debug/stream"
+                  placeholder="rtsp://admin:password@10.126.9.104:554/Streaming/Channels/101"
                   className="input"
                   value={formData.rtsp_url}
-                  onChange={e => setFormData({ ...formData, rtsp_url: e.target.value })}
-                  style={{ width: '100%', fontFamily: 'monospace', fontSize: '12px' }}
+                  onChange={e => handleRtspChange(e.target.value)}
+                  style={{ width: '100%', fontFamily: 'monospace', fontSize: '12px', backgroundColor: '#1e293b', borderColor: '#475569', color: '#38bdf8' }}
                   required
                 />
-                <div style={{ fontSize: '10px', color: 'var(--text-muted)', marginTop: '4px' }}>
-                  Soporta RTSP (puerto 554/8554), HLS (.m3u8), MJPEG HTTP stream, o webcam local.
+                <div style={{ fontSize: '11px', color: '#94a3b8', marginTop: '4px' }}>
+                  Soporta RTSP (puerto 554/8554 Hikvision/Dahua/Celular), HLS (.m3u8), MJPEG HTTP stream.
                 </div>
               </div>
 
-              <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginTop: '6px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginTop: '6px', backgroundColor: '#1e293b', padding: '10px 14px', borderRadius: '8px', border: '1px solid #334155' }}>
                 <input
                   type="checkbox"
                   id="canal-activa"
                   checked={formData.activa}
                   onChange={e => setFormData({ ...formData, activa: e.target.checked })}
-                  style={{ width: '16px', height: '16px', cursor: 'pointer', accentColor: '#ef4444' }}
+                  style={{ width: '18px', height: '18px', cursor: 'pointer', accentColor: '#ef4444' }}
                 />
-                <label htmlFor="canal-activa" style={{ fontSize: '12px', fontWeight: 700, color: 'white', cursor: 'pointer' }}>
-                  Habilitar transmisión y análisis ANPR en este canal
+                <label htmlFor="canal-activa" style={{ fontSize: '12px', fontWeight: 700, color: '#f8fafc', cursor: 'pointer' }}>
+                  Habilitar transmisión y análisis ANPR continuo en este canal
                 </label>
               </div>
 
@@ -932,7 +999,7 @@ const RegistroCanal: React.FC = () => {
                   type="button"
                   onClick={() => setModalOpen(false)}
                   className="btn glass"
-                  style={{ color: 'var(--text-secondary)' }}
+                  style={{ color: '#cbd5e1', border: '1px solid #475569' }}
                 >
                   Cancelar
                 </button>
@@ -944,10 +1011,11 @@ const RegistroCanal: React.FC = () => {
                     backgroundColor: '#ef4444',
                     color: 'white',
                     fontWeight: 800,
-                    minWidth: '140px'
+                    minWidth: '140px',
+                    boxShadow: '0 4px 14px rgba(239, 68, 68, 0.4)'
                   }}
                 >
-                  {saving ? 'Guardando...' : (editingCamera ? 'Actualizar Canal' : 'Guardar Canal')}
+                  {saving ? 'Guardando...' : (editingCamera ? 'Guardar Cambios' : 'Registrar Canal')}
                 </button>
               </div>
             </form>

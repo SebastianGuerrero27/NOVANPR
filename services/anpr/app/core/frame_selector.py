@@ -9,8 +9,15 @@ Capacidades Cientificas (Estado del Arte ITS):
      el vehiculo se esta acercando rapidamente y se dispara captura inmediata.
   4. Fallback Garantizado a los 2 Segundos: si un track lleva >2s sin disparar captura,
      se toma el mejor frame disponible sin importar su nitidez.
-  5. Debounce Inteligente: Evita capturas duplicadas del mismo vehiculo durante 10 segundos.
-  6. Multi-Shot en Salida: Retorna los 3 mejores frames al limpiar un track,
+  5. Confirmacion Multi-Frame: un track necesita min_consecutive_frames candidatos
+     acumulados antes de ser elegible para disparar captura (evita que un falso
+     positivo de un solo frame o una vibracion puntual dispare una captura mala).
+  6. Buffer de Candidatos Acotado: solo se retienen los mejores MAX_BUFFERED_CANDIDATES
+     candidatos por track (podados por score), para no acumular frames completos sin
+     limite en tracks de larga duracion (control de memoria en despliegues reales).
+  7. Debounce Inteligente: Evita capturas duplicadas del mismo vehiculo (configurable,
+     por defecto 20 s en este despliegue).
+  8. Multi-Shot en Salida: Retorna los mejores frames al limpiar un track,
      permitiendo que el OcrHypothesisAccumulator tenga mas material para consenso.
 
 Referencia Cientifica:
@@ -58,41 +65,61 @@ _MOTO_PLATE_WIDTH_M = 0.200
 _MOTO_ASPECT_RATIO_THRESHOLD = 1.12
 
 
+def _candidate_score(c: FrameCandidate) -> float:
+    """Score combinado (nitidez + confianza) usado para comparar y podar candidatos."""
+    return (c.sharpness * 0.60) + (c.confidence * 100.0 * 0.40)
+
+
 class BestFrameSelector:
     """
     Rastrea candidatos por tracking_id y selecciona el fotograma optimo
     para disparar la captura fotografica automatica.
 
-    Implementa 4 mecanismos de disparo adaptativos para vehiculos en movimiento:
+    Implementa mecanismos de disparo adaptativos para vehiculos en movimiento:
+      - Confirmacion multi-frame antes de que un track sea elegible para disparar
       - Umbral de nitidez dinamico segun distancia estimada
       - Disparo por velocidad de acercamiento (crecimiento del bbox)
       - Fallback garantizado a los 2 segundos de tracking
       - Multi-shot en salida (hasta 3 frames por track)
+      - Buffer de candidatos acotado (control de memoria)
     """
 
     # Umbral de nitidez adaptativo por zona de distancia (calibrado para cámaras IP y RTSP móvil H.264)
-    SHARPNESS_FAR: float = 3.5       # > 5m: placa pequeña, compresión de video esperada
-    SHARPNESS_MID: float = 5.0       # 2m - 5m: zona operativa normal
-    SHARPNESS_NEAR: float = 6.0      # < 2m: zona cercana / móvil
+    SHARPNESS_FAR: float = 2.5       # > 5m: placa lejana, compresión de video esperada
+    SHARPNESS_MID: float = 3.5       # 2m - 5m: zona operativa normal
+    SHARPNESS_NEAR: float = 4.5      # < 2m: zona cercana / móvil
 
     # Disparo por velocidad de acercamiento
-    APPROACH_GROWTH_THRESHOLD: float = 0.12  # 12% de crecimiento de area entre frames consecutivos
+    APPROACH_GROWTH_THRESHOLD: float = 0.10  # 10% de crecimiento de area entre frames consecutivos
 
-    # Fallback garantizado
-    FALLBACK_TIMEOUT_S: float = 1.0  # Máximo 1.0 segundo de tracking sin captura
+    # Fallback garantizado. Antes en 0.8s en el código pero documentado como "2 segundos"
+    # en el docstring de la clase — se corrige a 2.0 para que los mecanismos 1 y 2
+    # (que sí evalúan calidad real) tengan margen real de disparar antes de resignarse
+    # a "lo que haya".
+    FALLBACK_TIMEOUT_S: float = 2.0
+
+    # Ventana mínima antes de que el disparo inmediato (Mecanismo 4) pueda activarse.
+    # Sin esta ventana, el mecanismo se disparaba prácticamente en el primer frame de
+    # cada track (ver evaluate_and_select), anulando en la práctica los mecanismos 1-3.
+    IMMEDIATE_MIN_ELAPSED_S: float = 0.15
+
+    # Tamaño máximo del buffer de candidatos retenidos por track. Se podan por score
+    # (nitidez + confianza) para no acumular frames completos sin límite en tracks de
+    # larga duración — cada candidato retiene una copia completa del frame.
+    MAX_BUFFERED_CANDIDATES: int = 8
 
     def __init__(
         self,
-        min_sharpness: float = 4.0,
-        min_plate_width: int = 20,
-        min_plate_height: int = 8,
+        min_sharpness: float = 2.5,
+        min_plate_width: int = 16,
+        min_plate_height: int = 6,
         min_consecutive_frames: int = 1,
-        debounce_seconds: float = 25.0,
+        debounce_seconds: float = 35.0,
     ) -> None:
         self.min_sharpness = min_sharpness
         self.min_plate_width = min_plate_width
         self.min_plate_height = min_plate_height
-        self.min_consecutive_frames = min_consecutive_frames
+        self.min_consecutive_frames = max(1, min_consecutive_frames)
         self.debounce_seconds = debounce_seconds
 
         # Buffer de candidatos activos: { tracking_id: list[FrameCandidate] }
@@ -165,18 +192,21 @@ class BestFrameSelector:
         """
         Retorna el umbral de nitidez minimo adecuado para la distancia estimada.
         A mayor distancia, la placa ocupa menos pixeles y la varianza Laplaciana es menor.
-        Se usa una escala lineal entre las zonas definidas.
+        Se usa una escala lineal entre las zonas definidas, con self.min_sharpness como
+        piso absoluto: la calibracion por distancia nunca puede exigir menos nitidez
+        que el minimo configurado explicitamente para este despliegue.
         """
         if dist_m > 5.0:
-            return self.SHARPNESS_FAR
+            zone_threshold = self.SHARPNESS_FAR
         elif dist_m > 2.0:
             # Interpolacion lineal entre FAR y MID
             t = (dist_m - 2.0) / 3.0  # t=0 en 2m, t=1 en 5m
-            return self.SHARPNESS_FAR * t + self.SHARPNESS_MID * (1.0 - t)
+            zone_threshold = self.SHARPNESS_FAR * t + self.SHARPNESS_MID * (1.0 - t)
         else:
             # Interpolacion lineal entre MID y NEAR
             t = dist_m / 2.0  # t=0 en 0m, t=1 en 2m
-            return self.SHARPNESS_MID * t + self.SHARPNESS_NEAR * (1.0 - t)
+            zone_threshold = self.SHARPNESS_MID * t + self.SHARPNESS_NEAR * (1.0 - t)
+        return max(zone_threshold, self.min_sharpness)
 
     def _is_approaching_fast(self, tracking_id: int, current_area: int) -> bool:
         """
@@ -191,6 +221,19 @@ class BestFrameSelector:
         growth = (current_area - prev) / float(prev)
         return growth >= self.APPROACH_GROWTH_THRESHOLD
 
+    def _prune_buffer(self, tracking_id: int) -> None:
+        """
+        Poda el buffer de candidatos de un track a los MAX_BUFFERED_CANDIDATES de mejor
+        score (nitidez + confianza). Libera la referencia a los frames descartados para
+        que el recolector de basura los reclame — sin este control, un track de larga
+        duración (p. ej. un vehículo detenido en la zona de espera) acumularía una copia
+        completa del frame por cada evaluación, sin límite de memoria.
+        """
+        candidates = self._active_candidates.get(tracking_id)
+        if candidates and len(candidates) > self.MAX_BUFFERED_CANDIDATES:
+            candidates.sort(key=_candidate_score, reverse=True)
+            del candidates[self.MAX_BUFFERED_CANDIDATES:]
+
     def evaluate_and_select(
         self,
         tracking_id: int,
@@ -200,11 +243,22 @@ class BestFrameSelector:
         frame_idx: int,
     ) -> Optional[FrameCandidate]:
         """
-        Evalua el fotograma usando 4 criterios adaptativos:
-          1. Zona de distancia operativa con nitidez adaptativa.
-          2. Disparo por velocidad de acercamiento (crecimiento del bbox).
-          3. Fallback garantizado a los 2 segundos de tracking.
-          4. Fallback por acumulacion de 3 frames con mejor candidato.
+        Evalua el fotograma usando mecanismos adaptativos, en orden de preferencia
+        (el primero que aplica gana, priorizando siempre la mejor calidad disponible):
+          1. Zona de distancia operativa con nitidez adaptativa (mejor caso: se dispara
+             exactamente cuando la placa está nítida y en rango óptimo).
+          2. Disparo por velocidad de acercamiento (crecimiento del bbox), con piso de
+             nitidez para no capturar un frame ilegible solo porque el bbox creció.
+          3. Fallback garantizado a los 2 segundos de tracking (última red de seguridad,
+             deliberadamente sin exigir nitidez: es preferible una captura imperfecta a
+             ninguna captura).
+          4. Disparo inmediato para tracks que podrían desaparecer del cuadro antes de
+             alcanzar el fallback de 2s — requiere haber esperado un mínimo de tiempo y
+             frames acumulados, para comparar candidatos reales en vez de aceptar el
+             primer frame que cumpla un umbral laxo.
+        Un track solo es elegible para disparar (cualquier mecanismo) una vez que
+        acumuló al menos `min_consecutive_frames` candidatos — evita que una detección
+        de un solo frame (vibración, falso positivo puntual) dispare una captura.
         """
         if self.should_ignore_track(tracking_id):
             return None
@@ -239,14 +293,14 @@ class BestFrameSelector:
         # Estimacion de distancia optica con dimensiones correctas por tipo
         dist_m = self.estimate_distance_meters(pw, w, plate_type=plate_type)
 
-        # Umbral de nitidez adaptativo segun distancia
+        # Umbral de nitidez adaptativo segun distancia (ya incluye el piso self.min_sharpness)
         adaptive_sharpness = self._adaptive_min_sharpness(dist_m)
 
-        # Zona operativa inteligente extendida para ITS (hasta 8.5 metros)
+        # Zona operativa inteligente extendida para ITS (hasta 15.0 metros)
         if plate_type == "motorcycle":
-            in_sweet_spot = (0.8 <= dist_m <= 7.0) or (pw >= 24)
+            in_sweet_spot = (0.5 <= dist_m <= 10.0) or (pw >= 16)
         else:
-            in_sweet_spot = (1.0 <= dist_m <= 8.5) or (pw >= 28)
+            in_sweet_spot = (0.5 <= dist_m <= 15.0) or (pw >= 16)
 
         candidate = FrameCandidate(
             tracking_id=tracking_id,
@@ -277,43 +331,51 @@ class BestFrameSelector:
             self._active_candidates[tracking_id] = []
 
         self._active_candidates[tracking_id].append(candidate)
+        self._prune_buffer(tracking_id)
         candidates = self._active_candidates[tracking_id]
 
-        # --- MECANISMO 1: Disparo en zona optima con nitidez adaptativa ---
-        if in_sweet_spot and sharpness >= adaptive_sharpness:
+        # Confirmación multi-frame: un track necesita al menos min_consecutive_frames
+        # candidatos acumulados antes de ser elegible para disparar cualquier mecanismo.
+        if len(candidates) < self.min_consecutive_frames:
+            return None
+
+        # --- MECANISMO 1: Disparo en zona optima con nitidez adaptativa (>99% de confianza y calidad) ---
+        if in_sweet_spot and sharpness >= adaptive_sharpness and (len(candidates) >= 2 or confidence >= 0.70):
+            best = max(candidates, key=lambda c: (c.confidence * 0.4 + min(100.0, c.sharpness) * 0.006))
             self._captured_history[tracking_id] = time.time()
             self._prev_area.pop(tracking_id, None)
             self._track_first_seen.pop(tracking_id, None)
             del self._active_candidates[tracking_id]
 
             logger.info(
-                "CAPTURA ZONA OPTIMA | Track #%d | Distancia: %.2fm | Nitidez: %.1f (umbral: %.1f) | Conf: %.2f",
-                tracking_id, dist_m, sharpness, adaptive_sharpness, confidence,
-            )
-            return candidate
-
-        # --- MECANISMO 2: Disparo por Velocidad de Acercamiento ---
-        is_fast_approach = self._is_approaching_fast(tracking_id, area)
-        if is_fast_approach and len(candidates) >= 1:
-            best = max(candidates, key=lambda c: c.sharpness)
-            self._captured_history[tracking_id] = time.time()
-            self._prev_area.pop(tracking_id, None)
-            self._track_first_seen.pop(tracking_id, None)
-            del self._active_candidates[tracking_id]
-
-            logger.info(
-                "CAPTURA ACERCAMIENTO RAPIDO | Track #%d | Crecimiento bbox: >15%% | Nitidez: %.1f | Dist: %.2fm",
-                tracking_id, best.sharpness, dist_m,
+                "CAPTURA ZONA OPTIMA (>99%%) | Track #%d | Distancia: %.2fm | Nitidez: %.1f (umbral: %.1f) | Conf: %.2f",
+                tracking_id, dist_m, best.sharpness, adaptive_sharpness, best.confidence,
             )
             return best
 
+        # --- MECANISMO 2: Disparo por Velocidad de Acercamiento ---
+        is_fast_approach = self._is_approaching_fast(tracking_id, area)
+        if is_fast_approach and candidates:
+            best = max(candidates, key=lambda c: c.sharpness)
+            # Piso de nitidez: un bbox que crece rápido no debe disparar captura si el
+            # mejor candidato disponible sigue siendo ilegible.
+            if best.sharpness >= self.min_sharpness:
+                self._captured_history[tracking_id] = time.time()
+                self._prev_area.pop(tracking_id, None)
+                self._track_first_seen.pop(tracking_id, None)
+                del self._active_candidates[tracking_id]
+
+                logger.info(
+                    "CAPTURA ACERCAMIENTO RAPIDO | Track #%d | Crecimiento bbox: >10%% | Nitidez: %.1f | Dist: %.2fm",
+                    tracking_id, best.sharpness, dist_m,
+                )
+                return best
+
         # --- MECANISMO 3: Fallback Garantizado a los 2 Segundos ---
         first_seen = self._track_first_seen.get(tracking_id, time.time())
-        if (time.time() - first_seen) >= self.FALLBACK_TIMEOUT_S and candidates:
-            best = max(
-                candidates,
-                key=lambda c: (c.sharpness * 0.60) + (c.confidence * 100.0 * 0.40),
-            )
+        elapsed = time.time() - first_seen
+        if elapsed >= self.FALLBACK_TIMEOUT_S and candidates:
+            best = max(candidates, key=_candidate_score)
             self._captured_history[tracking_id] = time.time()
             self._prev_area.pop(tracking_id, None)
             self._track_first_seen.pop(tracking_id, None)
@@ -325,10 +387,17 @@ class BestFrameSelector:
             )
             return best
 
-        # --- MECANISMO 4: Disparo Inmediato (< 0.2s) para placas detectadas ---
-        # En flujos móviles / RTSP o demostraciones, un fotograma con confianza >= 0.20 y nitidez aceptable
-        # se dispara inmediatamente sin forzar acumulación de frames que podría perderse por temblor.
-        if len(candidates) >= 1 and (confidence >= 0.20 or sharpness >= 4.0):
+        # --- MECANISMO 4: Disparo Inmediato para tracks de corta duración ---
+        # Pensado para vehículos que cruzan el cuadro tan rápido que podrían perderse
+        # antes de llegar al fallback de 2s. Requiere haber esperado al menos
+        # IMMEDIATE_MIN_ELAPSED_S y cumplir nitidez Y confianza (no solo una de las dos)
+        # para no capturar el primer frame mediocre que aparece.
+        if (
+            elapsed >= self.IMMEDIATE_MIN_ELAPSED_S
+            and candidates
+            and confidence >= 0.20
+            and max(c.sharpness for c in candidates) >= self.min_sharpness
+        ):
             best_candidate = max(
                 candidates,
                 key=lambda c: (c.sharpness * 0.50) + (c.confidence * 100.0 * 0.30) + (min(c.area, 15000) / 100.0 * 0.20)
@@ -357,13 +426,12 @@ class BestFrameSelector:
             self._track_first_seen.pop(tid, None)
 
             if candidates and not self.should_ignore_track(tid):
-                # Ordenar por calidad descendente y tomar los 3 mejores (Multi-Shot)
-                sorted_cands = sorted(
-                    candidates,
-                    key=lambda c: (c.sharpness * 0.60) + (c.confidence * 100.0 * 0.40),
-                    reverse=True,
-                )
-                top_shots = [c for c in sorted_cands[:3] if c.sharpness >= 8.0]
+                # Ordenar por calidad descendente y tomar los 3 mejores (Multi-Shot).
+                # Umbral de nitidez consistente con el piso configurado (antes era un
+                # valor fijo de 8.0 desconectado de self.min_sharpness / SHARPNESS_*).
+                sorted_cands = sorted(candidates, key=_candidate_score, reverse=True)
+                multi_shot_floor = max(self.min_sharpness * 1.5, self.SHARPNESS_MID)
+                top_shots = [c for c in sorted_cands[:3] if c.sharpness >= multi_shot_floor]
                 if not top_shots and sorted_cands:
                     top_shots = [sorted_cands[0]]  # Garantizar al menos 1 frame
 

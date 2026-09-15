@@ -438,7 +438,7 @@ const Dashboard: React.FC = () => {
         try {
           const data = JSON.parse(event.data as string);
           if (data.rois !== undefined) {
-            drawWebcamHUD(data.rois);
+            drawWebcamHUD(data.rois, data.motion_bbox, data.motion_pct);
           }
         } catch {
           // frame corrupto, ignorar
@@ -477,10 +477,15 @@ const Dashboard: React.FC = () => {
   };
 
   const overlayCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const motionBboxRef = useRef<[number, number, number, number] | null>(null);
+  const motionPctRef = useRef<number>(0);
+  const motionLastSeenRef = useRef<number>(0);
+
   const animatedTracksRef = useRef<Map<number, {
     id: number;
     anchorBbox: [number, number, number, number];
     currentBbox: [number, number, number, number];
+    orientedBox?: [number, number][];
     vx: number;
     vy: number;
     confidence: number;
@@ -495,11 +500,11 @@ const Dashboard: React.FC = () => {
   /**
    * Renderiza el HUD de bounding boxes sobre el canvas overlay a 60 FPS continuos.
    *
-   * Arquitectura SOTA 2026:
-   * - Seguimiento de movimiento predictivo con ancla fija (Bounded Kalman Prediction).
-   * - Mapeo 1:1 de coordenadas entre el sensor de la cámara y la pantalla.
-   * - Elimina completamente cualquier deriva (drift) o desfase de la caja delimitadora.
-   * - Badge táctico Glassmorphism con indicador de estado e identificación vehicular.
+   * Arquitectura SOTA 2026 (Rekor Scout / OpenALPR):
+   * - Caja orientada de 4 vértices (polígono rotado con inclinación de la mano).
+   * - Zona de Interés de Movimiento MOG2 (cuadro verde translúcido dinámico).
+   * - Mapeo 1:1 de coordenadas sin desfase ni latencia.
+   * - Badge táctico Glassmorphism con indicador de estado y matrícula ANT Ecuador.
    */
   const renderHUDFrame = () => {
     const canvas = overlayCanvasRef.current;
@@ -527,12 +532,6 @@ const Dashboard: React.FC = () => {
     const dt = Math.min(0.05, Math.max(0.001, (now - (lastRafTimeRef.current || now)) / 1000));
     lastRafTimeRef.current = now;
 
-    const tracksMap = animatedTracksRef.current;
-    if (tracksMap.size === 0) {
-      hudRafRef.current = requestAnimationFrame(renderHUDFrame);
-      return;
-    }
-
     // Corrección geométrica exacta por object-fit: contain (pillarbox / letterbox)
     const vw = video.videoWidth || 640;
     const vh = video.videoHeight || 360;
@@ -552,12 +551,66 @@ const Dashboard: React.FC = () => {
       offsetY = (rect.height - renderHeight) / 2;
     }
 
-    // Dimensiones exactas del frame de inferencia enviado al backend
+    // Dimensiones del frame de inferencia enviado al backend
     const targetW = 640;
     const targetH = Math.round(640 * (vh / vw));
 
     const scaleX = renderWidth / targetW;
     const scaleY = renderHeight / targetH;
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // 0. Renderizar Zona de Interés de Movimiento MOG2 (Estilo Rekor Scout / OpenALPR)
+    // ─────────────────────────────────────────────────────────────────────────
+    if (
+      motionBboxRef.current &&
+      now - motionLastSeenRef.current < 600 &&
+      motionPctRef.current > 3
+    ) {
+      const [mx1_raw, my1_raw, mx2_raw, my2_raw] = motionBboxRef.current;
+      const mx1 = offsetX + mx1_raw * scaleX;
+      const my1 = offsetY + my1_raw * scaleY;
+      const mx2 = offsetX + mx2_raw * scaleX;
+      const my2 = offsetY + my2_raw * scaleY;
+      const mw = Math.max(12, mx2 - mx1);
+      const mh = Math.max(12, my2 - my1);
+
+      const mAge = now - motionLastSeenRef.current;
+      const mAlpha = Math.max(0, 1 - mAge / 600) * 0.7;
+
+      ctx.save();
+      ctx.globalAlpha = mAlpha;
+
+      // Relleno verde translúcido característico de Rekor Scout
+      ctx.fillStyle = 'rgba(34, 197, 94, 0.10)';
+      ctx.fillRect(mx1, my1, mw, mh);
+
+      // Borde punteado fino de zona activa
+      ctx.strokeStyle = 'rgba(74, 222, 128, 0.65)';
+      ctx.lineWidth = 1.5;
+      ctx.setLineDash([5, 5]);
+      ctx.strokeRect(mx1, my1, mw, mh);
+      ctx.setLineDash([]);
+
+      // Etiqueta táctica de movimiento
+      const mLabel = `ZONA MOVIMIENTO • ${motionPctRef.current}%`;
+      ctx.font = 'bold 10px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, monospace';
+      const mTextW = ctx.measureText(mLabel).width;
+      const mBadgeW = mTextW + 14;
+      const mBadgeY = Math.max(8, my1 - 18);
+
+      ctx.fillStyle = 'rgba(15, 23, 42, 0.85)';
+      ctx.fillRect(mx1, mBadgeY, mBadgeW, 16);
+      ctx.fillStyle = '#4ade80';
+      ctx.fillText(mLabel, mx1 + 7, mBadgeY + 11.5);
+
+      ctx.restore();
+    }
+
+    const tracksMap = animatedTracksRef.current;
+    if (tracksMap.size === 0) {
+      hudRafRef.current = requestAnimationFrame(renderHUDFrame);
+      return;
+    }
 
     const toDelete: number[] = [];
 
@@ -571,20 +624,11 @@ const Dashboard: React.FC = () => {
         }
       }
 
-      // ── PREDICCIÓN ACOTADA DESDE POSICIÓN ANCLA (SIN DRIFT / SIN DERIVA) ──
-      // Se extrapola a partir de anchorBbox usando el tiempo transcurrido (máx 150ms)
-      const elapsedSec = Math.min(0.15, timeSinceSeenMs / 1000);
-      const predX1 = track.anchorBbox[0] + track.vx * elapsedSec;
-      const predY1 = track.anchorBbox[1] + track.vy * elapsedSec;
-      const predX2 = track.anchorBbox[2] + track.vx * elapsedSec;
-      const predY2 = track.anchorBbox[3] + track.vy * elapsedSec;
-
-      // Suavizado Lerp hacia la posición predicha
-      const lerpFactor = 0.50;
-      track.currentBbox[0] += (predX1 - track.currentBbox[0]) * lerpFactor;
-      track.currentBbox[1] += (predY1 - track.currentBbox[1]) * lerpFactor;
-      track.currentBbox[2] += (predX2 - track.currentBbox[2]) * lerpFactor;
-      track.currentBbox[3] += (predY2 - track.currentBbox[3]) * lerpFactor;
+      // Mapeo directo 1:1 con anclaje instantáneo sin retardo ni deriva
+      track.currentBbox[0] = track.anchorBbox[0];
+      track.currentBbox[1] = track.anchorBbox[1];
+      track.currentBbox[2] = track.anchorBbox[2];
+      track.currentBbox[3] = track.anchorBbox[3];
 
       const bx1 = offsetX + track.currentBbox[0] * scaleX;
       const by1 = offsetY + track.currentBbox[1] * scaleY;
@@ -596,73 +640,140 @@ const Dashboard: React.FC = () => {
       ctx.save();
       ctx.globalAlpha = Math.max(0, Math.min(1, track.opacity));
 
-      // Color según estado
+      // Color táctico según estado (ámbar Rekor Scout por defecto, verde si autorizado o válido, rojo si alerta)
       const isAlert = track.status === 'alerta';
-      const color = isAlert ? '#ef4444' : '#00ff66';
-      const glowColor = isAlert ? 'rgba(239, 68, 68, 0.45)' : 'rgba(0, 255, 102, 0.45)';
+      const isAuthorized = track.status === 'autorizado' || (track.plate && track.plate.length >= 6);
+      let color = '#f59e0b'; // Ámbar estilo OpenALPR Rekor Scout
+      let glowColor = 'rgba(245, 158, 11, 0.45)';
 
-      // 1. Glow y Bounding Box Principal
-      ctx.shadowColor = glowColor;
-      ctx.shadowBlur = 10;
-      ctx.strokeStyle = color;
-      ctx.lineWidth = 2.5;
+      if (isAlert) {
+        color = '#ef4444';
+        glowColor = 'rgba(239, 68, 68, 0.45)';
+      } else if (isAuthorized) {
+        color = '#00ff66';
+        glowColor = 'rgba(0, 255, 102, 0.45)';
+      }
 
-      const radius = 4;
-      ctx.beginPath();
-      ctx.roundRect(bx1, by1, bw, bh, radius);
-      ctx.stroke();
+      const hasOriented = track.orientedBox && track.orientedBox.length === 4;
 
-      // 2. Corner Brackets Tácticos (Diseño SOTA Profesional)
-      const cornerLen = Math.min(12, bw * 0.22, bh * 0.22);
-      ctx.lineWidth = 3.5;
-      // Superior Izquierda
-      ctx.beginPath();
-      ctx.moveTo(bx1, by1 + cornerLen);
-      ctx.lineTo(bx1, by1);
-      ctx.lineTo(bx1 + cornerLen, by1);
-      ctx.stroke();
-      // Superior Derecha
-      ctx.beginPath();
-      ctx.moveTo(bx2 - cornerLen, by1);
-      ctx.lineTo(bx2, by1);
-      ctx.lineTo(bx2, by1 + cornerLen);
-      ctx.stroke();
-      // Inferior Izquierda
-      ctx.beginPath();
-      ctx.moveTo(bx1, by2 - cornerLen);
-      ctx.lineTo(bx1, by2);
-      ctx.lineTo(bx1 + cornerLen, by2);
-      ctx.stroke();
-      // Inferior Derecha
-      ctx.beginPath();
-      ctx.moveTo(bx2 - cornerLen, by2);
-      ctx.lineTo(bx2, by2);
-      ctx.lineTo(bx2, by2 - cornerLen);
-      ctx.stroke();
+      let badgeX = bx1;
+      let badgeY = by1 - 28;
 
-      // 3. Badge OCR Flotante encima de la placa
+      if (hasOriented) {
+        // ─────────────────────────────────────────────────────────────────
+        // 1A. Caja Orientada Rotada de 4 Puntos (Estilo Rekor Scout)
+        // ─────────────────────────────────────────────────────────────────
+        const pts = track.orientedBox!.map(([px, py]) => [
+          offsetX + px * scaleX,
+          offsetY + py * scaleY,
+        ]);
+
+        ctx.shadowColor = glowColor;
+        ctx.shadowBlur = 10;
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 2.5;
+
+        ctx.beginPath();
+        ctx.moveTo(pts[0][0], pts[0][1]);
+        for (let i = 1; i < pts.length; i++) {
+          ctx.lineTo(pts[i][0], pts[i][1]);
+        }
+        ctx.closePath();
+        ctx.stroke();
+
+        // Relleno sutil del área de la placa
+        ctx.fillStyle = isAlert
+          ? 'rgba(239, 68, 68, 0.14)'
+          : isAuthorized
+          ? 'rgba(0, 255, 102, 0.10)'
+          : 'rgba(245, 158, 11, 0.10)';
+        ctx.fill();
+
+        // Vértices tácticos en las 4 esquinas de la placa
+        ctx.shadowBlur = 0;
+        ctx.fillStyle = color;
+        pts.forEach(([px, py]) => {
+          ctx.beginPath();
+          ctx.arc(px, py, 3, 0, Math.PI * 2);
+          ctx.fill();
+        });
+
+        // Posicionamiento superior del badge según los puntos
+        const minPy = Math.min(...pts.map(p => p[1]));
+        const avgPx = (pts[0][0] + pts[1][0] + pts[2][0] + pts[3][0]) / 4;
+        badgeX = avgPx;
+        badgeY = minPy - 26;
+      } else {
+        // ─────────────────────────────────────────────────────────────────
+        // 1B. Fallback: Bounding Box Ortogonal con Corner Brackets
+        // ─────────────────────────────────────────────────────────────────
+        ctx.shadowColor = glowColor;
+        ctx.shadowBlur = 10;
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 2.5;
+
+        const radius = 4;
+        ctx.beginPath();
+        ctx.roundRect(bx1, by1, bw, bh, radius);
+        ctx.stroke();
+
+        // Corner Brackets Tácticos
+        const cornerLen = Math.min(12, bw * 0.22, bh * 0.22);
+        ctx.lineWidth = 3.5;
+        // Superior Izquierda
+        ctx.beginPath();
+        ctx.moveTo(bx1, by1 + cornerLen);
+        ctx.lineTo(bx1, by1);
+        ctx.lineTo(bx1 + cornerLen, by1);
+        ctx.stroke();
+        // Superior Derecha
+        ctx.beginPath();
+        ctx.moveTo(bx2 - cornerLen, by1);
+        ctx.lineTo(bx2, by1);
+        ctx.lineTo(bx2, by1 + cornerLen);
+        ctx.stroke();
+        // Inferior Izquierda
+        ctx.beginPath();
+        ctx.moveTo(bx1, by2 - cornerLen);
+        ctx.lineTo(bx1, by2);
+        ctx.lineTo(bx1 + cornerLen, by2);
+        ctx.stroke();
+        // Inferior Derecha
+        ctx.beginPath();
+        ctx.moveTo(bx2 - cornerLen, by2);
+        ctx.lineTo(bx2, by2);
+        ctx.lineTo(bx2, by2 - cornerLen);
+        ctx.stroke();
+
+        badgeX = bx1 + bw / 2;
+        badgeY = by1 - 26;
+      }
+
+      // ─────────────────────────────────────────────────────────────────
+      // 2. Badge OCR Flotante Glassmorphism encima de la placa
+      // ─────────────────────────────────────────────────────────────────
       const confPct = track.plateConfidence > 0
         ? Math.round(track.plateConfidence * 100)
         : Math.round(track.confidence * 100);
 
-      const hasPlate = Boolean(track.plate && track.plate.length >= 4);
+      const hasPlate = Boolean(track.plate && track.plate.length >= 3);
       const labelText = hasPlate 
         ? `${track.plate}  •  ${confPct}%`
-        : `EN SEGUIMIENTO  •  ${confPct}%`;
+        : `ESCANEANDO OCR...  •  ${confPct}%`;
 
       ctx.font = 'bold 13px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, monospace';
       const textMetrics = ctx.measureText(labelText);
       const badgeW = textMetrics.width + 24;
       const badgeH = 22;
-      const badgeX = Math.max(offsetX, Math.min(rect.width - badgeW - 4, bx1));
-      const badgeY = Math.max(26, by1 - badgeH - 6);
+      const finalBadgeX = Math.max(offsetX + 4, Math.min(rect.width - badgeW - 4, badgeX - badgeW / 2));
+      const finalBadgeY = Math.max(26, badgeY);
 
       // Fondo del Badge (Glassmorphism oscuro)
       ctx.shadowBlur = 6;
       ctx.shadowColor = 'rgba(0,0,0,0.6)';
       ctx.fillStyle = 'rgba(11, 19, 43, 0.92)';
       ctx.beginPath();
-      ctx.roundRect(badgeX, badgeY, badgeW, badgeH, 4);
+      ctx.roundRect(finalBadgeX, finalBadgeY, badgeW, badgeH, 4);
       ctx.fill();
 
       // Borde del Badge
@@ -670,16 +781,16 @@ const Dashboard: React.FC = () => {
       ctx.lineWidth = 1.2;
       ctx.stroke();
 
-      // Indicador de punto verde/rojo
+      // Indicador de punto verde/ámbar/rojo
       ctx.shadowBlur = 0;
       ctx.fillStyle = color;
       ctx.beginPath();
-      ctx.arc(badgeX + 10, badgeY + badgeH / 2, 3.5, 0, Math.PI * 2);
+      ctx.arc(finalBadgeX + 10, finalBadgeY + badgeH / 2, 3.5, 0, Math.PI * 2);
       ctx.fill();
 
       // Texto de la Matrícula
       ctx.fillStyle = '#ffffff';
-      ctx.fillText(labelText, badgeX + 18, badgeY + 15);
+      ctx.fillText(labelText, finalBadgeX + 18, finalBadgeY + 15);
 
       ctx.restore();
     });
@@ -689,19 +800,34 @@ const Dashboard: React.FC = () => {
     hudRafRef.current = requestAnimationFrame(renderHUDFrame);
   };
 
-  const drawWebcamHUD = (rois: any[]) => {
+  const drawWebcamHUD = (
+    rois: any[],
+    motionBbox?: [number, number, number, number] | null,
+    motionPct?: number
+  ) => {
     const now = performance.now();
     const tracksMap = animatedTracksRef.current;
+
+    if (motionBbox && Array.isArray(motionBbox) && motionBbox.length === 4) {
+      motionBboxRef.current = motionBbox;
+      motionPctRef.current = motionPct ?? 0;
+      motionLastSeenRef.current = now;
+    }
 
     rois.forEach((r: any) => {
       if (!r.bbox || r.bbox.length < 4) return;
       const tid = r.tracking_id ?? Math.floor(Math.random() * 100000);
       const vx = Array.isArray(r.velocity) ? (r.velocity[0] ?? 0) : 0;
       const vy = Array.isArray(r.velocity) ? (r.velocity[1] ?? 0) : 0;
+      const obox: [number, number][] | undefined =
+        Array.isArray(r.oriented_box) && r.oriented_box.length === 4
+          ? r.oriented_box
+          : undefined;
 
       if (tracksMap.has(tid)) {
         const trk = tracksMap.get(tid)!;
         trk.anchorBbox = [r.bbox[0], r.bbox[1], r.bbox[2], r.bbox[3]];
+        trk.orientedBox = obox;
         trk.vx = vx;
         trk.vy = vy;
         trk.confidence = r.confidence ?? trk.confidence;
@@ -717,6 +843,7 @@ const Dashboard: React.FC = () => {
           id: tid,
           anchorBbox: [r.bbox[0], r.bbox[1], r.bbox[2], r.bbox[3]],
           currentBbox: [r.bbox[0], r.bbox[1], r.bbox[2], r.bbox[3]],
+          orientedBox: obox,
           vx,
           vy,
           confidence: r.confidence ?? 0.8,
@@ -857,7 +984,7 @@ const Dashboard: React.FC = () => {
         if (res.ok) {
           const data = await res.json();
           if (data.rois) {
-            drawWebcamHUD(data.rois);
+            drawWebcamHUD(data.rois, data.motion_bbox, data.motion_pct);
           }
           const latency = Math.round(performance.now() - t0);
           setWebcamLatency(latency);

@@ -93,20 +93,6 @@ BEGIN
 END
 GO
 
--- 4. Sembrar cámaras predeterminadas si no existen
-IF NOT EXISTS (SELECT * FROM Camaras WHERE ip = '10.126.9.104')
-BEGIN
-    INSERT INTO Camaras (nombre, ip, rtsp_url, ubicacion, activa, created_at)
-    VALUES ('Cámara Acceso Principal (PTZ)', '10.126.9.104', 'rtsp://10.126.9.104:554/h265/ch1/main/av_stream', 'Garita Principal - ECU 911 Ambato', 1, GETDATE());
-END
-IF NOT EXISTS (SELECT * FROM Camaras WHERE ip = '10.126.9.105')
-BEGIN
-    INSERT INTO Camaras (nombre, ip, rtsp_url, ubicacion, activa, created_at)
-    VALUES ('Cámara Garita Norte - Salida', '10.126.9.105', 'rtsp://10.126.9.105:554/Streaming/Channels/101', 'Garita Salida Norte', 1, GETDATE());
-END
-IF NOT EXISTS (SELECT * FROM Camaras WHERE ip = '127.0.0.1')
-BEGIN
-    INSERT INTO Camaras (nombre, ip, rtsp_url, ubicacion, activa, created_at)
-    VALUES ('Estación Local ANPR (Stream)', '127.0.0.1', 'http://localhost:8000/debug/stream', 'Laboratorio de Pruebas / Servidor ANPR', 1, GETDATE());
-END
+-- 4. Fin de migración (cámaras registradas dinámicamente por el usuario)
 GO
+

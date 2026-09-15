@@ -35,7 +35,7 @@ class DebugFrameBuffer:
         self._frame: Optional[np.ndarray] = None
         self._latest_jpeg: Optional[bytes] = None
         self._lock = threading.Lock()
-        self._jpeg_quality = 65  # Balance óptimo calidad visual y compresión ultra-rápida (~5ms)
+        self._jpeg_quality = 80  # Balance óptimo calidad visual y compresión nítida
         self._frame_available = threading.Event()
         self._frame_counter: int = 0
         self._target_height: int = 540

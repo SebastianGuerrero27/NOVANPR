@@ -40,7 +40,7 @@ from app.config import (
     WEBCAM_INDEX,
     RTSP_URL,
 )
-from app.core.detector import DetectionPipeline
+from app.core.detector import DetectionPipeline, create_detection_pipeline
 from app.core.frame_selector import BestFrameSelector
 from app.core.ocr_engine import create_ocr_engine
 from app.core.video_source import RTSPSource, VideoSource, WebcamSource, create_video_source
@@ -51,6 +51,7 @@ from app.services.debug_stream import (
     rtsp_direct_preview_generator,
     try_imshow,
 )
+from app.core.ecuador_plate_validator import validate_ecuadorian_plate
 from app.services.ocr_worker import AsyncOcrWorker, OcrTask
 from app.utils.logger import get_logger
 
@@ -74,6 +75,10 @@ _async_ocr_pool: ThreadPoolExecutor = ThreadPoolExecutor(max_workers=2, thread_n
 _browser_executor: ThreadPoolExecutor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="BrowserYOLO")
 _ocr_in_flight: set[int] = set()
 _ocr_lock: threading.Lock = threading.Lock()
+_ocr_last_attempt: dict[int, float] = {}
+_captured_commit_ids: dict[int, float] = {}
+_recent_plates_committed: dict[str, float] = {}
+PLATE_DEBOUNCE_SECONDS = 35.0
 _http_client: httpx.Client = httpx.Client(timeout=5.0)
 
 _running = False
@@ -82,26 +87,31 @@ _capture_fps: float = 0.0
 
 def _enqueue_async_ocr(tracking_id: int, frame_copy: np.ndarray, plate_bbox: list[int]) -> None:
     """
-    Ejecuta el OCR en un pool asíncrono desacoplado.
+    Ejecuta el OCR en un pool asíncrono desacoplado con cooldown por track.
     Garantiza que el bucle de tracking y video NUNCA se congele y mantenga 30+ FPS fluidos en tiempo real.
     """
+    now = time.time()
     with _ocr_lock:
         if tracking_id in _ocr_in_flight:
             return
+        if now - _ocr_last_attempt.get(tracking_id, 0.0) < 0.6:
+            return
         _ocr_in_flight.add(tracking_id)
+        _ocr_last_attempt[tracking_id] = now
 
     def _worker():
         try:
             worker = _ocr_worker
             pipeline = _pipeline
             if worker and getattr(worker, "_agent", None) and pipeline:
-                res = worker._agent.process_image(frame_copy, plate_bbox)
-                if res.placa and res.estado == "procesado":
+                res = worker._agent.process_image(frame_copy, plate_bbox, fast_mode=True)
+                if res.placa:
+                    status = "autorizado" if res.estado == "procesado" else "escaneando"
                     pipeline.update_track_plate(
                         tracking_id,
                         res.placa,
                         res.confianza,
-                        "autorizado",
+                        status,
                     )
         except Exception as e:
             logger.warning("Aviso en OCR asíncrono para track #%d: %s", tracking_id, e)
@@ -112,9 +122,117 @@ def _enqueue_async_ocr(tracking_id: int, frame_copy: np.ndarray, plate_bbox: lis
     _async_ocr_pool.submit(_worker)
 
 
+def _enqueue_browser_ocr(tracking_id: int, frame_copy: np.ndarray, plate_bbox: list[int]) -> None:
+    """
+    OCR asíncrono exclusivo para el flujo WebSocket del navegador.
+    Escribe el resultado en _browser_track_plates (namespace aislado) en vez del
+    pool RTSP, evitando que una lectura RTSP previa se muestre sobre un bbox del
+    browser que puede estar en una posición completamente distinta del frame.
+    """
+    now = time.time()
+    # Usar claves negativas en _ocr_last_attempt para el namespace browser (sin colisión con RTSP)
+    browser_key = -(tracking_id + 1)
+    with _ocr_lock:
+        if browser_key in _ocr_in_flight:
+            return
+        if now - _ocr_last_attempt.get(browser_key, 0.0) < 0.15:
+            return
+        _ocr_in_flight.add(browser_key)
+        _ocr_last_attempt[browser_key] = now
+
+    def _worker():
+        try:
+            worker = _ocr_worker
+            pipeline = _pipeline
+            if worker and getattr(worker, "_agent", None) and pipeline:
+                res = worker._agent.process_image(frame_copy, plate_bbox, fast_mode=True)
+                if res.placa:
+                    status = "autorizado" if res.estado == "procesado" else "escaneando"
+                    pipeline.update_browser_track_plate(
+                        tracking_id,
+                        res.placa,
+                        res.confianza,
+                        status,
+                    )
+        except Exception as e:
+            logger.warning("Aviso en OCR browser asíncrono para track #%d: %s", tracking_id, e)
+        finally:
+            with _ocr_lock:
+                _ocr_in_flight.discard(browser_key)
+
+    _async_ocr_pool.submit(_worker)
+
+
 # =============================================================================
-# 1. Hilo Productor: Captura & Display a 30 FPS Nativos (Zero Lag)
+# 1. Hilo Productor: Captura & Display a 30 FPS Nativos (Zero Lag / Zero Freeze)
 # =============================================================================
+
+_frame_lock = threading.Lock()
+_shared_frame: Optional[np.ndarray] = None
+_shared_frame_idx: int = 0
+_new_frame_event = threading.Event()
+
+
+def _detection_worker(
+    pipeline: DetectionPipeline,
+    frame_selector: BestFrameSelector,
+    ocr_worker: AsyncOcrWorker,
+) -> None:
+    """
+    Hilo consumidor de detección YOLO y seguimiento ByteTrack.
+    Completamente desacoplado del bucle de captura y streaming para eliminar congelamiento.
+    """
+    global _running, _shared_frame, _shared_frame_idx
+    last_processed_idx = -1
+    logger.info("Hilo de inferencia y tracking desacoplado iniciado.")
+
+    while _running:
+        signaled = _new_frame_event.wait(timeout=0.03)
+        if not _running:
+            break
+        if not signaled:
+            continue
+        _new_frame_event.clear()
+
+        with _frame_lock:
+            if _shared_frame is None or _shared_frame_idx == last_processed_idx:
+                continue
+            frame = _shared_frame.copy()
+            idx = _shared_frame_idx
+            last_processed_idx = idx
+
+        try:
+            # 1. Detección YOLO y Seguimiento ByteTrack (actualiza overlays en pipeline de forma segura @ 512px)
+            tracked_rois = pipeline.detect_and_track(frame, imgsz=512)
+            active_ids = {roi.tracking_id for roi in tracked_rois}
+
+            # 2. Inferencia OCR desacoplada asíncrona (no bloquea el tracking a 30+ FPS)
+            for roi in tracked_rois:
+                info = pipeline.get_track_info(roi.tracking_id)
+                if not info.get("plate"):
+                    bx1, by1, bx2, by2 = roi.plate_bbox
+                    if (bx2 - bx1) >= 16 and (by2 - by1) >= 6:
+                        _enqueue_async_ocr(roi.tracking_id, frame.copy(), roi.plate_bbox)
+
+            # 3. Evaluación de calidad y disparo de captura fotográfica
+            for roi in tracked_rois:
+                selected = frame_selector.evaluate_and_select(
+                    tracking_id=roi.tracking_id,
+                    frame=frame,
+                    plate_bbox=roi.plate_bbox,
+                    confidence=roi.confidence,
+                    frame_idx=idx,
+                )
+                if selected is not None:
+                    _trigger_photo_capture(selected, ocr_worker)
+
+            # Verificar si algún track salió de cuadro
+            exited_candidates = frame_selector.cleanup_stale_tracks(active_ids)
+            for exited in exited_candidates:
+                _trigger_photo_capture(exited, ocr_worker)
+
+        except Exception as e:
+            logger.error("Error en hilo de detección desacoplado: %s", e)
 
 
 def _render_standby_frame(nombre: str, url: str, width: int = 960, height: int = 540) -> np.ndarray:
@@ -153,17 +271,15 @@ def _realtime_anpr_loop(
     debug_buffer: DebugFrameBuffer,
 ) -> None:
     """
-    Bucle unificado de procesamiento ANPR en tiempo real (Cero Latencia):
-    1. Captura el fotograma más reciente del sensor (<0.1ms gracias al Grabber de búfer cero).
-    2. Ejecuta detección YOLO y seguimiento ByteTrack con DIoU (22-26ms).
-    3. Evalúa con BestFrameSelector y encola OCR en segundo plano (0ms de bloqueo de video).
-    4. Dibuja las retículas tácticas y cajas delimitadoras DIRECTAMENTE sobre el mismo fotograma (0.4ms).
-    5. Actualiza el buffer de previsualización web pre-codificando a 540p en 5ms.
-    Garantiza 0 fotogramas de desfase entre la caja y el video a 30+ FPS continuos.
+    Bucle ultra-rápido de captura y streaming ANPR (Zero-Latency Producer):
+    1. Captura fotogramas a 30+ FPS continuos sin retraso de inferencia.
+    2. Envía cada nuevo cuadro al hilo consumidor de detección asíncrono.
+    3. Dibuja overlays tácticos instantáneos (0.2ms) actualizados por el tracker.
+    4. Mantiene el buffer de streaming a máxima tasa de refresco sin congelamiento.
     """
-    global _running, _capture_fps
+    global _running, _capture_fps, _shared_frame, _shared_frame_idx
 
-    logger.info("Motor ANPR en Tiempo Real (Cero Latencia) iniciado a 30+ FPS continuos.")
+    logger.info("Motor ANPR en Tiempo Real (Streaming Continuo 30+ FPS) iniciado.")
 
     # Conexión inicial rápida (sin bloquear el arranque si la cámara está apagada)
     connected = video_source.connect()
@@ -171,6 +287,15 @@ def _realtime_anpr_loop(
         logger.info("Fuente de video conectada exitosamente.")
     else:
         logger.info("Cámara física actualmente apagada o en espera. Iniciando en modo Standby...")
+
+    # Iniciar hilo de detección y tracking desacoplado
+    det_thread = threading.Thread(
+        target=_detection_worker,
+        args=(pipeline, frame_selector, ocr_worker),
+        daemon=True,
+        name="ANPR-Detection-Worker",
+    )
+    det_thread.start()
 
     frame_count = 0
     fps_start = time.time()
@@ -188,16 +313,22 @@ def _realtime_anpr_loop(
 
         if not ret or frame is None:
             consecutive_read_failures += 1
-            if consecutive_read_failures >= 15 and consecutive_read_failures % 15 == 0:
+            if consecutive_read_failures >= 40 and consecutive_read_failures % 30 == 0:
                 cam_name = getattr(current_source, "_name", "Canal Activo")
                 cam_url = getattr(current_source, "_url", CAMERA_SOURCE)
                 standby = _render_standby_frame(cam_name, cam_url)
                 debug_buffer.update(standby)
-            time.sleep(0.03)
+            time.sleep(0.02)
             continue
 
         consecutive_read_failures = 0
         frame_count += 1
+
+        # Enviar frame al consumidor de detección sin demoras de bloqueo
+        with _frame_lock:
+            _shared_frame = frame
+            _shared_frame_idx = frame_count
+        _new_frame_event.set()
 
         # Medición fluida de FPS con ventana móvil de 10 fotogramas
         if frame_count % 10 == 0:
@@ -207,40 +338,7 @@ def _realtime_anpr_loop(
                 _capture_fps = round(0.7 * _capture_fps + 0.3 * inst_fps if _capture_fps > 0 else inst_fps, 1)
             fps_start = time.time()
 
-        try:
-            # 1. Detección YOLO y Seguimiento ByteTrack en este fotograma exacto
-            tracked_rois = pipeline.detect_and_track(frame)
-            active_ids = {roi.tracking_id for roi in tracked_rois}
-
-            # 2. Inferencia OCR desacoplada asíncrona (no bloquea el tracking a 30+ FPS)
-            for roi in tracked_rois:
-                info = pipeline.get_track_info(roi.tracking_id)
-                if not info.get("plate"):
-                    bx1, by1, bx2, by2 = roi.plate_bbox
-                    if (bx2 - bx1) >= 20 and (by2 - by1) >= 8:
-                        _enqueue_async_ocr(roi.tracking_id, frame.copy(), roi.plate_bbox)
-
-            # 3. Evaluación de calidad y disparo de captura fotográfica
-            for roi in tracked_rois:
-                selected = frame_selector.evaluate_and_select(
-                    tracking_id=roi.tracking_id,
-                    frame=frame,
-                    plate_bbox=roi.plate_bbox,
-                    confidence=roi.confidence,
-                    frame_idx=frame_count,
-                )
-                if selected is not None:
-                    _trigger_photo_capture(selected, ocr_worker)
-
-            # Verificar si algún track salió de cuadro
-            exited_candidates = frame_selector.cleanup_stale_tracks(active_ids)
-            for exited in exited_candidates:
-                _trigger_photo_capture(exited, ocr_worker)
-
-        except Exception as e:
-            logger.error("Error en ciclo de inferencia y tracking: %s", e)
-
-        # 4. Renderizar HUD táctico sobre copia limpia del fotograma
+        # Renderizar HUD táctico sobre el fotograma capturado (0.2ms)
         if DEBUG_VISUAL:
             annotated = pipeline.draw_overlays(
                 frame.copy(),
@@ -264,54 +362,178 @@ def _realtime_anpr_loop(
 
 
 def _trigger_photo_capture(candidate, ocr_worker: AsyncOcrWorker) -> None:
-    """Guarda la foto de evidencia en disco, registra el ingreso y encola el OCR."""
-    ts_str = time.strftime("%Y%m%d_%H%M%S")
+    """
+    Compuerta de Cero Falsos Positivos (Zero False-Positive Gate para ITS / ECU 911).
+    Garantiza que NUNCA se guarde una imagen en disco ni se cree un ingreso vehicular en BD
+    a menos que la región contenga una matrícula vehicular comprobada (autos o motos).
+    """
     tracking_id = getattr(candidate, "tracking_id", -1)
-    sharpness = getattr(candidate, "sharpness", 0.0)
-    bbox = getattr(candidate, "plate_bbox", [0, 0, 0, 0])
-    bbox_x = bbox[0] if (bbox and len(bbox) > 0) else 0
-    foto_filename = f"ingreso_{ts_str}_{bbox_x}_{int(candidate.timestamp*1000)%10000}.jpg"
-    foto_full_path = os.path.join(MEDIA_DIR, foto_filename)
-    ruta_relativa_ingreso = f"/media/{foto_filename}"
+    now = time.time()
+    with _ocr_lock:
+        if tracking_id in _captured_commit_ids and (now - _captured_commit_ids[tracking_id] < PLATE_DEBOUNCE_SECONDS):
+            return
+        _captured_commit_ids[tracking_id] = now
 
-    # Guardar fotografia completa en disco en segundo plano
     frame_copy = candidate.frame.copy() if candidate.frame is not None else None
-    if frame_copy is not None:
-        _disk_executor.submit(cv2.imwrite, foto_full_path, frame_copy)
+    if frame_copy is None or frame_copy.size == 0:
+        return
 
-    # Registrar evento Fase 1 en Backend Node.js
-    def _register_and_enqueue():
+    def _verify_and_commit():
         try:
-            url = f"{BACKEND_URL}/api/detecciones/ingreso"
-            payload = {
+            pipeline = _pipeline
+            # 1. Comprobar lecturas previas en ambos namespaces (RTSP y Browser)
+            info_browser = pipeline.get_browser_track_info(tracking_id) if pipeline else {}
+            info_rtsp = pipeline.get_track_info(tracking_id) if pipeline else {}
+            preliminary_plate = info_browser.get("plate") or info_rtsp.get("plate", "")
+            preliminary_conf = max(info_browser.get("confidence", 0.0), info_rtsp.get("confidence", 0.0))
+
+            # Comprobación temprana de Anti-Duplicado preliminar antes de OCR profundo o I/O a disco
+            if preliminary_plate:
+                clean_prelim = preliminary_plate.replace("-", "").strip().upper()
+                now_t = time.time()
+                with _ocr_lock:
+                    if clean_prelim in _recent_plates_committed and (now_t - _recent_plates_committed[clean_prelim] < PLATE_DEBOUNCE_SECONDS):
+                        logger.info(
+                            "[ANTI-DUPLICADO PRELIMINAR] Track #%d placa preliminar '%s' ya registrada hace %.1fs. Omitiendo captura.",
+                            tracking_id, clean_prelim, now_t - _recent_plates_committed[clean_prelim]
+                        )
+                        return
+
+            # 2. SEGUNDA VERIFICACIÓN OCR PROFUNDA POR DETRÁS (Fase 2 de Alta Fidelidad)
+            # Evalúa el fotograma en alta resolución con homografía + Sauvola adaptativo + realce CLAHE
+            verified_plate = ""
+            verified_conf = 0.0
+            deep_res = None
+
+            if ocr_worker and getattr(ocr_worker, "_agent", None):
+                deep_res = ocr_worker._agent.process_image(frame_copy, initial_bbox=candidate.plate_bbox, fast_mode=False)
+                if deep_res.placa and deep_res.estado == "procesado":
+                    verified_plate = deep_res.placa
+                    verified_conf = deep_res.confianza
+                elif deep_res.placa and len(deep_res.placa.replace("-", "").strip()) >= 4:
+                    is_val, fmt_p, val_score = validate_ecuadorian_plate(deep_res.placa)
+                    if is_val:
+                        verified_plate = fmt_p
+                        verified_conf = max(deep_res.confianza, val_score)
+
+            # Consenso con la lectura preliminar si deep_res no obtuvo certeza total
+            if not verified_plate and preliminary_plate:
+                is_val, fmt_p, val_score = validate_ecuadorian_plate(preliminary_plate)
+                if is_val:
+                    verified_plate = fmt_p
+                    verified_conf = max(preliminary_conf, val_score)
+
+            # 3. COMPUERTA ESTRICTA: Si no es una matrícula ANT válida, auditar descarte y NO contaminar BD
+            clean_plate = verified_plate.replace("-", "").strip().upper() if verified_plate else ""
+            if not clean_plate or len(clean_plate) < 4:
+                cand_text = (deep_res.placa if deep_res else preliminary_plate) or ""
+                logger.info(
+                    "[SEGUNDA VERIFICACIÓN OCR] Falso positivo prevenido | Track #%d descartado (texto: '%s')",
+                    tracking_id, cand_text,
+                )
+                try:
+                    _http_client.post(
+                        f"{BACKEND_URL}/api/detecciones/descarte",
+                        json={
+                            "tracking_id": tracking_id,
+                            "motivo": "segunda_verificacion_ocr_no_valido",
+                            "texto_candidato": cand_text or None,
+                            "confianza": round(deep_res.confianza if deep_res else preliminary_conf, 3),
+                            "fuente": CAMERA_SOURCE,
+                            "camara_id": CAMERA_ID,
+                        },
+                        timeout=2.0,
+                    )
+                except Exception:
+                    pass
+                return
+
+            # 3.1 ANTI-DUPLICADO DE PLACA CONFIRMADA ENTRE FASES:
+            # Si la misma placa ya fue capturada y guardada en los últimos PLATE_DEBOUNCE_SECONDS, omitir duplicado.
+            now_commit = time.time()
+            with _ocr_lock:
+                if clean_plate in _recent_plates_committed and (now_commit - _recent_plates_committed[clean_plate] < PLATE_DEBOUNCE_SECONDS):
+                    logger.info(
+                        "[ANTI-DUPLICADO OCR] Track #%d placa confirmada '%s' ya registrada hace %.1fs. Omitiendo duplicado.",
+                        tracking_id, clean_plate, now_commit - _recent_plates_committed[clean_plate]
+                    )
+                    return
+                _recent_plates_committed[clean_plate] = now_commit
+                _captured_commit_ids[tracking_id] = now_commit
+                # Purgar entradas expiradas del diccionario en memoria
+                stale_keys = [p for p, ts in _recent_plates_committed.items() if (now_commit - ts) > (PLATE_DEBOUNCE_SECONDS * 2)]
+                for p in stale_keys:
+                    _recent_plates_committed.pop(p, None)
+
+            # Confirmar en ambos namespaces del tracker
+            if pipeline:
+                pipeline.update_track_plate(tracking_id, verified_plate, verified_conf, "autorizado")
+                pipeline.update_browser_track_plate(tracking_id, verified_plate, verified_conf, "autorizado")
+
+            # 4. Confirmado como vehículo/motocicleta real: Guardar evidencia fotográfica
+            ts_str = time.strftime("%Y%m%d_%H%M%S")
+            bbox = getattr(candidate, "plate_bbox", [0, 0, 0, 0])
+            bbox_x = bbox[0] if (bbox and len(bbox) > 0) else 0
+            foto_filename = f"ingreso_{ts_str}_{bbox_x}_{int(candidate.timestamp * 1000) % 10000}.jpg"
+            foto_full_path = os.path.join(MEDIA_DIR, foto_filename)
+            ruta_relativa_ingreso = f"/media/{foto_filename}"
+
+            cv2.imwrite(foto_full_path, frame_copy)
+
+            # Guardar recorte de la matrícula
+            x1, y1, x2, y2 = bbox
+            h_f, w_f = frame_copy.shape[:2]
+            crop_plate = frame_copy[max(0, y1):min(h_f, y2), max(0, x1):min(w_f, x2)]
+            plate_filename = f"placa_{ts_str}_{tracking_id}.jpg"
+            plate_full_path = os.path.join(MEDIA_DIR, plate_filename)
+            ruta_relativa_placa = f"/media/{plate_filename}"
+            if crop_plate.size > 0:
+                cv2.imwrite(plate_full_path, crop_plate)
+            else:
+                ruta_relativa_placa = ruta_relativa_ingreso
+
+            # 5. Registrar el evento en el Backend Node.js
+            url_ingreso = f"{BACKEND_URL}/api/detecciones/ingreso"
+            payload_ingreso = {
                 "tracking_id": tracking_id,
+                "placa": verified_plate,
                 "ruta_imagen_ingreso": ruta_relativa_ingreso,
                 "confianza_deteccion": round(candidate.confidence, 3),
                 "fuente": CAMERA_SOURCE,
                 "camara_id": CAMERA_ID,
             }
-            res = _http_client.post(url, json=payload)
-            if res.status_code in (200, 201):
-                ingreso_id = res.json().get("ingreso_id")
-                if ingreso_id:
-                    # Encolar en el Worker Asincrono de OCR con nitidez para consenso ponderado
-                    task = OcrTask(
-                        ingreso_id=ingreso_id,
-                        tracking_id=tracking_id,
-                        foto_path=foto_full_path,
-                        ruta_relativa_ingreso=ruta_relativa_ingreso,
-                        plate_bbox=candidate.plate_bbox,
-                        timestamp_str=ts_str,
-                        sharpness=sharpness,
-                        frame=frame_copy,
+            res_ing = _http_client.post(url_ingreso, json=payload_ingreso)
+            if res_ing.status_code in (200, 201):
+                res_data = res_ing.json()
+                ingreso_id = res_data.get("ingreso_id")
+                es_duplicado = res_data.get("deduplicado", False)
+                if ingreso_id and not es_duplicado:
+                    # Notificar inmediatamente la compleción del OCR con la placa confirmada
+                    url_ocr = f"{BACKEND_URL}/api/detecciones/completar-ocr"
+                    payload_ocr = {
+                        "ingreso_id": ingreso_id,
+                        "placa_reconocida": verified_plate,
+                        "confianza_ocr": round(verified_conf, 3),
+                        "ruta_imagen_placa": ruta_relativa_placa,
+                        "estado_procesamiento": "procesado",
+                    }
+                    _http_client.post(url_ocr, json=payload_ocr)
+                    logger.info(
+                        "CAPTURA REGISTRADA ECU 911 | Ingreso ID #%d | Track #%d | Placa: %s (%.1f%%)",
+                        ingreso_id, tracking_id, verified_plate, verified_conf * 100,
                     )
-                    ocr_worker.enqueue_task(task)
+                elif es_duplicado:
+                    logger.info(
+                        "[BACKEND DEDUPLICADO] Ingreso ID #%d consolidado para Track #%d | Placa: %s",
+                        ingreso_id, tracking_id, verified_plate,
+                    )
             else:
-                logger.warning("Fallo al registrar ingreso en backend: %s", res.text)
-        except Exception as e:
-            logger.error("Error al registrar captura fotografica: %s", e)
+                logger.warning("Fallo al registrar ingreso confirmado en backend: %s", res_ing.text)
 
-    _disk_executor.submit(_register_and_enqueue)
+        except Exception as e:
+            logger.error("Error en compuerta de captura para track #%d: %s", tracking_id, e)
+
+    _disk_executor.submit(_verify_and_commit)
 
 
 # =============================================================================
@@ -329,7 +551,7 @@ async def lifespan(app: FastAPI):
     logger.info("=" * 60)
 
     _video_source = create_video_source()
-    _pipeline = DetectionPipeline()
+    _pipeline = create_detection_pipeline()
     _frame_selector = BestFrameSelector()
 
     ocr_engine = create_ocr_engine()
@@ -467,15 +689,18 @@ async def websocket_webcam_endpoint(websocket: WebSocket):
                 now = time.time()
                 rois_data = []
                 for r in tracked_rois:
-                    info = _pipeline.get_track_info(r.tracking_id)
+                    # get_browser_track_info lee del namespace aislado del navegador,
+                    # evitando que lecturas del loop RTSP contaminen los labels del browser.
+                    info = _pipeline.get_browser_track_info(r.tracking_id)
                     if not info.get("plate"):
                         bx1, by1, bx2, by2 = r.plate_bbox
-                        if (bx2 - bx1) >= 20 and (by2 - by1) >= 8:
-                            _enqueue_async_ocr(r.tracking_id, frame.copy(), r.plate_bbox)
+                        if (bx2 - bx1) >= 16 and (by2 - by1) >= 6:
+                            _enqueue_browser_ocr(r.tracking_id, frame.copy(), r.plate_bbox)
                     rois_data.append({
                         "tracking_id": r.tracking_id,
                         "confidence": round(r.confidence, 3),
                         "bbox": r.plate_bbox,
+                        "oriented_box": getattr(r, "oriented_box", []),
                         "velocity": r.velocity,
                         "ts": round(now, 4),
                         "plate": info.get("plate", ""),
@@ -483,7 +708,31 @@ async def websocket_webcam_endpoint(websocket: WebSocket):
                         "plate_confidence": round(info.get("confidence", 0.0), 3),
                     })
 
-                await websocket.send_json({"rois": rois_data})
+                # Evaluación de nitidez y disparo de captura fotográfica automática para webcam
+                if _frame_selector and _ocr_worker:
+                    frame_idx = int(now * 30)
+                    active_ids = {r.tracking_id for r in tracked_rois}
+                    for r in tracked_rois:
+                        selected = _frame_selector.evaluate_and_select(
+                            tracking_id=r.tracking_id,
+                            frame=frame,
+                            plate_bbox=r.plate_bbox,
+                            confidence=r.confidence,
+                            frame_idx=frame_idx,
+                        )
+                        if selected is not None:
+                            _trigger_photo_capture(selected, _ocr_worker)
+
+                    exited = _frame_selector.cleanup_stale_tracks(active_ids)
+                    for cand in exited:
+                        _trigger_photo_capture(cand, _ocr_worker)
+
+                motion_bbox, motion_pct = _pipeline.get_motion_info() if _pipeline else (None, 0)
+                await websocket.send_json({
+                    "rois": rois_data,
+                    "motion_bbox": motion_bbox,
+                    "motion_pct": motion_pct,
+                })
             except Exception as e:
                 logger.debug("Error en detección webcam WS: %s", e)
             finally:
@@ -527,6 +776,7 @@ async def stream_preview(url: str = Query(..., description="RTSP URL o fuente de
 
 
 _camera_switch_lock = threading.Lock()
+_browser_busy_lock = threading.Lock()
 
 
 @app.post("/api/camera/switch")
@@ -546,8 +796,9 @@ async def switch_active_camera(request: Request):
     source_type = str(payload.get("source_type", "rtsp")).lower().strip()
     rtsp_url = payload.get("rtsp_url")
     nombre = payload.get("nombre", "Cámara Activa")
+    force = bool(payload.get("force", False))
 
-    logger.info("Solicitud de cambio de cámara activa ANPR: ID %d | %s | %s", camera_id, source_type, rtsp_url or "")
+    logger.info("Solicitud de cambio de cámara activa ANPR: ID %d | %s | %s | force=%s", camera_id, source_type, rtsp_url or "", force)
 
     with _camera_switch_lock:
         old_source = _video_source
@@ -556,9 +807,10 @@ async def switch_active_camera(request: Request):
         else:
             src_str = rtsp_url or RTSP_URL
 
-        # Evitar reiniciar si la cámara solicitada ya está activa y conectada
-        if old_source and getattr(old_source, "_url", None) == src_str and CAMERA_ID == camera_id:
-            logger.info("Cámara ID %d (%s) ya activa.", camera_id, src_str)
+        # Evitar reiniciar si la cámara solicitada ya está activa, conectada y no se forzó reconexión
+        is_running = old_source and getattr(old_source, "_grab_running", False) and getattr(old_source, "is_connected", False)
+        if not force and is_running and getattr(old_source, "_url", None) == src_str and CAMERA_ID == camera_id:
+            logger.info("Cámara ID %d (%s) ya activa y conectada.", camera_id, src_str)
             return {
                 "success": True,
                 "message": f"Cámara ID {camera_id} ya se encuentra activa",
@@ -586,10 +838,9 @@ async def switch_active_camera(request: Request):
             # Conectar en segundo plano
             threading.Thread(target=new_src.connect, daemon=True, name="CamConnect").start()
 
-            # Limpiar buffers de tracks y detecciones para el nuevo canal
+            # Limpiar buffers de tracks, consensos y detecciones para el nuevo canal
             if _pipeline:
-                _pipeline._trackers.clear()
-                _pipeline._track_plates.clear()
+                _pipeline.clear_all_tracks()
             if _frame_selector:
                 _frame_selector._active_candidates.clear()
                 _frame_selector._captured_history.clear()
@@ -645,10 +896,13 @@ def get_status():
 async def process_browser_frame(file: UploadFile = File(...)):
     """
     Endpoint para procesar fotogramas en vivo capturados por la webcam del navegador.
-    La detección YOLO se ejecuta en un thread executor para no bloquear el event loop asyncio,
-    garantizando 30+ FPS fluidos en el navegador sin congelamiento del video.
+    Descarta fotogramas si el hilo previo sigue ocupado para garantizar cero retrasos (<30ms).
     """
     global _pipeline, _frame_selector, _ocr_worker, _debug_buffer
+
+    # Descartar fotograma si la inferencia previa aún no finaliza (Zero Latency Drop)
+    if not _browser_busy_lock.acquire(blocking=False):
+        return {"success": True, "rois": [], "dropped": True}
 
     try:
         t_start = time.perf_counter()
@@ -663,7 +917,7 @@ async def process_browser_frame(file: UploadFile = File(...)):
         if frame is None or frame.size == 0:
             return JSONResponse({"error": "No se pudo decodificar el fotograma"}, status_code=400)
 
-        # 1. Detección rápida — modelo browser dedicado @ 256px, sin contención con loop RTSP
+        # 1. Detección rápida — modelo browser dedicado @ 384px, sin contención con loop RTSP
         loop = asyncio.get_event_loop()
         t0_det = time.perf_counter()
         tracked_rois = await loop.run_in_executor(
@@ -701,13 +955,16 @@ async def process_browser_frame(file: UploadFile = File(...)):
             for cand in exited:
                 _trigger_photo_capture(cand, _ocr_worker)
 
+        motion_bbox, motion_pct = _pipeline.get_motion_info() if _pipeline else (None, 0)
         rois_data = []
         for r in tracked_rois:
-            info = _pipeline.get_track_info(r.tracking_id) if _pipeline else {}
+            info = _pipeline.get_browser_track_info(r.tracking_id) if _pipeline else {}
             rois_data.append({
                 "tracking_id": r.tracking_id,
                 "confidence": round(r.confidence, 3),
                 "bbox": r.plate_bbox,
+                "oriented_box": getattr(r, "oriented_box", []),
+                "velocity": getattr(r, "velocity", [0.0, 0.0]),
                 "plate": info.get("plate", ""),
                 "status": info.get("status", ""),
                 "plate_confidence": round(info.get("confidence", 0.0), 3),
@@ -728,11 +985,15 @@ async def process_browser_frame(file: UploadFile = File(...)):
         return {
             "success": True,
             "rois": rois_data,
+            "motion_bbox": motion_bbox,
+            "motion_pct": motion_pct,
         }
 
     except Exception as e:
         logger.error("Error en process_browser_frame: %s", e)
         return JSONResponse({"error": str(e)}, status_code=500)
+    finally:
+        _browser_busy_lock.release()
 
 
 

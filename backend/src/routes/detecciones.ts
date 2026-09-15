@@ -19,7 +19,8 @@ router.post('/ingreso', async (req: Request, res: Response) => {
     ruta_imagen_ingreso,
     confianza_deteccion,
     fuente = 'webcam',
-    camara_id = null
+    camara_id = null,
+    placa = null
   } = req.body;
 
   if (!ruta_imagen_ingreso) {
@@ -27,36 +28,45 @@ router.post('/ingreso', async (req: Request, res: Response) => {
   }
 
   const tid = tracking_id ?? -1;
+  const cleanPlaca = typeof placa === 'string'
+    ? placa.toUpperCase().replace(/[^A-Z0-9]/g, '')
+    : '';
 
   try {
     const db = getDB();
 
-    // --- Anti-Duplicado: Verificar si el tracking_id ya tiene un registro activo ---
-    // Ventana de consolidacion: 30 segundos (un paso fisico continuo del vehiculo)
-    if (tid > 0) {
-      const dedupReq = db.request();
-      dedupReq.input('tracking_id_dedup', sql.Int, tid);
-      const dedupResult = await dedupReq.query(`
-        SELECT TOP 1 id, fecha_hora_ingreso
-        FROM DeteccionVehiculo
-        WHERE tracking_id = @tracking_id_dedup
-          AND estado_procesamiento IN ('pendiente_ocr', 'procesado')
-          AND DATEDIFF(SECOND, fecha_hora_ingreso, GETDATE()) <= 30
-        ORDER BY fecha_hora_ingreso DESC;
-      `);
+    // --- Anti-Duplicado: Verificar si el tracking_id o la placa ya tiene un registro activo ---
+    // Ventana de consolidación: 35 segundos (un paso físico continuo del vehículo)
+    const dedupReq = db.request();
+    dedupReq.input('tracking_id_dedup', sql.Int, tid);
+    dedupReq.input('clean_placa', sql.VarChar, cleanPlaca);
 
-      if (dedupResult.recordset.length > 0) {
-        const existente = dedupResult.recordset[0];
-        console.log(
-          `[ANTI-DUPLICADO] Track #${tid} ya tiene Ingreso ID #${existente.id} activo. Reutilizando registro.`
-        );
-        return res.status(200).json({
-          message: 'Registro existente reutilizado (paso fisico consolidado).',
-          ingreso_id: existente.id,
-          fecha_hora_ingreso: existente.fecha_hora_ingreso,
-          deduplicado: true
-        });
-      }
+    const dedupResult = await dedupReq.query(`
+      SELECT TOP 1 id, fecha_hora_ingreso, placa, tracking_id
+      FROM DeteccionVehiculo
+      WHERE (
+        (tracking_id = @tracking_id_dedup AND @tracking_id_dedup > 0)
+        OR (
+          @clean_placa <> '' AND LEN(@clean_placa) >= 4
+          AND REPLACE(REPLACE(COALESCE(placa_reconocida, placa, ''), '-', ''), ' ', '') = @clean_placa
+        )
+      )
+        AND estado_procesamiento IN ('pendiente_ocr', 'procesado')
+        AND DATEDIFF(SECOND, fecha_hora_ingreso, GETDATE()) <= 35
+      ORDER BY fecha_hora_ingreso DESC;
+    `);
+
+    if (dedupResult.recordset.length > 0) {
+      const existente = dedupResult.recordset[0];
+      console.log(
+        `[ANTI-DUPLICADO] Track #${tid} / Placa '${cleanPlaca || 'N/A'}' coincide con Ingreso ID #${existente.id} activo (hace <= 35s). Reutilizando registro.`
+      );
+      return res.status(200).json({
+        message: 'Registro existente reutilizado (paso físico consolidado).',
+        ingreso_id: existente.id,
+        fecha_hora_ingreso: existente.fecha_hora_ingreso,
+        deduplicado: true
+      });
     }
 
     // Sanitizar fuente para no exceder longitud de BD
@@ -73,8 +83,10 @@ router.post('/ingreso', async (req: Request, res: Response) => {
     }
 
     // --- Sin duplicado: Insertar nuevo registro de ingreso ---
+    const initialPlaca = cleanPlaca.length >= 4 ? String(placa).toUpperCase().trim() : 'PROCESANDO';
     const request = db.request();
     request.input('tracking_id', sql.Int, tid);
+    request.input('initial_placa', sql.VarChar, initialPlaca);
     request.input('ruta_imagen_ingreso', sql.VarChar, ruta_imagen_ingreso);
     request.input('confianza_deteccion', sql.Float, confianza_deteccion ?? 0.85);
     request.input('fuente', sql.VarChar, cleanFuente);
@@ -98,7 +110,7 @@ router.post('/ingreso', async (req: Request, res: Response) => {
       )
       OUTPUT INSERTED.id, INSERTED.fecha_hora_ingreso
       VALUES (
-        'PROCESANDO',
+        @initial_placa,
         @confianza_deteccion,
         0.0,
         @ruta_imagen_ingreso,
@@ -127,8 +139,8 @@ router.post('/ingreso', async (req: Request, res: Response) => {
       fecha_hora: ingresoCreado.fecha_hora_ingreso,
       estado_procesamiento: 'pendiente_ocr',
       estado_validacion: 'pendiente_revision',
-      placa: 'PROCESANDO...',
-      placa_reconocida: null,
+      placa: initialPlaca,
+      placa_reconocida: cleanPlaca.length >= 4 ? initialPlaca : null,
       confianza_deteccion: confianza_deteccion ?? 0.85,
       confianza_ocr: null,
       fuente
@@ -138,7 +150,7 @@ router.post('/ingreso', async (req: Request, res: Response) => {
     emitEvent('nueva_deteccion', eventoPendiente);
     emitEvent('nuevo_evento', eventoPendiente);
 
-    console.log(`[FASE 1 - CAPTURA] Ingreso ID #${ingresoCreado.id} registrado | Track #${tid} | Foto: ${ruta_imagen_ingreso}`);
+    console.log(`[FASE 1 - CAPTURA] Ingreso ID #${ingresoCreado.id} registrado | Track #${tid} | Placa: ${initialPlaca} | Foto: ${ruta_imagen_ingreso}`);
 
     return res.status(201).json({
       message: 'Ingreso registrado en estado pendiente_ocr.',
@@ -232,6 +244,33 @@ router.post('/completar-ocr', async (req: Request, res: Response) => {
     }
 
     const normalizedPlaca = cleanPlaca.replace('-', '');
+
+    // Anti-duplicado en Fase 2: si este ingreso es duplicado de otro reciente con la misma placa
+    const dedupDupReq = db.request();
+    dedupDupReq.input('current_id', sql.Int, ingreso_id);
+    dedupDupReq.input('norm_placa', sql.VarChar, normalizedPlaca);
+    const existingDup = await dedupDupReq.query(`
+      SELECT TOP 1 id, fecha_hora_ingreso
+      FROM DeteccionVehiculo
+      WHERE id <> @current_id
+        AND REPLACE(REPLACE(COALESCE(placa_reconocida, placa, ''), '-', ''), ' ', '') = @norm_placa
+        AND estado_procesamiento = 'procesado'
+        AND DATEDIFF(SECOND, fecha_hora_ingreso, GETDATE()) <= 35
+      ORDER BY fecha_hora_ingreso DESC;
+    `);
+
+    if (existingDup.recordset.length > 0) {
+      const prev = existingDup.recordset[0];
+      console.log(`[ANTI-DUPLICADO FASE 2] Ingreso ID #${ingreso_id} con placa ${cleanPlaca} coincide con ID #${prev.id} (hace <= 35s). Eliminando duplicado.`);
+      await db.request().input('id', sql.Int, ingreso_id).query(`
+        DELETE FROM DeteccionVehiculo WHERE id = @id AND estado_procesamiento = 'pendiente_ocr';
+      `);
+      return res.json({
+        message: 'Detección consolidada con evento previo.',
+        deduplicado: true,
+        ingreso_id: prev.id
+      });
+    }
 
     // Inferencia de tipo de vehículo según normativa ANT Ecuador (ITS Priority: Automóvil por defecto)
     let tipoVehiculoInferido = 'Automóvil';
@@ -1030,6 +1069,33 @@ router.post('/registro-manual', async (req: Request, res: Response) => {
   } catch (error: any) {
     console.error('[REGISTRO MANUAL] Error:', error.message);
     return res.status(500).json({ error: 'Error interno al realizar el registro manual.' });
+  }
+});
+
+// =============================================================================
+// POST /api/detecciones/descarte — Auditoría de Falsos Positivos / Descartes
+// =============================================================================
+router.post('/descarte', async (req: Request, res: Response) => {
+  const { tracking_id, motivo, texto_candidato, confianza, fuente, camara_id } = req.body;
+  try {
+    const db = getDB();
+    const request = db.request();
+    request.input('tracking_id', sql.Int, tracking_id || -1);
+    request.input('motivo', sql.VarChar, motivo || 'falso_positivo_ocr');
+    request.input('texto_candidato', sql.VarChar, texto_candidato || null);
+    request.input('confianza', sql.Float, confianza || 0.0);
+    request.input('fuente', sql.VarChar, fuente || 'webcam');
+    request.input('camara_id', sql.Int, camara_id || null);
+
+    await request.query(`
+      INSERT INTO AuditoriaDescartes (tracking_id, motivo, texto_candidato, confianza, fuente, camara_id)
+      VALUES (@tracking_id, @motivo, @texto_candidato, @confianza, @fuente, @camara_id);
+    `);
+
+    return res.status(201).json({ success: true, message: 'Descarte auditado exitosamente.' });
+  } catch (err: any) {
+    console.error('[DESCARTE AUDIT] Error al registrar descarte:', err.message);
+    return res.status(500).json({ error: 'Error al registrar descarte.' });
   }
 });
 

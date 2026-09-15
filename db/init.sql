@@ -169,30 +169,9 @@ END
 GO
 
 -- =============================================================================
--- 9. DATOS DE SIEMBRA INICIALES (Cámaras, Vehículos y Listas)
+-- 9. DATOS DE SIEMBRA INICIALES (Vehículos y Listas - Cámaras dinámicas del usuario)
 -- =============================================================================
 
--- Sembrar cámaras institucionales predeterminadas
-IF NOT EXISTS (SELECT * FROM Camaras WHERE ip = '10.126.9.104')
-BEGIN
-    INSERT INTO Camaras (nombre, ip, rtsp_url, ubicacion, activa, created_at)
-    VALUES ('Cámara Acceso Principal (PTZ)', '10.126.9.104', 'rtsp://10.126.9.104:554/h265/ch1/main/av_stream', 'Puerta de Ingreso Vehicular Zonal 3', 1, GETDATE());
-END
-GO
-
-IF NOT EXISTS (SELECT * FROM Camaras WHERE ip = '10.126.9.105')
-BEGIN
-    INSERT INTO Camaras (nombre, ip, rtsp_url, ubicacion, activa, created_at)
-    VALUES ('Cámara Garita Norte - Salida', '10.126.9.105', 'rtsp://10.126.9.105:554/Streaming/Channels/101', 'Garita Salida Norte', 1, GETDATE());
-END
-GO
-
-IF NOT EXISTS (SELECT * FROM Camaras WHERE ip = '127.0.0.1')
-BEGIN
-    INSERT INTO Camaras (nombre, ip, rtsp_url, ubicacion, activa, created_at)
-    VALUES ('Estación Local ANPR (Stream)', '127.0.0.1', 'http://localhost:8000/debug/stream', 'Laboratorio de Pruebas / Servidor ANPR', 1, GETDATE());
-END
-GO
 
 -- Sembrar vehículos autorizados institucionales de prueba
 IF NOT EXISTS (SELECT * FROM VehiculosAutorizados WHERE placa = 'PBA5678')

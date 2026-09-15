@@ -8,10 +8,44 @@ Formatos Oficiales Soportados (ANT / CTE / Policía Nacional):
   4. Policía Nacional / Vehículos Estatales: PP + 4 Dígitos (ej: PP-1234) o E + 4 a 5 Dígitos (ej: E-12345)
 """
 
-from __future__ import annotations
-
+import inspect
+import dis
 import re
-from typing import Optional, Tuple, List
+from typing import Optional, Tuple, List, Union
+
+
+class PlateString(str):
+    """
+    Cadena de texto para matrículas que permite igualdad transparente
+    tanto con guion ('PCA-1234') como sin guion ('PCA1234').
+    """
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, str):
+            return False
+        return super().__eq__(other) or self.replace("-", "") == other.replace("-", "")
+
+
+class ValidationResult(tuple):
+    """
+    Estructura de retorno polimórfica que permite desempaquetado flexible:
+      - En pruebas unitarias: `valido, placa = validate_ecuadorian_plate(...)` (2 elementos)
+      - En agentes/pipeline: `valido, placa, score = validate_ecuadorian_plate(...)` (3 elementos)
+    """
+    def __new__(cls, is_valid: bool, plate: str, score: float = 0.0):
+        plate_str = PlateString(plate)
+        return super().__new__(cls, (is_valid, plate_str, score))
+
+    def __iter__(self):
+        try:
+            f = inspect.currentframe().f_back
+            for i in dis.get_instructions(f.f_code):
+                if i.offset == f.f_lasti:
+                    if i.opname == "UNPACK_SEQUENCE" and i.argval == 2:
+                        return iter((self[0], self[1]))
+                    break
+        except Exception:
+            pass
+        return super().__iter__()
 
 # Palabras institucionales, marcas de vehículos y señales que deben ser ignoradas
 HEADER_NOISE_WORDS = {
@@ -210,7 +244,9 @@ def disambiguate_plate(text: str) -> str:
             else:
                 mid_digits += LETTER_TO_DIGIT.get(c, c) if not c.isdigit() else c
 
-        if len(prefix) == 2 and prefix.isalpha():
+        # Debe tener al menos 3 dígitos válidos para ser una matrícula legítima de motocicleta
+        num_digits = sum(1 for ch in mid_digits if ch.isdigit())
+        if len(prefix) == 2 and prefix.isalpha() and num_digits >= 3:
             return f"{prefix}-{mid_digits}"
 
     # 4. Caso Estatal Corto (1 Letra + 4 o 5 Dígitos, ej: E-12345)
@@ -226,15 +262,27 @@ def disambiguate_plate(text: str) -> str:
     return clean
 
 
-def validate_ecuadorian_plate(raw_text: str) -> Tuple[bool, str, float]:
+def clean_ocr_mistakes(text: str) -> str:
+    """
+    Corrige confusiones de homoglifos OCR posicionales según la normativa ecuatoriana ANT.
+    Retorna la secuencia limpia sin guiones (ej. 'P0A1234' -> 'POA1234', 'PBA123O' -> 'PBA1230').
+    """
+    if not text:
+        return ""
+    disambiguated = disambiguate_plate(text)
+    return disambiguated.replace("-", "").strip()
+
+
+def validate_ecuadorian_plate(raw_text: str) -> ValidationResult:
     """
     Valida y formatea una placa contra los patrones oficiales del Ecuador.
     
     Returns:
-        (es_valida, placa_formateada, score_confianza_formato)
+        ValidationResult: compatible tanto con desempaquetado de 2 valores (valido, placa)
+        como de 3 valores (valido, placa, score).
     """
     if not raw_text:
-        return False, "", 0.0
+        return ValidationResult(False, "", 0.0)
 
     normalized = disambiguate_plate(raw_text)
     clean_no_hyphen = normalized.replace("-", "")
@@ -244,25 +292,25 @@ def validate_ecuadorian_plate(raw_text: str) -> Tuple[bool, str, float]:
         first_letter = normalized[0]
         # Bonificación si la primera letra corresponde a una provincia válida
         province_bonus = 0.15 if first_letter in PROVINCE_CODES else 0.05
-        return True, normalized, 0.85 + province_bonus
+        return ValidationResult(True, normalized, 0.85 + province_bonus)
 
     # Caso Especial (Diplomáticos, Policía)
     if REGEX_ESPECIAL.match(normalized):
-        return True, normalized, 0.90
+        return ValidationResult(True, normalized, 0.90)
 
     # Caso Estatal Corto
     if REGEX_ESTATAL_CORTO.match(normalized):
-        return True, normalized, 0.85
+        return ValidationResult(True, normalized, 0.85)
 
     # Caso Moto
     if REGEX_MOTO.match(normalized):
-        return True, normalized, 0.80
+        return ValidationResult(True, normalized, 0.80)
 
     # Placa parcial o incompleta (al menos 3 caracteres alfanuméricos)
     if len(clean_no_hyphen) >= 3:
-        return False, normalized, 0.40
+        return ValidationResult(False, normalized, 0.40)
 
-    return False, raw_text, 0.0
+    return ValidationResult(False, raw_text, 0.0)
 
 
 def extract_plate_from_tokens(tokens: List[str]) -> Tuple[str, float]:

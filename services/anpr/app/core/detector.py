@@ -11,6 +11,17 @@ Fundamentos Científicos:
   3. Estimación Geométrica Óptica ANT Ecuador:
      Cálculo de distancia óptica con pinhole camera model.
   4. HUD Táctico Industrial: Brackets angulares de fijación y estela de trayectoria.
+  5. Validación por Configuración de País (patrón OpenALPR "country config"):
+     cada lectura OCR se valida contra el formato oficial de placas ANT Ecuador
+     antes de aceptarse, descartando ruido de OCR que no es una placa posible.
+  6. Consenso Temporal de Placa ("Plate Groups", patrón OpenALPR / motores LPR
+     comerciales tipo Hikvision-Dahua que usan las cámaras que distribuye Syscom):
+     un mismo track acumula varias lecturas OCR a lo largo de su vida y se
+     reporta la de mayor consenso ponderado, no la última leída — evita el
+     parpadeo de texto entre frames y corrige errores de un solo caracter.
+  7. Filtro de Nitidez (Laplaciano) pre-OCR: descarta recortes borrosos por
+     desenfoque de movimiento antes de que cuenten como evidencia, igual que
+     hacen los DVR/NVR LPR que disparan el OCR solo en el frame "sweet spot".
 """
 
 from __future__ import annotations
@@ -19,22 +30,23 @@ import os
 import re
 import time
 import threading
+from collections import Counter
 from dataclasses import dataclass, field
 from typing import Optional, List, Tuple
 
 import cv2
 import numpy as np
-import torch
-from ultralytics import YOLO
 
 from app.config import (
-    INFERENCE_HEIGHT,
-    INFERENCE_WIDTH,
+    CAR_PLATE_AR_MAX,
+    CAR_PLATE_AR_MIN,
+    MOTO_PLATE_AR_MAX,
+    MOTO_PLATE_AR_MIN,
     PLATE_CONFIDENCE_THRESHOLD,
-    PLATE_MODEL_PATH,
     YOLO_CONFIDENCE_THRESHOLD,
-    YOLO_MODEL_PATH,
 )
+from app.core.models import Detection
+from app.core.detectors import BaseDetector, create_detector
 from app.core.ocr_engine import create_ocr_engine
 from app.utils.logger import get_logger
 
@@ -45,7 +57,55 @@ logger = get_logger("detector")
 # Dimensiones oficiales ANT Ecuador para estimación óptica de distancia
 _CAR_PLATE_WIDTH_M = 0.404   # Autos/Camionetas: 40.4 cm de ancho (AR ≈ 2.89 o 2.00)
 _MOTO_PLATE_WIDTH_M = 0.200  # Motocicletas:     20.0 cm de ancho (placa ANT cuadrada, AR ≈ 1.25)
-_MOTO_AR_THRESHOLD = 1.12     # AR <= 1.12 -> placa cuadrada de motocicleta bajo perspectiva (evita falsos positivos con autos)
+_MOTO_AR_THRESHOLD = 1.45     # AR <= 1.45 -> placa cuadrada de motocicleta bajo perspectiva (evita falsos positivos con autos)
+
+# Patrones oficiales ANT Ecuador (equivalente al "country config" / pattern.conf
+# de OpenALPR): una lectura OCR solo se acepta como voto válido si calza con uno
+# de estos formatos. Esto filtra ruido de OCR (ej. "SY-589" en vez de "PSY-589")
+# antes de que contamine el consenso de placa del track.
+_PLATE_PATTERN_CAR = re.compile(r"^[A-Z]{3}\d{3,4}$")            # Ej. PBA1234, PSY589
+_PLATE_PATTERN_MOTO = re.compile(r"^[A-Z]{2}\d{3,4}[A-Z]?$")     # Ej. AB123C, PB1234
+
+# Umbral de nitidez (varianza del Laplaciano). Por debajo de este valor el
+# recorte se considera borroso por desenfoque de movimiento o desenfoque óptico
+# y no debería alimentar el consenso de placa ni el pipeline de OCR.
+_MIN_SHARPNESS_VARIANCE = 35.0
+
+
+def normalize_plate_text(raw_text: str) -> str:
+    """Normaliza un texto OCR crudo a mayúsculas alfanuméricas sin separadores."""
+    if not raw_text:
+        return ""
+    return re.sub(r"[^A-Z0-9]", "", raw_text.strip().upper())
+
+
+def is_valid_ecuador_plate(raw_text: str) -> bool:
+    """
+    Valida una lectura OCR contra el formato oficial de placas ANT Ecuador.
+    Equivalente al "country config" de OpenALPR: una placa candidata que no
+    calza con ningún patrón conocido se descarta como ruido de OCR y no debe
+    contarse como voto válido en el consenso del track.
+    """
+    clean = normalize_plate_text(raw_text)
+    if len(clean) < 5 or len(clean) > 7:
+        return False
+    return bool(_PLATE_PATTERN_CAR.match(clean) or _PLATE_PATTERN_MOTO.match(clean))
+
+
+def compute_crop_sharpness(crop: np.ndarray) -> float:
+    """
+    Calcula la nitidez de un recorte mediante la varianza del Laplaciano
+    (Pech-Pacheco et al., 2000) — técnica estándar en pipelines LPR comerciales
+    para descartar frames con desenfoque de movimiento antes de invertir
+    cómputo de OCR en ellos o de dejarlos votar por una placa.
+    """
+    if crop is None or crop.size == 0:
+        return 0.0
+    gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY) if len(crop.shape) == 3 else crop
+    return float(cv2.Laplacian(gray, cv2.CV_64F).var())
+
+
+
 
 
 # =============================================================================
@@ -63,6 +123,11 @@ class KalmanBoxTracker:
       - (v_cx, v_cy, v_s): Velocidades de traslación y cambio de escala
     """
     count = 0
+
+    # Ganancia base del término de velocidad del proceso (v_cx, v_cy, v_s).
+    # Se usa como punto de partida y luego se escala dinámicamente en predict()
+    # según la rapidez real observada en la trayectoria del track.
+    _BASE_VELOCITY_NOISE = 300.0
 
     def __init__(self, bbox: list[float], confidence: float = 1.0) -> None:
         KalmanBoxTracker.count += 1
@@ -87,12 +152,15 @@ class KalmanBoxTracker:
             [0, 0, 0, 1, 0, 0, 0],
         ], dtype=np.float32)
 
-        # Covarianza de medición (R) y de proceso (Q) optimizadas para respuesta inmediata
-        self.kf.measurementNoiseCov = np.eye(4, dtype=np.float32) * 0.1
+        # Covarianza de medición (R) y de proceso (Q) optimizadas para respuesta inmediata.
+        # R se reduce (0.1 -> 0.06) para que la caja se ajuste con más firmeza a la
+        # posición real detectada por YOLO en cada frame (menos inercia / menos "arrastre"
+        # cuando la placa se mueve), sin perder la suavidad entre detecciones.
+        self.kf.measurementNoiseCov = np.eye(4, dtype=np.float32) * 0.06
         self.kf.measurementNoiseCov[2:, 2:] *= 1.0
 
         self.kf.processNoiseCov = np.eye(7, dtype=np.float32) * 1.0
-        self.kf.processNoiseCov[4:, 4:] *= 250.0  # Adaptación instantánea a la velocidad de movimiento
+        self.kf.processNoiseCov[4:, 4:] *= self._BASE_VELOCITY_NOISE  # Adaptación instantánea a la velocidad de movimiento
         self.kf.processNoiseCov[2, 2] *= 0.01
 
         self.kf.errorCovPost = np.eye(7, dtype=np.float32) * 1.0
@@ -144,6 +212,19 @@ class KalmanBoxTracker:
         if self.kf.statePost[6, 0] + self.kf.statePost[2, 0] <= 0:
             self.kf.statePost[6, 0] = 0.0
 
+        # Refuerzo adaptativo de velocidad: se mide la rapidez real reciente del track
+        # (a partir de su propia trayectoria ya registrada, sin crear atributos nuevos)
+        # y se incrementa temporalmente la confianza del filtro en el término de
+        # velocidad (v_cx, v_cy, v_s). Así la caja reacciona de inmediato cuando la
+        # placa acelera o cambia de dirección, y se mantiene estable cuando está casi
+        # quieta (boost -> 1.0).
+        if len(self.trajectory) >= 2:
+            dx = self.trajectory[-1][0] - self.trajectory[-2][0]
+            dy = self.trajectory[-1][1] - self.trajectory[-2][1]
+            speed_px = (dx * dx + dy * dy) ** 0.5
+            boost = 1.0 + min(3.0, speed_px / 40.0)
+            self.kf.processNoiseCov[4:, 4:] = np.eye(3, dtype=np.float32) * (self._BASE_VELOCITY_NOISE * boost)
+
         pred = self.kf.predict()
         self.age += 1
         if self.time_since_update > 0:
@@ -152,12 +233,6 @@ class KalmanBoxTracker:
 
         box = self._x_to_bbox(pred)
         self.history.append(np.array(box))
-        cx = int((box[0] + box[2]) / 2)
-        cy = int((box[1] + box[3]) / 2)
-        self.trajectory.append((cx, cy))
-        if len(self.trajectory) > 20:
-            self.trajectory.pop(0)
-
         return box
 
     def update(self, bbox: list[float], confidence: float) -> None:
@@ -169,26 +244,23 @@ class KalmanBoxTracker:
         self.confidence = confidence
         self.last_bbox = [float(b) for b in bbox]
 
-        cx = int((bbox[0] + bbox[2]) / 2)
-        cy = int((bbox[1] + bbox[3]) / 2)
-        if self.trajectory:
-            self.trajectory[-1] = (cx, cy)
-        else:
-            self.trajectory.append((cx, cy))
-
+        # Corrección Kalman primero
         z = self._bbox_to_z(bbox).reshape((4, 1))
         self.kf.correct(z)
 
+        # Agregar posición de detección a la trayectoria (no sobrescribir)
+        cx = int((bbox[0] + bbox[2]) / 2)
+        cy = int((bbox[1] + bbox[3]) / 2)
+        self.trajectory.append((cx, cy))
+        if len(self.trajectory) > 20:
+            self.trajectory.pop(0)
+
     def get_state(self) -> list[float]:
         """
-        Retorna la estimación actual de la caja [x1, y1, x2, y2] en tiempo real.
-        Si la placa fue detectada en el fotograma actual (time_since_update == 0),
-        retorna directamente las coordenadas exactas de YOLO con 0 inercia/latencia.
-        Si hubo pérdida momentánea de detección (time_since_update > 0),
-        retorna la extrapolación temporal suave del Filtro de Kalman.
+        Retorna la estimación actual de la caja [x1, y1, x2, y2] del Filtro de Kalman.
+        Siempre retorna el estado corregido/predicho del Kalman, lo que garantiza
+        un seguimiento suave y continuo de la placa en movimiento.
         """
-        if self.time_since_update == 0 and hasattr(self, "last_bbox") and self.last_bbox:
-            return self.last_bbox
         return self._x_to_bbox(self.kf.statePost)
 
 
@@ -241,6 +313,15 @@ def compute_diou_matrix(boxes1: list[list[float]], boxes2: list[list[float]]) ->
     c2 = np.maximum(1.0, (enc_x2 - enc_x1) ** 2 + (enc_y2 - enc_y1) ** 2)
 
     diou = iou - (d2 / c2)
+
+    # 4. Compuerta de consistencia de escala: una placa real no cambia de tamaño
+    # bruscamente de un frame a otro. Si el área de la detección candidata difiere
+    # más de 2.5x del área predicha por el track, se descarta el emparejamiento
+    # aunque el DIoU sea alto (evita que el track "salte" hacia un objeto grande
+    # y estático como una mochila, una mochila o cualquier textura fija cercana).
+    area_ratio = np.maximum(area1[:, None] / area2[None, :], area2[None, :] / area1[:, None])
+    diou = np.where(area_ratio > 2.5, -1.0, diou)
+
     return diou.astype(np.float32)
 
 
@@ -294,6 +375,12 @@ class TrackedPlateROI:
     # Velocidad del centro (píxeles/segundo en coordenadas de frame) extraída del filtro Kalman.
     # Permite extrapolar la posición del bbox en el cliente para tracking fluido entre actualizaciones.
     velocity: list[float] = field(default_factory=lambda: [0.0, 0.0])
+    # Nitidez del recorte actual (varianza del Laplaciano). Permite que el consumidor
+    # (worker de OCR) decida si vale la pena procesar este frame o esperar a uno más nítido —
+    # patrón "best frame selector" usado en LPR comerciales para no gastar OCR en frames borrosos.
+    quality: float = 0.0
+    # Polígono orientado de 4 vértices [[x1,y1],[x2,y2],[x3,y3],[x4,y4]] estilo Rekor Scout / OpenALPR
+    oriented_box: list[list[int]] = field(default_factory=list)
 
 
 @dataclass
@@ -309,6 +396,7 @@ class VisualOverlayBox:
     trajectory: list[tuple[int, int]] = field(default_factory=list)
     in_sweet_spot: bool = False
     timestamp: float = field(default_factory=time.time)
+    oriented_box: list[list[int]] = field(default_factory=list)
 
 
 # =============================================================================
@@ -320,48 +408,44 @@ class DetectionPipeline:
     """
     Pipeline Científico de Detección Liviana y Tracking ByteTrack + Kalman.
     Garantiza retención de caja sin temblores, predictibilidad a 30 FPS y ultra-baja latencia.
+    Incorpora Inyección de Dependencias (DI) para admitir cualquier backend (YOLO, ONNX, Mock).
     """
 
-    def __init__(self) -> None:
-        self.device = "cuda" if torch.cuda.is_available() else "cpu"
-        num_threads = min(8, max(2, os.cpu_count() or 4))
-        try:
-            torch.set_num_threads(num_threads)
-        except Exception:
-            pass
+    def __init__(
+        self,
+        detector: BaseDetector,
+        browser_detector: Optional[BaseDetector] = None,
+    ) -> None:
+        self.detector = detector
+        self.browser_detector = browser_detector or detector
 
-        logger.info("Inicializando Detector Científico ByteTrack en %s (CPU Threads: %d)", self.device, num_threads)
+        logger.info("Inicializando DetectionPipeline con detectores inyectados (DI).")
 
-        # 1. Cargar Detector de Placas (loop RTSP principal @ 384px)
-        model_path = PLATE_MODEL_PATH if os.path.exists(PLATE_MODEL_PATH) else YOLO_MODEL_PATH
-        logger.info("Cargando modelo principal de placas: %s", model_path)
-        self._plate_model = YOLO(model_path)
-
-        # 1b. Segunda instancia de YOLO para frames del navegador (@ 256px, sin lock compartido)
-        # Cargar el mismo archivo de pesos pero como objeto distinto para paralelismo real.
-        logger.info("Cargando modelo browser (256px, instancia independiente): %s", model_path)
-        self._browser_model = YOLO(model_path)
-
-        # Precalentamiento de ambos modelos
-        try:
-            dummy = np.zeros((INFERENCE_HEIGHT, INFERENCE_WIDTH, 3), dtype=np.uint8)
-            self._plate_model.predict(dummy, device=self.device, verbose=False)
-            self._browser_model.predict(dummy, device=self.device, imgsz=256, verbose=False)
-            logger.info("Detectores YOLO pre-calentados exitosamente (principal + browser).")
-        except Exception as e:
-            logger.warning("Fallo en precalentamiento YOLO: %s", e)
-
-        # 2. Rastreadores Kalman Activos (compartidos entre loops — usar _overlays_lock)
+        # 1. Rastreadores Kalman Activos para loop RTSP
         self._trackers: list[KalmanBoxTracker] = []
-        self._max_age = 18
+        self._trackers_lock = threading.Lock()
+        # _max_age: tiempo que un track sobrevive sin una detección real antes de
+        # eliminarse. Se reduce a 4 frames (~130ms a 30 FPS) para eliminar inmediatamente
+        # tracks fantasma cuando el vehículo sale de la escena.
+        self._max_age = 4
         self._min_hits = 1
 
-        # 3. Buffer de Overlays Visuales y Registro de Placas por Track
+        # 2. Buffer de Overlays Visuales y Registro de Placas por Track
         self._overlays_lock = threading.Lock()
-        # _model_lock protege _plate_model (solo para el loop RTSP — _browser_model no lo necesita)
-        self._model_lock = threading.Lock()
         self._current_overlays: list[VisualOverlayBox] = []
+        # _track_plates: consenso de placas del loop RTSP (hilo principal)
         self._track_plates: dict[int, dict] = {}
+        # _browser_track_plates: consenso de placas EXCLUSIVO del flujo WebSocket del navegador.
+        self._browser_track_plates: dict[int, dict] = {}
+
+        # 3. Rastreadores Kalman Activos para flujo Browser WebSocket
+        self._browser_trackers: list[KalmanBoxTracker] = []
+        self._browser_lock = threading.Lock()
+
+        # 4. OpenALPR Motion Detector (MOG2) para Zonas de Interés
+        self._bg_subtractor = cv2.createBackgroundSubtractorMOG2(history=120, varThreshold=25, detectShadows=False)
+        self._last_motion_bbox: Optional[list[int]] = None
+        self._last_motion_pct: int = 0
 
         # Métricas de FPS
         self._fps_window: list[float] = []
@@ -372,128 +456,404 @@ class DetectionPipeline:
     def fps(self) -> float:
         return self._fps
 
-    def update_track_plate(self, tracking_id: int, plate: str, confidence: float = 0.0, status: str = "") -> None:
-        """Asocia la matrícula reconocida por OCR en tiempo real al tracking ID para renderizado."""
+    def get_motion_info(self) -> tuple[Optional[list[int]], int]:
+        """Retorna (motion_bbox, motion_pct) detectado por MOG2 al estilo OpenALPR."""
+        return self._last_motion_bbox, self._last_motion_pct
+
+    def update_track_plate(
+        self,
+        tracking_id: int,
+        plate: str,
+        confidence: float = 0.0,
+        status: str = "",
+        quality: Optional[float] = None,
+    ) -> None:
+        """
+        Registra una lectura OCR como un voto más del track (patrón "Plate Groups" de
+        OpenALPR / motores LPR comerciales): en vez de sobrescribir con la última lectura,
+        cada lectura válida suma su confianza a un contador por texto de placa. La placa
+        reportada (self._track_plates[id]["plate"]) es la de mayor consenso ponderado, no
+        la más reciente — esto corrige errores de un solo caracter y evita que el texto
+        "parpadee" entre frames cuando el OCR se equivoca puntualmente.
+        Las lecturas que no calzan con el formato oficial ANT Ecuador (ruido de OCR, texto
+        parcial, falsos positivos) no se cuentan como voto, pero sí actualizan el estado
+        (alerta/autorizado) y el timestamp de "visto por última vez".
+        `quality` es opcional (varianza del Laplaciano del recorte usado para OCR, ver
+        TrackedPlateROI.quality); si se provee y el recorte estaba demasiado borroso
+        (< _MIN_SHARPNESS_VARIANCE), la lectura no se cuenta como voto — evita que un
+        frame con desenfoque de movimiento corrompa el consenso de placa del track.
+        """
+        clean_plate = normalize_plate_text(plate) if plate else ""
+        is_sharp_enough = quality is None or quality >= _MIN_SHARPNESS_VARIANCE
         with self._overlays_lock:
-            self._track_plates[tracking_id] = {
-                "plate": plate.strip().upper() if plate else "",
-                "confidence": confidence,
-                "status": status.lower(),
-                "time": time.time(),
-            }
+            entry = self._track_plates.get(tracking_id)
+            if entry is None:
+                entry = {"plate": "", "confidence": 0.0, "status": status.lower(), "time": time.time(), "votes": Counter()}
+                self._track_plates[tracking_id] = entry
+
+            entry["status"] = status.lower() or entry.get("status", "")
+            entry["time"] = time.time()
+
+            if clean_plate and is_valid_ecuador_plate(clean_plate) and is_sharp_enough:
+                votes: Counter = entry.setdefault("votes", Counter())
+                votes[clean_plate] += max(0.05, confidence)
+
+                # Ventana de consenso acotada: si un track lleva mucho tiempo vivo, se
+                # reduce el peso de votos antiguos a la mitad en vez de descartarlos de
+                # golpe, para que una placa mal leída al inicio no quede "congelada" como
+                # ganadora permanente si luego llegan lecturas correctas y consistentes.
+                if sum(votes.values()) > 6.0:
+                    for k in list(votes.keys()):
+                        votes[k] *= 0.5
+                        if votes[k] < 0.02:
+                            del votes[k]
+
+                best_plate, best_score = votes.most_common(1)[0]
+                entry["plate"] = best_plate
+                entry["confidence"] = min(0.99, best_score / max(1.0, sum(votes.values())) * 0.85 + 0.15)
+            elif not entry.get("plate"):
+                # Sin voto válido todavía: mantener la mejor estimación cruda disponible
+                # (por ejemplo mientras el OCR aún no da una lectura completa) sin que
+                # cuente como consenso definitivo.
+                entry["plate"] = clean_plate
+                entry["confidence"] = confidence
 
     def get_track_info(self, tracking_id: int) -> dict:
-        """Obtiene la información de matrícula y estado asociada a un track."""
+        """Obtiene la información de matrícula (por consenso) y estado asociada a un track RTSP."""
         with self._overlays_lock:
-            return self._track_plates.get(tracking_id, {}).copy()
+            entry = self._track_plates.get(tracking_id, {})
+            return {k: v for k, v in entry.items() if k != "votes"}
+
+    def update_browser_track_plate(
+        self,
+        tracking_id: int,
+        plate: str,
+        confidence: float = 0.0,
+        status: str = "",
+        quality: Optional[float] = None,
+    ) -> None:
+        """
+        Registra una lectura OCR en el namespace EXCLUSIVO del navegador.
+        Idéntico al patrón "Plate Groups" de update_track_plate pero escribe en
+        _browser_track_plates, garantizando cero contaminación cruzada con el
+        loop RTSP incluso cuando los IDs de KalmanBoxTracker colisionan entre
+        los dos pools de trackers.
+        """
+        clean_plate = normalize_plate_text(plate) if plate else ""
+        is_sharp_enough = quality is None or quality >= _MIN_SHARPNESS_VARIANCE
+        with self._overlays_lock:
+            entry = self._browser_track_plates.get(tracking_id)
+            if entry is None:
+                entry = {"plate": "", "confidence": 0.0, "status": status.lower(), "time": time.time(), "votes": Counter()}
+                self._browser_track_plates[tracking_id] = entry
+            entry["status"] = status.lower() or entry.get("status", "")
+            entry["time"] = time.time()
+            if clean_plate and is_valid_ecuador_plate(clean_plate) and is_sharp_enough:
+                votes: Counter = entry.setdefault("votes", Counter())
+                votes[clean_plate] += max(0.05, confidence)
+                if sum(votes.values()) > 6.0:
+                    for k in list(votes.keys()):
+                        votes[k] *= 0.5
+                        if votes[k] < 0.02:
+                            del votes[k]
+                best_plate, best_score = votes.most_common(1)[0]
+                entry["plate"] = best_plate
+                entry["confidence"] = min(0.99, best_score / max(1.0, sum(votes.values())) * 0.85 + 0.15)
+            elif not entry.get("plate"):
+                entry["plate"] = clean_plate
+                entry["confidence"] = confidence
+
+    def get_browser_track_info(self, tracking_id: int) -> dict:
+        """Obtiene la info de placa exclusiva del flujo WebSocket del navegador."""
+        with self._overlays_lock:
+            entry = self._browser_track_plates.get(tracking_id, {})
+            return {k: v for k, v in entry.items() if k != "votes"}
+
+    def clear_all_tracks(self) -> None:
+        """Limpia completamente la memoria de seguimiento, consenso de placas y overlays visuales."""
+        with self._trackers_lock:
+            self._trackers.clear()
+        with self._browser_lock:
+            self._browser_trackers.clear()
+        with self._overlays_lock:
+            self._track_plates.clear()
+            self._browser_track_plates.clear()
+            self._current_overlays.clear()
+        logger.info("Pipeline ANPR: Memoria de tracking y overlays reiniciada por completo.")
 
     def detect_fast(self, frame: np.ndarray) -> list[TrackedPlateROI]:
         """
-        Detección ultra-rápida para frames del navegador usando la instancia de modelo dedicada.
-        - Usa _browser_model (instancia independiente) @ 256px: sin contención con el loop RTSP.
-        - Usa _browser_trackers: lista de trackers aislada para el flujo del navegador.
-        - No requiere _model_lock: los dos modelos corren en paralelo sin conflictos.
-        Resultado: ~15ms de inferencia sin esperar al loop RTSP (~30ms @ 384px).
+        Detección ultra-rápida y directa para frames del navegador.
+        - Sensibilidad optimizada para distancias cortas y largas (conf >= 0.14).
+        - Filtro geométrico amplio para permitir placas inclinadas y de cerca (0.55 <= AR <= 6.5).
+        - Mantiene la identidad del tracker estable mediante asociación por distancia adaptativa e IoU.
+        - Retorna las matrículas detectadas en el fotograma actual.
         """
-        if not hasattr(self, '_browser_trackers'):
-            self._browser_trackers: list[KalmanBoxTracker] = []
-            self._browser_lock = threading.Lock()
-
         orig_h, orig_w = frame.shape[:2]
 
-        # Predicción Kalman de trackers del browser
-        predicted_boxes: list[list[float]] = []
-        to_del: list[int] = []
-        with self._browser_lock:
-            for i, trk in enumerate(self._browser_trackers):
-                pos = trk.predict()
-                if np.any(np.isnan(pos)):
-                    to_del.append(i)
+        # OpenALPR Motion Detection (MOG2) para Zonas de Interés
+        try:
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            fg_mask = self._bg_subtractor.apply(gray)
+            _, fg_thresh = cv2.threshold(fg_mask, 128, 255, cv2.THRESH_BINARY)
+            kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
+            fg_clean = cv2.morphologyEx(fg_thresh, cv2.MORPH_OPEN, kernel)
+            fg_clean = cv2.dilate(fg_clean, kernel, iterations=2)
+            motion_pixels = cv2.countNonZero(fg_clean)
+            self._last_motion_pct = int(min(100, (motion_pixels / float(orig_w * orig_h)) * 100 * 6))
+            contours, _ = cv2.findContours(fg_clean, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            if contours:
+                valid_cnts = [c for c in contours if cv2.contourArea(c) > 1200]
+                if valid_cnts:
+                    all_pts = np.vstack(valid_cnts)
+                    mx, my, mw, mh = cv2.boundingRect(all_pts)
+                    mx = max(0, mx - int(mw * 0.10))
+                    my = max(0, my - int(mh * 0.10))
+                    mw = min(orig_w - mx, int(mw * 1.20))
+                    mh = min(orig_h - my, int(mh * 1.20))
+                    self._last_motion_bbox = [mx, my, mx + mw, my + mh]
                 else:
-                    predicted_boxes.append(pos)
-            for i in reversed(to_del):
-                self._browser_trackers.pop(i)
+                    self._last_motion_bbox = None
+            else:
+                self._last_motion_bbox = None
+        except Exception:
+            self._last_motion_bbox = None
+            self._last_motion_pct = 0
 
-        # Inferencia YOLO @ 256px — sin lock, modelo independiente
+        conf_thresh = 0.14
         det_boxes: list[list[float]] = []
         det_confs: list[float] = []
+
         try:
-            results = self._browser_model.predict(
-                frame,
-                conf=0.36,
-                verbose=False,
-                device=self.device,
-                imgsz=256,
-            )[0]
-            raw_boxes = results.boxes.xyxy.cpu().numpy()
-            raw_confs = results.boxes.conf.cpu().numpy()
+            raw_detections = self.browser_detector.predict(frame)
             raw_all = []
             raw_all_c = []
-            for box, conf in zip(raw_boxes, raw_confs):
+            for d in raw_detections:
+                box = d.bbox
+                conf = d.confidence
                 bw = box[2] - box[0]
                 bh = box[3] - box[1]
                 ar = bw / max(1.0, float(bh))
-                # Filtro geométrico vehicular: las matrículas tienen aspecto rectangular (1.3 a 5.0)
-                if 1.30 <= ar <= 5.0 and bw >= 30 and bh >= 10:
+                # Filtro geométrico permisivo para placas cerca, lejos e inclinadas:
+                if (0.55 <= ar <= 6.5) and bw >= 12 and bh >= 6 and conf >= conf_thresh:
                     raw_all.append([float(b) for b in box])
                     raw_all_c.append(float(conf))
+
             if raw_all:
                 nms_boxes = [[int(b[0]), int(b[1]), int(b[2] - b[0]), int(b[3] - b[1])] for b in raw_all]
-                indices = cv2.dnn.NMSBoxes(nms_boxes, raw_all_c, score_threshold=0.36, nms_threshold=0.35)
+                indices = cv2.dnn.NMSBoxes(nms_boxes, raw_all_c, score_threshold=conf_thresh, nms_threshold=0.35)
                 if len(indices) > 0:
-                    for idx in np.array(indices).flatten():
-                        det_boxes.append(raw_all[idx])
-                        det_confs.append(raw_all_c[idx])
+                    cand_boxes = [raw_all[idx] for idx in np.array(indices).flatten()]
+                    cand_confs = [raw_all_c[idx] for idx in np.array(indices).flatten()]
+
+                    # Supresión de sub-cajas (OpenALPR): si una caja está contenida en otra mayor
+                    # (ej. grupo interno de letras vs placa completa), se conserva la placa externa completa.
+                    areas = [(b[2] - b[0]) * (b[3] - b[1]) for b in cand_boxes]
+                    order = sorted(range(len(cand_boxes)), key=lambda i: areas[i], reverse=True)
+                    keep = []
+                    for i in order:
+                        bi = cand_boxes[i]
+                        ai = areas[i]
+                        is_sub = False
+                        for k in keep:
+                            bk = cand_boxes[k]
+                            ak = areas[k]
+                            x1 = max(bi[0], bk[0])
+                            y1 = max(bi[1], bk[1])
+                            x2 = min(bi[2], bk[2])
+                            y2 = min(bi[3], bk[3])
+                            inter = max(0, x2 - x1) * max(0, y2 - y1)
+                            min_a = min(ai, ak)
+                            if min_a > 0 and (inter / min_a) > 0.60:
+                                is_sub = True
+                                break
+                        if not is_sub:
+                            keep.append(i)
+
+                    for i in keep:
+                        det_boxes.append(cand_boxes[i])
+                        det_confs.append(cand_confs[i])
         except Exception as e:
-            logger.debug("Error en detect_fast YOLO: %s", e)
+            logger.debug("Error en detect_fast: %s", e)
 
-        # Asociación ByteTrack y actualización de trackers del browser
-        matched, unmatched_dets, _ = associate_detections_to_trackers(det_boxes, predicted_boxes)
-        with self._browser_lock:
-            for d_idx, t_idx in matched:
-                self._browser_trackers[t_idx].update(det_boxes[d_idx], det_confs[d_idx])
-            for d_idx in unmatched_dets:
-                self._browser_trackers.append(KalmanBoxTracker(det_boxes[d_idx], det_confs[d_idx]))
-            # Poda de tracks muertos
-            self._browser_trackers = [
-                t for t in self._browser_trackers if t.time_since_update <= 8
-            ]
+        # Si no hay detecciones en este cuadro, avanzar Kalman y no destruir los tracks de golpe
+        if not det_boxes:
+            with self._browser_lock:
+                surviving = []
+                rois_lost = []
+                for trk in self._browser_trackers:
+                    trk.predict()
+                    if trk.time_since_update <= 2:
+                        surviving.append(trk)
+                        if trk.hits >= 1:
+                            st = trk.get_state()
+                            bx1 = max(0, min(orig_w - 5, int(st[0])))
+                            by1 = max(0, min(orig_h - 5, int(st[1])))
+                            bx2 = max(bx1 + 5, min(orig_w, int(st[2])))
+                            by2 = max(by1 + 5, min(orig_h, int(st[3])))
+                            rois_lost.append(TrackedPlateROI(
+                                tracking_id=trk.id,
+                                plate_bbox=[bx1, by1, bx2, by2],
+                                vehicle_bbox=[0, 0, orig_w, orig_h],
+                                confidence=round(trk.confidence, 3),
+                                velocity=[float(trk.kf.statePost[4, 0]), float(trk.kf.statePost[5, 0])],
+                                quality=0.0,
+                                oriented_box=[[bx1, by1], [bx2, by1], [bx2, by2], [bx1, by2]],
+                            ))
+                self._browser_trackers = surviving
+            return rois_lost
 
-        # Construir ROIs
+        # Asociación ligera con tracking ID estable y predicción Kalman
         tracked_rois: list[TrackedPlateROI] = []
-        _FPS = 30.0
-        for trk in self._browser_trackers:
-            if trk.hits >= 1 and trk.confidence >= 0.35 and trk.time_since_update <= 2:
-                state = trk.get_state()
-                x1 = max(0, int(state[0]))
-                y1 = max(0, int(state[1]))
-                x2 = min(orig_w, int(state[2]))
-                y2 = min(orig_h, int(state[3]))
-                if x2 <= x1 or y2 <= y1:
-                    continue
-                vx = float(trk.kf.statePost[4, 0]) * _FPS
-                vy = float(trk.kf.statePost[5, 0]) * _FPS
+        with self._browser_lock:
+            # 1. Avanzar estado temporal de Kalman para todos los trackers activos
+            for trk in self._browser_trackers:
+                trk.predict()
+
+            new_trackers: list[KalmanBoxTracker] = []
+            matched_tracker_ids = set()
+
+            for d_idx, (box, conf) in enumerate(zip(det_boxes, det_confs)):
+                bx1 = max(0, min(orig_w - 5, int(box[0])))
+                by1 = max(0, min(orig_h - 5, int(box[1])))
+                bx2 = max(bx1 + 5, min(orig_w, int(box[2])))
+                by2 = max(by1 + 5, min(orig_h, int(box[3])))
+                bw = float(bx2 - bx1)
+                bh = float(by2 - by1)
+
+                cx = (bx1 + bx2) / 2.0
+                cy = (by1 + by2) / 2.0
+                max_match_dist = max(140.0, max(bw, bh) * 1.4)
+
+                best_trk = None
+                best_dist = float("inf")
+
+                for trk in self._browser_trackers:
+                    if trk.id in matched_tracker_ids:
+                        continue
+                    st = trk.get_state()
+                    tcx = (st[0] + st[2]) / 2.0
+                    tcy = (st[1] + st[3]) / 2.0
+                    dist = float(np.hypot(cx - tcx, cy - tcy))
+                    if dist < max_match_dist and dist < best_dist:
+                        best_dist = dist
+                        best_trk = trk
+
+                if best_trk is not None:
+                    best_trk.update([bx1, by1, bx2, by2], conf)
+                    new_trackers.append(best_trk)
+                    matched_tracker_ids.add(best_trk.id)
+                    tid = best_trk.id
+                    vx = float(best_trk.kf.statePost[4, 0])
+                    vy = float(best_trk.kf.statePost[5, 0])
+                else:
+                    new_trk = KalmanBoxTracker([bx1, by1, bx2, by2], conf)
+                    new_trackers.append(new_trk)
+                    matched_tracker_ids.add(new_trk.id)
+                    tid = new_trk.id
+                    vx = 0.0
+                    vy = 0.0
+
+                # 4 vértices orientados estilo Rekor Scout / OpenALPR plate_points
+                oriented_box = [[bx1, by1], [bx2, by1], [bx2, by2], [bx1, by2]]
+                plate_crop = frame[by1:by2, bx1:bx2]
+                if plate_crop.size > 0:
+                    try:
+                        c_gray = cv2.cvtColor(plate_crop, cv2.COLOR_BGR2GRAY)
+                        edges = cv2.Canny(c_gray, 40, 140)
+                        kernel_c = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
+                        edges_dil = cv2.dilate(edges, kernel_c, iterations=1)
+                        c_cnts, _ = cv2.findContours(edges_dil, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                        if not c_cnts:
+                            _, c_thresh = cv2.threshold(c_gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+                            c_cnts, _ = cv2.findContours(c_thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                        if c_cnts:
+                            c_largest = max(c_cnts, key=cv2.contourArea)
+                            if cv2.contourArea(c_largest) > 0.15 * (bw * bh):
+                                rect = cv2.minAreaRect(c_largest)
+                                box_pts = cv2.boxPoints(rect)
+                                box_pts[:, 0] += bx1
+                                box_pts[:, 1] += by1
+                                oriented_box = [[int(pt[0]), int(pt[1])] for pt in box_pts]
+                    except Exception:
+                        pass
+
+                sharpness = compute_crop_sharpness(plate_crop)
                 tracked_rois.append(TrackedPlateROI(
-                    tracking_id=trk.id,
-                    plate_bbox=[x1, y1, x2, y2],
+                    tracking_id=tid,
+                    plate_bbox=[bx1, by1, bx2, by2],
                     vehicle_bbox=[0, 0, orig_w, orig_h],
-                    confidence=trk.confidence,
-                    velocity=[round(vx, 2), round(vy, 2)],
+                    confidence=round(conf, 3),
+                    velocity=[vx, vy],
+                    quality=round(sharpness, 1),
+                    oriented_box=oriented_box,
                 ))
+
+            # Mantener en memoria trackers previos con poca edad que no fueron emparejados en este frame
+            for trk in self._browser_trackers:
+                if trk.id not in matched_tracker_ids:
+                    trk.time_since_update += 1
+                    if trk.time_since_update <= 2:
+                        new_trackers.append(trk)
+                        if trk.hits >= 1:
+                            st = trk.get_state()
+                            bx1 = max(0, min(orig_w - 5, int(st[0])))
+                            by1 = max(0, min(orig_h - 5, int(st[1])))
+                            bx2 = max(bx1 + 5, min(orig_w, int(st[2])))
+                            by2 = max(by1 + 5, min(orig_h, int(st[3])))
+                            tracked_rois.append(TrackedPlateROI(
+                                tracking_id=trk.id,
+                                plate_bbox=[bx1, by1, bx2, by2],
+                                vehicle_bbox=[0, 0, orig_w, orig_h],
+                                confidence=round(trk.confidence, 3),
+                                velocity=[float(trk.kf.statePost[4, 0]), float(trk.kf.statePost[5, 0])],
+                                quality=0.0,
+                                oriented_box=[[bx1, by1], [bx2, by1], [bx2, by2], [bx1, by2]],
+                            ))
+
+            self._browser_trackers = new_trackers
+
         return tracked_rois
 
-    def detect_and_track(self, frame: np.ndarray, imgsz: int = 384) -> list[TrackedPlateROI]:
+    def detect_and_track(self, frame: np.ndarray, imgsz: int = 512) -> list[TrackedPlateROI]:
         """
         Ejecuta detección liviana y seguimiento científico ByteTrack en dos fases.
-        Optimizado para rangos largos (> 2m hasta 10m).
+        Optimizado para rangos largos (> 2m hasta 15m).
         Args:
             frame:  Fotograma BGR de entrada.
-            imgsz:  Resolución de inferencia YOLO. Usar 256 para máxima velocidad en modo navegador,
-                    384 (defecto) para máxima precisión en modo RTSP.
+            imgsz:  Resolución de inferencia YOLO (512 para alta precisión y 130ms de inferencia).
         """
 
         t0 = time.perf_counter()
         orig_h, orig_w = frame.shape[:2]
+
+        # OpenALPR Motion Detection (MOG2) para Zonas de Interés Dinámicas
+        try:
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            fg_mask = self._bg_subtractor.apply(gray)
+            _, fg_thresh = cv2.threshold(fg_mask, 128, 255, cv2.THRESH_BINARY)
+            kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
+            fg_clean = cv2.morphologyEx(fg_thresh, cv2.MORPH_OPEN, kernel)
+            fg_clean = cv2.dilate(fg_clean, kernel, iterations=2)
+            motion_pixels = cv2.countNonZero(fg_clean)
+            self._last_motion_pct = int(min(100, (motion_pixels / float(orig_w * orig_h)) * 100 * 6))
+            contours, _ = cv2.findContours(fg_clean, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            if contours:
+                valid_cnts = [c for c in contours if cv2.contourArea(c) > 1200]
+                if valid_cnts:
+                    all_pts = np.vstack(valid_cnts)
+                    mx, my, mw, mh = cv2.boundingRect(all_pts)
+                    mx = max(0, mx - int(mw * 0.10))
+                    my = max(0, my - int(mh * 0.10))
+                    mw = min(orig_w - mx, int(mw * 1.20))
+                    mh = min(orig_h - my, int(mh * 1.20))
+                    self._last_motion_bbox = [mx, my, mx + mw, my + mh]
+                else:
+                    self._last_motion_bbox = None
+            else:
+                self._last_motion_bbox = None
+        except Exception:
+            pass
 
         # 1. Paso de Predicción del Filtro de Kalman para todos los tracks activos
         predicted_boxes: list[list[float]] = []
@@ -508,7 +868,7 @@ class DetectionPipeline:
         for i in reversed(to_del):
             self._trackers.pop(i)
 
-        # 2. Inferencia YOLO de Alta Velocidad (Single-Pass Unificado a 384px, ~28ms en CPU)
+        # 2. Inferencia YOLO de Alta Precisión (@ 640px nativo)
         det_high_boxes: list[list[float]] = []
         det_high_conf: list[float] = []
         det_low_boxes: list[list[float]] = []
@@ -517,45 +877,67 @@ class DetectionPipeline:
         all_raw_boxes: list[list[float]] = []
         all_raw_confs: list[float] = []
 
+        conf_thresh = min(0.20, max(0.12, PLATE_CONFIDENCE_THRESHOLD))
+        raw_pred_thresh = max(0.08, conf_thresh - 0.08)
         try:
-            with self._model_lock:
-                results = self._plate_model.predict(
-                    frame,
-                    conf=0.35,
-                    verbose=False,
-                    device=self.device,
-                    imgsz=imgsz,  # 256 para browser (2x más rápido), 384 para RTSP (mayor precisión)
-                )[0]
-            boxes_c = results.boxes.xyxy.cpu().numpy()
-            confs_c = results.boxes.conf.cpu().numpy()
-
-            for box, conf in zip(boxes_c, confs_c):
+            raw_detections = self.detector.predict(frame)
+            for d in raw_detections:
+                box = d.bbox
+                conf = d.confidence
                 bw = box[2] - box[0]
                 bh = box[3] - box[1]
                 ar = bw / max(1.0, float(bh))
-                # Filtro geométrico vehicular: las matrículas tienen aspecto rectangular (1.3 a 5.0)
-                if 1.30 <= ar <= 5.0 and bw >= 30 and bh >= 10:
+                if (0.55 <= ar <= 6.5) and bw >= 10 and bh >= 5:
                     all_raw_boxes.append([float(box[0]), float(box[1]), float(box[2]), float(box[3])])
                     all_raw_confs.append(float(conf))
 
-            # Non-Maximum Suppression (NMS) para colapsar sub-cajas y mantener una sola caja por matrícula
+            # Non-Maximum Suppression (NMS) + Supresión por Contención (OpenALPR style)
             if len(all_raw_boxes) > 0:
                 nms_boxes = [[int(b[0]), int(b[1]), int(b[2] - b[0]), int(b[3] - b[1])] for b in all_raw_boxes]
-                indices = cv2.dnn.NMSBoxes(nms_boxes, all_raw_confs, score_threshold=0.35, nms_threshold=0.35)
+                indices = cv2.dnn.NMSBoxes(nms_boxes, all_raw_confs, score_threshold=raw_pred_thresh, nms_threshold=0.35)
                 if len(indices) > 0:
-                    for idx in np.array(indices).flatten():
-                        b = all_raw_boxes[idx]
-                        c = all_raw_confs[idx]
-                        if c >= 0.45:
+                    cand_boxes = [all_raw_boxes[idx] for idx in np.array(indices).flatten()]
+                    cand_confs = [all_raw_confs[idx] for idx in np.array(indices).flatten()]
+
+                    # Supresión de sub-cajas por contención (elimina recortes parciales de letras internas)
+                    areas = [(b[2] - b[0]) * (b[3] - b[1]) for b in cand_boxes]
+                    order = sorted(range(len(cand_boxes)), key=lambda i: areas[i], reverse=True)
+                    keep = []
+                    for i in order:
+                        bi = cand_boxes[i]
+                        ai = areas[i]
+                        is_sub = False
+                        for k in keep:
+                            bk = cand_boxes[k]
+                            ak = areas[k]
+                            x1 = max(bi[0], bk[0])
+                            y1 = max(bi[1], bk[1])
+                            x2 = min(bi[2], bk[2])
+                            y2 = min(bi[3], bk[3])
+                            inter = max(0, x2 - x1) * max(0, y2 - y1)
+                            min_a = min(ai, ak)
+                            if min_a > 0 and (inter / min_a) > 0.60:
+                                is_sub = True
+                                break
+                        if not is_sub:
+                            keep.append(i)
+
+                    for idx in keep:
+                        b = cand_boxes[idx]
+                        c = cand_confs[idx]
+                        if c >= conf_thresh:
                             det_high_boxes.append(b)
                             det_high_conf.append(c)
                         else:
                             det_low_boxes.append(b)
                             det_low_conf.append(c)
         except Exception as e:
-            logger.error("Error en inferencia YOLO de matrículas: %s", e)
+            logger.error("Error en inferencia de matrículas: %s", e)
 
-        # 3. Asociación ByteTrack FASE 1: Detecciones con DIoU (tolerante a movimiento rápido)
+        # 3. Asociación ByteTrack FASE 1: Detecciones con DIoU (tolerante a movimiento rápido).
+        # Umbral -0.25: ahora que compute_diou_matrix descarta por escala inconsistente
+        # (ver compuerta de área), no hace falta relajar más este valor — así se evita
+        # que un track se "pegue" a un objeto distinto que solo coincide en posición.
         matched, unmatched_dets, unmatched_trks = associate_detections_to_trackers(
             det_high_boxes, predicted_boxes, diou_threshold=-0.25
         )
@@ -563,7 +945,9 @@ class DetectionPipeline:
         for d_idx, t_idx in matched:
             self._trackers[t_idx].update(det_high_boxes[d_idx], det_high_conf[d_idx])
 
-        # 4. Asociación ByteTrack FASE 2: Detecciones de Baja Confianza
+        # 4. Asociación ByteTrack FASE 2: Detecciones de Baja Confianza.
+        # Umbral -0.35 (valor original): la compuerta de escala en compute_diou_matrix
+        # ya protege contra emparejamientos con objetos de tamaño incompatible.
         remaining_trk_boxes = [predicted_boxes[i] for i in unmatched_trks]
         matched_2, unmatched_dets_2, unmatched_trks_2 = associate_detections_to_trackers(
             det_low_boxes, remaining_trk_boxes, diou_threshold=-0.35
@@ -594,8 +978,9 @@ class DetectionPipeline:
         new_overlays: list[VisualOverlayBox] = []
 
         for trk in self._trackers:
-            # Seguimiento instantáneo sin requerir que la placa esté inmóvil
-            if (trk.hits >= 1 and trk.confidence >= 0.28) and trk.time_since_update <= 3:
+            # Seguimiento inteligente ITS profesional: usar predicción Kalman cuando no hay detección reciente
+            # Permitir hasta 4 frames de predicción (~130ms a 30 FPS) para seguimiento fluido sin parpadeos
+            if (trk.hits >= 1 and trk.confidence >= 0.18) and trk.time_since_update <= 4:
                 state_box = trk.get_state()
                 x1 = max(0, min(orig_w - 5, int(state_box[0])))
                 y1 = max(0, min(orig_h - 5, int(state_box[1])))
@@ -634,8 +1019,8 @@ class DetectionPipeline:
                 dist_m = (plate_real_m * focal_px) / float(pw)
                 dist_m = float(max(0.5, min(15.0, dist_m)))
 
-                # Rango de Operación Inteligente Extendido (hasta 8.5 metros)
-                in_sweet_spot = (1.0 <= dist_m <= 8.5) or (pw >= 28)
+                # Rango de Operación Inteligente Extendido (hasta 15.0 metros)
+                in_sweet_spot = (0.5 <= dist_m <= 15.0) or (pw >= 16)
 
                 # 7.2. Etiquetas del Bounding Box (Estilo idéntico a la imagen solicitada)
                 if plate_info and plate_info.get("plate"):
@@ -660,6 +1045,31 @@ class DetectionPipeline:
                 _FPS = 30.0
                 vx_px_s = float(trk.kf.statePost[4, 0]) * _FPS
                 vy_px_s = float(trk.kf.statePost[5, 0]) * _FPS
+                # 4 vértices orientados estilo Rekor Scout / OpenALPR
+                oriented_box = [[x1, y1], [x2, y1], [x2, y2], [x1, y2]]
+                plate_crop = frame[y1:y2, x1:x2]
+                if plate_crop.size > 0:
+                    try:
+                        c_gray = cv2.cvtColor(plate_crop, cv2.COLOR_BGR2GRAY)
+                        edges = cv2.Canny(c_gray, 40, 140)
+                        kernel_c = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
+                        edges_dil = cv2.dilate(edges, kernel_c, iterations=1)
+                        c_cnts, _ = cv2.findContours(edges_dil, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                        if not c_cnts:
+                            _, c_thresh = cv2.threshold(c_gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+                            c_cnts, _ = cv2.findContours(c_thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                        if c_cnts:
+                            c_largest = max(c_cnts, key=cv2.contourArea)
+                            if cv2.contourArea(c_largest) > 0.15 * (pw * ph):
+                                rect = cv2.minAreaRect(c_largest)
+                                box_pts = cv2.boxPoints(rect)
+                                box_pts[:, 0] += x1
+                                box_pts[:, 1] += y1
+                                oriented_box = [[int(pt[0]), int(pt[1])] for pt in box_pts]
+                    except Exception:
+                        pass
+
+                sharpness = compute_crop_sharpness(plate_crop)
 
                 roi = TrackedPlateROI(
                     tracking_id=trk.id,
@@ -668,6 +1078,8 @@ class DetectionPipeline:
                     confidence=trk.confidence,
                     trajectory=list(trk.trajectory),
                     velocity=[round(vx_px_s, 2), round(vy_px_s, 2)],
+                    quality=round(sharpness, 1),
+                    oriented_box=oriented_box,
                 )
                 tracked_rois.append(roi)
 
@@ -681,6 +1093,7 @@ class DetectionPipeline:
                     color=box_color,
                     trajectory=list(trk.trajectory),
                     in_sweet_spot=in_sweet_spot,
+                    oriented_box=oriented_box,
                 ))
 
         with self._overlays_lock:
@@ -706,31 +1119,64 @@ class DetectionPipeline:
         inference_fps: float = 0.0,
     ) -> np.ndarray:
         """
-        Dibuja el bounding box exactamente en el formato solicitado:
-        Rectángulo verde brillante (grosor 3) y texto verde nítido directamente encima del borde superior.
+        Dibuja el bounding box en formato industrial Rekor Scout / OpenALPR:
+        - Zona de movimiento MOG2 en verde translúcido
+        - Caja orientada de 4 vértices para inclinación de placa
+        - Badge Glassmorphism oscuro con borde de estado y texto en alta legibilidad
         NUNCA muta el fotograma original en memoria (usa frame.copy()).
         """
         out_frame = frame.copy()
         h, w = out_frame.shape[:2]
+
+        # 0. Zona de Movimiento MOG2 translúcida (OpenALPR / Rekor Scout)
+        if self._last_motion_bbox and self._last_motion_pct > 3:
+            mx1, my1, mx2, my2 = self._last_motion_bbox
+            overlay = out_frame.copy()
+            cv2.rectangle(overlay, (mx1, my1), (mx2, my2), (40, 190, 70), -1)
+            cv2.addWeighted(overlay, 0.18, out_frame, 0.82, 0, out_frame)
+            cv2.rectangle(out_frame, (mx1, my1), (mx2, my2), (40, 200, 70), 1)
 
         with self._overlays_lock:
             overlays = list(self._current_overlays)
 
         for ov in overlays:
             x1, y1, x2, y2 = ov.x1, ov.y1, ov.x2, ov.y2
-            color = ov.color  # (0, 255, 0)
+            color = ov.color
 
-            # 1. Bounding Box principal idéntico a la imagen (verde brillante, grosor 3)
-            cv2.rectangle(out_frame, (x1, y1), (x2, y2), color, 3)
+            # 1. Bounding Box orientado de 4 puntos si existe inclinación, o rectángulo
+            if ov.oriented_box and len(ov.oriented_box) == 4:
+                pts = np.int32(ov.oriented_box)
+                cv2.polylines(out_frame, [pts], isClosed=True, color=color, thickness=2, lineType=cv2.LINE_AA)
+            else:
+                cv2.rectangle(out_frame, (x1, y1), (x2, y2), color, 2)
 
-            # 2. Etiqueta de texto verde directamente arriba del borde superior izquierdo
+            # 2. Insignia flotante oscura con borde del color del track
+            badge_text = f" {ov.label} "
+            (tw, th), baseline = cv2.getTextSize(badge_text, cv2.FONT_HERSHEY_SIMPLEX, 0.55, 2)
+            badge_x = max(10, min(w - tw - 10, x1))
+            badge_y = max(th + 10, y1 - 8)
+
+            cv2.rectangle(
+                out_frame,
+                (badge_x - 4, badge_y - th - 4),
+                (badge_x + tw + 4, badge_y + baseline + 2),
+                (25, 25, 25),
+                -1,
+            )
+            cv2.rectangle(
+                out_frame,
+                (badge_x - 4, badge_y - th - 4),
+                (badge_x + tw + 4, badge_y + baseline + 2),
+                color,
+                1,
+            )
             cv2.putText(
                 out_frame,
-                ov.label,
-                (x1, max(24, y1 - 10)),
+                badge_text,
+                (badge_x, badge_y),
                 cv2.FONT_HERSHEY_SIMPLEX,
-                0.72,
-                color,
+                0.55,
+                (255, 255, 255),
                 2,
                 cv2.LINE_AA,
             )
@@ -753,3 +1199,69 @@ class DetectionPipeline:
         )
 
         return out_frame
+
+
+def create_detection_pipeline(
+    detector: Optional[BaseDetector] = None,
+    browser_detector: Optional[BaseDetector] = None,
+) -> DetectionPipeline:
+    """
+    Factory unificada que resuelve la configuración del entorno y devuelve un
+    DetectionPipeline listo para producción.
+    
+    Punto de acoplamiento único entre el entorno (variables de configuración,
+    pesos de modelos, dispositivo GPU/CPU) y el pipeline desacoplado.
+    Permite además inyectar detectores mock o personalizados para testing.
+    """
+    if detector is not None:
+        return DetectionPipeline(detector=detector, browser_detector=browser_detector)
+
+    from app.config import (
+        PLATE_MODEL_PATH,
+        YOLO_MODEL_PATH,
+        PLATE_CONFIDENCE_THRESHOLD,
+    )
+    import torch
+
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    num_threads = min(4, max(2, (os.cpu_count() or 4) // 2))
+    try:
+        torch.set_num_threads(num_threads)
+    except Exception:
+        pass
+
+    # Búsqueda robusta del modelo específico de placas (evitar fallback a modelo genérico COCO)
+    core_dir = os.path.dirname(os.path.abspath(__file__))
+    candidates = [
+        PLATE_MODEL_PATH,
+        os.path.join("services", "anpr", PLATE_MODEL_PATH),
+        os.path.normpath(os.path.join(core_dir, "..", "..", PLATE_MODEL_PATH)),
+        os.path.normpath(os.path.join(core_dir, "..", "..", "models", "license_plate_detector.pt")),
+        os.path.join("/app", PLATE_MODEL_PATH),
+        os.path.join("/app", "models", "license_plate_detector.pt"),
+    ]
+    model_path = next((p for p in candidates if p and os.path.exists(p)), None)
+    if not model_path:
+        logger.warning("No se encontró license_plate_detector.pt, usando fallback: %s", YOLO_MODEL_PATH)
+        model_path = YOLO_MODEL_PATH
+    else:
+        logger.info("Modelo de placas detectado correctamente en: %s", model_path)
+
+    conf_thresh = min(0.20, max(0.12, PLATE_CONFIDENCE_THRESHOLD))
+    raw_thresh = max(0.08, conf_thresh - 0.08)
+    browser_conf = min(0.12, max(0.07, PLATE_CONFIDENCE_THRESHOLD - 0.08))
+
+    # Detector principal (loop RTSP @ 512px)
+    rtsp_det = create_detector(
+        model_path, confidence=raw_thresh, device=device, imgsz=512
+    )
+    rtsp_det.warmup()
+
+    # Detector browser (@ 512px para máxima agudeza visual a distancias largas)
+    browser_det = create_detector(
+        model_path, confidence=browser_conf, device=device, imgsz=512
+    )
+    browser_det.warmup()
+
+    logger.info("Detectores YOLO creados [RTSP=512px / Browser=512px (Distancia)] en device=%s", device)
+    return DetectionPipeline(detector=rtsp_det, browser_detector=browser_det)

@@ -52,8 +52,15 @@ services/anpr/media/*.jpg
 services/anpr/media/*.png
 services/anpr/media/*.jpeg
 !services/anpr/media/.gitkeep
+services/anpr/*.jpg
+services/anpr/*.png
+services/anpr/*.jpeg
 scratch/
 **/scratch/
+
+# Models & Weights
+yolo11n.pt
+*.weights
 
 # Environment Variables
 .env.local
