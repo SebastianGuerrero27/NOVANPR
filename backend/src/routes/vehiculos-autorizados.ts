@@ -10,18 +10,32 @@ import { Router, Request, Response } from 'express';
 import sql from 'mssql';
 import { getDB } from '../config/db';
 import { authMiddleware, roleMiddleware } from '../middlewares/auth';
+import { cacheHelper } from '../services/cache';
 
 const router = Router();
 
 // ─────────────────────────────────────────────────────────────────────────────
-// GET /api/vehiculos-autorizados — Listar vehículos autorizados activos
+// GET /api/vehiculos-autorizados — Listar vehículos autorizados activos (con caché)
 // ─────────────────────────────────────────────────────────────────────────────
 router.get('/', authMiddleware, async (req: Request, res: Response) => {
   try {
+    // Intentar obtener del caché primero
+    const cached = await cacheHelper.getAuthorizedVehicles();
+    if (cached) {
+      return res.json(cached);
+    }
+
+    // Si no está en caché, consultar la base de datos
     const db = getDB();
     const result = await db.request()
       .query('SELECT * FROM VehiculosAutorizados WHERE activo = 1 ORDER BY fecha_registro DESC');
-    return res.json(result.recordset);
+    
+    const vehicles = result.recordset;
+    
+    // Guardar en caché por 5 minutos
+    await cacheHelper.setAuthorizedVehicles(vehicles, 300);
+    
+    return res.json(vehicles);
   } catch (error: any) {
     console.error('[WHITELIST] Error al obtener vehículos autorizados:', error.message);
     return res.status(500).json({ error: 'Error al consultar la lista de vehículos autorizados.' });
@@ -67,6 +81,9 @@ router.post('/', authMiddleware, roleMiddleware(['Admin']), async (req: Request,
             OUTPUT inserted.*
             WHERE id = @id
           `);
+        // Invalidar caché de vehículos autorizados
+        await cacheHelper.invalidateAuthorizedVehicles();
+
         return res.status(200).json({
           message: 'Vehículo reactivado en la lista de autorizados.',
           vehiculo: reactivate.recordset[0]
@@ -85,6 +102,9 @@ router.post('/', authMiddleware, roleMiddleware(['Admin']), async (req: Request,
         OUTPUT inserted.*
         VALUES (@placa, @propietario, @departamento, @tipo, 1, GETDATE())
       `);
+
+    // Invalidar caché de vehículos autorizados
+    await cacheHelper.invalidateAuthorizedVehicles();
 
     return res.status(201).json({
       message: 'Vehículo registrado como autorizado exitosamente.',
@@ -111,6 +131,9 @@ router.delete('/:id', authMiddleware, roleMiddleware(['Admin']), async (req: Req
     if (result.rowsAffected[0] === 0) {
       return res.status(404).json({ error: 'Vehículo autorizado no encontrado.' });
     }
+
+    // Invalidar caché de vehículos autorizados
+    await cacheHelper.invalidateAuthorizedVehicles();
 
     return res.json({ message: 'Vehículo retirado de la lista de autorizados.' });
   } catch (error: any) {

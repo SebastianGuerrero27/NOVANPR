@@ -42,6 +42,14 @@ PLATE_MODEL_PATH: str = os.getenv("PLATE_MODEL_PATH", "models/license_plate_dete
 YOLO_CONFIDENCE_THRESHOLD: float = float(os.getenv("YOLO_CONFIDENCE_THRESHOLD", "0.45"))
 PLATE_CONFIDENCE_THRESHOLD: float = float(os.getenv("PLATE_CONFIDENCE_THRESHOLD", "0.22"))
 
+# =============================================================================
+# Optimización de Modelos (Cuantización)
+# =============================================================================
+ENABLE_MODEL_QUANTIZATION: bool = os.getenv("ENABLE_MODEL_QUANTIZATION", "false").lower() in ("true", "1", "yes")
+QUANTIZATION_TYPE: str = os.getenv("QUANTIZATION_TYPE", "fp16")  # "int8", "fp16", "tensorrt"
+QUANTIZED_MODEL_PATH: str = os.getenv("QUANTIZED_MODEL_PATH", "models/yolo11n_fp16.pt")
+QUANTIZED_PLATE_MODEL_PATH: str = os.getenv("QUANTIZED_PLATE_MODEL_PATH", "models/license_plate_detector_fp16.pt")
+
 # Rangos normativos de Relación de Aspecto (Aspect Ratio) - ANT Ecuador
 # Autos/Camionetas: 404x140mm (AR ~ 2.89) o Mercosur/Latam (AR ~ 2.0)
 CAR_PLATE_AR_MIN: float = float(os.getenv("CAR_PLATE_AR_MIN", "1.75"))

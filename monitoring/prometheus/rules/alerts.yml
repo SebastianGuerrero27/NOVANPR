@@ -1,0 +1,177 @@
+# Reglas de Alerta para el Sistema ANPR
+# ECU 911 Zona 3 - Ambato
+
+groups:
+  - name: anpr_alerts
+    interval: 30s
+    rules:
+      # Alerta: Servicio Backend caído
+      - alert: BackendServiceDown
+        expr: up{job="anpr-backend"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          service: backend
+        annotations:
+          summary: "Servicio Backend caído"
+          description: "El servicio backend no ha respondido por más de 1 minuto"
+
+      # Alerta: Servicio ANPR caído
+      - alert: ANPRServiceDown
+        expr: up{job="anpr-service"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          service: anpr
+        annotations:
+          summary: "Servicio ANPR caído"
+          description: "El servicio de inferencia ANPR no ha respondido por más de 1 minuto"
+
+      # Alerta: Redis caído
+      - alert: RedisServiceDown
+        expr: up{job="redis"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          service: redis
+        annotations:
+          summary: "Servicio Redis caído"
+          description: "El servicio Redis no ha respondido por más de 1 minuto"
+
+      # Alerta: Alta latencia en Backend
+      - alert: HighBackendLatency
+        expr: http_request_duration_seconds{quantile="0.95"} > 1
+        for: 5m
+        labels:
+          severity: warning
+          service: backend
+        annotations:
+          summary: "Alta latencia en Backend"
+          description: "La latencia del 95º percentil en el backend es superior a 1 segundo"
+
+      # Alerta: Alta tasa de errores en Backend
+      - alert: HighBackendErrorRate
+        expr: rate(http_requests_total{status=~"5.."}[5m]) > 0.05
+        for: 5m
+        labels:
+          severity: warning
+          service: backend
+        annotations:
+          summary: "Alta tasa de errores en Backend"
+          description: "La tasa de errores 5xx en el backend es superior al 5%"
+
+      # Alerta: Alta latencia en ANPR
+      - alert: HighANPRLatency
+        expr: anpr_inference_duration_seconds{quantile="0.95"} > 2
+        for: 5m
+        labels:
+          severity: warning
+          service: anpr
+        annotations:
+          summary: "Alta latencia en inferencia ANPR"
+          description: "La latencia del 95º percentil en inferencia ANPR es superior a 2 segundos"
+
+      # Alerta: Bajo FPS en ANPR
+      - alert: LowANPRFPS
+        expr: anpr_fps < 20
+        for: 2m
+        labels:
+          severity: warning
+          service: anpr
+        annotations:
+          summary: "Bajo FPS en ANPR"
+          description: "El FPS del servicio ANPR es inferior a 20"
+
+      # Alerta: Alta memoria en Backend
+      - alert: HighBackendMemory
+        expr: process_resident_memory_bytes{job="anpr-backend"} / 1024 / 1024 > 1024
+        for: 5m
+        labels:
+          severity: warning
+          service: backend
+        annotations:
+          summary: "Alta memoria en Backend"
+          description: "El uso de memoria del backend supera 1 GB"
+
+      # Alerta: Alta CPU en Backend
+      - alert: HighBackendCPU
+        expr: rate(process_cpu_seconds_total{job="anpr-backend"}[5m]) > 0.8
+        for: 5m
+        labels:
+          severity: warning
+          service: backend
+        annotations:
+          summary: "Alta CPU en Backend"
+          description: "El uso de CPU del backend supera el 80%"
+
+      # Alerta: Redis memoria alta
+      - alert: HighRedisMemory
+        expr: redis_memory_used_bytes / redis_memory_max_bytes > 0.9
+        for: 5m
+        labels:
+          severity: warning
+          service: redis
+        annotations:
+          summary: "Alta memoria en Redis"
+          description: "El uso de memoria de Redis supera el 90%"
+
+      # Alerta: Bajo hit ratio de caché
+      - alert: LowCacheHitRatio
+        expr: rate(cache_hits_total[5m]) / (rate(cache_hits_total[5m]) + rate(cache_misses_total[5m])) < 0.5
+        for: 10m
+        labels:
+          severity: info
+          service: redis
+        annotations:
+          summary: "Bajo hit ratio de caché"
+          description: "El hit ratio del caché es inferior al 50%"
+
+  - name: database_alerts
+    interval: 30s
+    rules:
+      # Alerta: Alta latencia en SQL Server
+      - alert: HighDatabaseLatency
+        expr: sql_query_duration_seconds{quantile="0.95"} > 1
+        for: 5m
+        labels:
+          severity: warning
+          service: database
+        annotations:
+          summary: "Alta latencia en base de datos"
+          description: "La latencia del 95º percentil en SQL Server es superior a 1 segundo"
+
+      # Alerta: Conexiones de BD agotadas
+      - alert: DatabaseConnectionPoolExhausted
+        expr: sql_connections_active / sql_connections_max > 0.9
+        for: 5m
+        labels:
+          severity: critical
+          service: database
+        annotations:
+          summary: "Pool de conexiones de BD agotado"
+          description: "El pool de conexiones de SQL Server está al 90% de capacidad"
+
+  - name: system_alerts
+    interval: 30s
+    rules:
+      # Alerta: Disco lleno
+      - alert: DiskSpaceLow
+        expr: (node_filesystem_avail_bytes{mountpoint="/"} / node_filesystem_size_bytes{mountpoint="/"}) < 0.1
+        for: 5m
+        labels:
+          severity: critical
+          service: system
+        annotations:
+          summary: "Espacio en disco bajo"
+          description: "El espacio disponible en disco es inferior al 10%"
+
+      # Alerta: Alta carga del sistema
+      - alert: HighSystemLoad
+        expr: node_load1 > 2
+        for: 5m
+        labels:
+          severity: warning
+          service: system
+        annotations:
+          summary: "Alta carga del sistema"
+          description: "La carga promedio del sistema es superior a 2"

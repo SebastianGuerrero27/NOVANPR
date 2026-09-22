@@ -53,6 +53,15 @@ from app.services.debug_stream import (
 )
 from app.core.ecuador_plate_validator import validate_ecuadorian_plate
 from app.services.ocr_worker import AsyncOcrWorker, OcrTask
+from app.services.metrics import (
+    update_fps,
+    record_detection,
+    record_plate_recognized,
+    update_tracking_active,
+    record_detection_confidence,
+    record_ocr_confidence,
+    get_metrics,
+)
 from app.utils.logger import get_logger
 
 logger = get_logger("main")
@@ -135,7 +144,9 @@ def _enqueue_browser_ocr(tracking_id: int, frame_copy: np.ndarray, plate_bbox: l
     with _ocr_lock:
         if browser_key in _ocr_in_flight:
             return
-        if now - _ocr_last_attempt.get(browser_key, 0.0) < 0.15:
+        # Re-escaneo continuo a 0.5s: refresca el consenso conforme el auto avanza
+        # y la placa cambia de ángulo, distancia o nitidez (no bloquear si ya hay placa).
+        if now - _ocr_last_attempt.get(browser_key, 0.0) < 0.50:
             return
         _ocr_in_flight.add(browser_key)
         _ocr_last_attempt[browser_key] = now
@@ -692,10 +703,12 @@ async def websocket_webcam_endpoint(websocket: WebSocket):
                     # get_browser_track_info lee del namespace aislado del navegador,
                     # evitando que lecturas del loop RTSP contaminen los labels del browser.
                     info = _pipeline.get_browser_track_info(r.tracking_id)
-                    if not info.get("plate"):
-                        bx1, by1, bx2, by2 = r.plate_bbox
-                        if (bx2 - bx1) >= 16 and (by2 - by1) >= 6:
-                            _enqueue_browser_ocr(r.tracking_id, frame.copy(), r.plate_bbox)
+                    bx1, by1, bx2, by2 = r.plate_bbox
+                    if (bx2 - bx1) >= 16 and (by2 - by1) >= 6:
+                        # OCR continuo en tiempo real: se re-escanea mientras la placa
+                        # está activa para refinar el consenso conforme el auto avanza.
+                        # La compuerta de cooldown (0.5s) está en _enqueue_browser_ocr.
+                        _enqueue_browser_ocr(r.tracking_id, frame.copy(), r.plate_bbox)
                     rois_data.append({
                         "tracking_id": r.tracking_id,
                         "confidence": round(r.confidence, 3),
@@ -727,11 +740,12 @@ async def websocket_webcam_endpoint(websocket: WebSocket):
                     for cand in exited:
                         _trigger_photo_capture(cand, _ocr_worker)
 
-                motion_bbox, motion_pct = _pipeline.get_motion_info() if _pipeline else (None, 0)
+                motion_bbox, motion_pct, motion_vehicle = _pipeline.get_motion_info() if _pipeline else (None, 0, False)
                 await websocket.send_json({
                     "rois": rois_data,
                     "motion_bbox": motion_bbox,
                     "motion_pct": motion_pct,
+                    "motion_vehicle_detected": motion_vehicle,
                 })
             except Exception as e:
                 logger.debug("Error en detección webcam WS: %s", e)
@@ -891,6 +905,13 @@ def get_status():
     }
 
 
+@app.get("/metrics")
+def get_prometheus_metrics():
+    """Endpoint de métricas Prometheus."""
+    from fastapi.responses import Response
+    return Response(content=get_metrics(), media_type="text/plain")
+
+
 @app.post("/process/frame")
 @app.post("/api/process/frame")
 async def process_browser_frame(file: UploadFile = File(...)):
@@ -955,7 +976,7 @@ async def process_browser_frame(file: UploadFile = File(...)):
             for cand in exited:
                 _trigger_photo_capture(cand, _ocr_worker)
 
-        motion_bbox, motion_pct = _pipeline.get_motion_info() if _pipeline else (None, 0)
+        motion_bbox, motion_pct, motion_vehicle = _pipeline.get_motion_info() if _pipeline else (None, 0, False)
         rois_data = []
         for r in tracked_rois:
             info = _pipeline.get_browser_track_info(r.tracking_id) if _pipeline else {}
@@ -987,6 +1008,7 @@ async def process_browser_frame(file: UploadFile = File(...)):
             "rois": rois_data,
             "motion_bbox": motion_bbox,
             "motion_pct": motion_pct,
+            "motion_vehicle_detected": motion_vehicle,
         }
 
     except Exception as e:

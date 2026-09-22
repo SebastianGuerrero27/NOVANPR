@@ -2,16 +2,30 @@ import { Router, Request, Response } from 'express';
 import sql from 'mssql';
 import { getDB } from '../config/db';
 import { authMiddleware, roleMiddleware } from '../middlewares/auth';
+import { cacheHelper } from '../services/cache';
 
 const router = Router();
 
-// GET /api/blacklist - Listar vehículos en lista negra
+// GET /api/blacklist - Listar vehículos en lista negra (con caché)
 router.get('/', authMiddleware, async (req: Request, res: Response) => {
   try {
+    // Intentar obtener del caché primero
+    const cached = await cacheHelper.getBlacklist();
+    if (cached) {
+      return res.json(cached);
+    }
+
+    // Si no está en caché, consultar la base de datos
     const db = getDB();
     const result = await db.request()
       .query('SELECT * FROM ListaNegra WHERE activo = 1 ORDER BY fecha_registro DESC');
-    return res.json(result.recordset);
+    
+    const blacklist = result.recordset;
+    
+    // Guardar en caché por 5 minutos
+    await cacheHelper.setBlacklist(blacklist, 300);
+    
+    return res.json(blacklist);
   } catch (error: any) {
     console.error('[BLACKLIST] Error al obtener lista negra:', error.message);
     return res.status(500).json({ error: 'Error al obtener registros de la lista negra.' });
@@ -67,6 +81,9 @@ router.post('/', authMiddleware, roleMiddleware(['Admin']), async (req: Request,
         VALUES (@placa, @motivo, @nivel, 1, GETDATE())
       `);
 
+    // Invalidar caché de lista negra
+    await cacheHelper.invalidateBlacklist();
+
     return res.status(201).json({ message: 'Vehículo agregado a la lista negra con éxito.', item: result.recordset[0] });
   } catch (error: any) {
     console.error('[BLACKLIST] Error al guardar en lista negra:', error.message);
@@ -87,6 +104,9 @@ router.delete('/:id', authMiddleware, roleMiddleware(['Admin']), async (req: Req
     if (result.rowsAffected[0] === 0) {
       return res.status(404).json({ error: 'Registro de lista negra no encontrado.' });
     }
+
+    // Invalidar caché de lista negra
+    await cacheHelper.invalidateBlacklist();
 
     return res.json({ message: 'Vehículo eliminado de la lista negra con éxito.' });
   } catch (error: any) {
