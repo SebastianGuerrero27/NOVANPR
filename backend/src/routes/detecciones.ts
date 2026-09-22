@@ -3,6 +3,7 @@ import sql from 'mssql';
 import { getDB } from '../config/db';
 import { authMiddleware } from '../middlewares/auth';
 import { emitEvent } from '../services/socket';
+import { findAuthorizedExact, findBlacklistMatch } from '../services/plateMatching';
 
 const router = Router();
 
@@ -280,41 +281,22 @@ router.post('/completar-ocr', async (req: Request, res: Response) => {
       tipoVehiculoInferido = 'Motocicleta';
     }
 
-    // 1. Cruce con Lista Negra (Máxima Prioridad)
-    const blacklistReq = db.request();
-    blacklistReq.input('placaRaw', sql.VarChar, cleanPlaca);
-    blacklistReq.input('placaClean', sql.VarChar, normalizedPlaca);
+    // 1. Cruce con Lista Negra (Máxima Prioridad). Tolerante a errores de OCR:
+    // una coincidencia aproximada también alerta, marcada para confirmación del operador.
+    const blacklistMatch = await findBlacklistMatch(db, normalizedPlaca);
 
-    const blacklistResult = await blacklistReq.query(`
-      SELECT TOP 1 id, motivo, nivel_alerta
-      FROM ListaNegra
-      WHERE activo = 1 AND (REPLACE(placa, '-', '') = @placaClean OR placa = @placaRaw)
-    `);
-
-    if (blacklistResult.recordset.length > 0) {
+    if (blacklistMatch) {
       estadoValidacion = 'alerta';
-      alertaId = blacklistResult.recordset[0].id;
-      alertaInfo = blacklistResult.recordset[0];
+      alertaId = blacklistMatch.row.id;
+      alertaInfo = { ...blacklistMatch.row, coincidencia: blacklistMatch.coincidencia };
     } else {
-      // 2. Cruce con Vehículos Autorizados (Whitelist con recuperación de oclusión)
-      const whitelistReq = db.request();
-      whitelistReq.input('placaRaw', sql.VarChar, cleanPlaca);
-      whitelistReq.input('placaClean', sql.VarChar, normalizedPlaca);
+      // 2. Cruce con Vehículos Autorizados: solo coincidencia exacta (un error de OCR no concede acceso)
+      const autorizado = await findAuthorizedExact(db, normalizedPlaca);
 
-      const whitelistResult = await whitelistReq.query(`
-        SELECT TOP 1 id, placa, propietario, departamento, tipo_vehiculo
-        FROM VehiculosAutorizados
-        WHERE activo = 1 AND (
-          REPLACE(placa, '-', '') = @placaClean 
-          OR placa = @placaRaw
-          OR (@placaClean != '' AND LEN(@placaClean) >= 5 AND REPLACE(placa, '-', '') LIKE '%' + @placaClean)
-        )
-      `);
-
-      if (whitelistResult.recordset.length > 0) {
+      if (autorizado) {
         estadoValidacion = 'autorizado';
-        vehiculoAutorizadoId = whitelistResult.recordset[0].id;
-        autorizadoInfo = whitelistResult.recordset[0];
+        vehiculoAutorizadoId = autorizado.id;
+        autorizadoInfo = autorizado;
         if (autorizadoInfo.placa) {
           cleanPlaca = autorizadoInfo.placa;
         }
@@ -737,18 +719,14 @@ router.post('/validar/:id', async (req: Request, res: Response) => {
       alertaId = blacklistRes.recordset[0].id;
       alertaInfo = blacklistRes.recordset[0];
     } else {
-      // 2. Cruce con Vehículos Autorizados (con tolerancia a oclusión)
+      // 2. Cruce con Vehículos Autorizados (coincidencia exacta)
       const whitelistReq = db.request();
       whitelistReq.input('placaRaw', sql.VarChar, cleanPlaca);
       whitelistReq.input('placaClean', sql.VarChar, normalizedPlaca);
       const whitelistRes = await whitelistReq.query(`
-        SELECT TOP 1 id, placa, propietario, departamento, tipo_vehiculo 
-        FROM VehiculosAutorizados 
-        WHERE activo = 1 AND (
-          REPLACE(placa, '-', '') = @placaClean 
-          OR placa = @placaRaw
-          OR (@placaClean != '' AND LEN(@placaClean) >= 5 AND REPLACE(placa, '-', '') LIKE '%' + @placaClean)
-        )
+        SELECT TOP 1 id, placa, propietario, departamento, tipo_vehiculo
+        FROM VehiculosAutorizados
+        WHERE activo = 1 AND (REPLACE(placa, '-', '') = @placaClean OR placa = @placaRaw)
       `);
 
       if (whitelistRes.recordset.length > 0) {

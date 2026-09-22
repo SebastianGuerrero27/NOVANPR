@@ -40,7 +40,7 @@ from app.config import (
     WEBCAM_INDEX,
     RTSP_URL,
 )
-from app.core.detector import DetectionPipeline, create_detection_pipeline
+from app.core.detector import DetectionPipeline, compute_crop_sharpness, create_detection_pipeline
 from app.core.frame_selector import BestFrameSelector
 from app.core.ocr_engine import create_ocr_engine
 from app.core.video_source import RTSPSource, VideoSource, WebcamSource, create_video_source
@@ -94,6 +94,16 @@ _running = False
 _capture_fps: float = 0.0
 
 
+def _bbox_sharpness(frame: np.ndarray, plate_bbox: list[int]) -> Optional[float]:
+    """Nitidez (varianza del Laplaciano) del recorte de placa, en la misma escala que el filtro del tracker."""
+    try:
+        x1, y1, x2, y2 = [int(v) for v in plate_bbox]
+        h, w = frame.shape[:2]
+        return compute_crop_sharpness(frame[max(0, y1):min(h, y2), max(0, x1):min(w, x2)])
+    except Exception:
+        return None
+
+
 def _enqueue_async_ocr(tracking_id: int, frame_copy: np.ndarray, plate_bbox: list[int]) -> None:
     """
     Ejecuta el OCR en un pool asíncrono desacoplado con cooldown por track.
@@ -115,12 +125,13 @@ def _enqueue_async_ocr(tracking_id: int, frame_copy: np.ndarray, plate_bbox: lis
             if worker and getattr(worker, "_agent", None) and pipeline:
                 res = worker._agent.process_image(frame_copy, plate_bbox, fast_mode=True)
                 if res.placa:
-                    status = "autorizado" if res.estado == "procesado" else "escaneando"
+                    status = "leida" if res.estado == "procesado" else "escaneando"
                     pipeline.update_track_plate(
                         tracking_id,
                         res.placa,
                         res.confianza,
                         status,
+                        quality=_bbox_sharpness(frame_copy, plate_bbox),
                     )
         except Exception as e:
             logger.warning("Aviso en OCR asíncrono para track #%d: %s", tracking_id, e)
@@ -158,12 +169,13 @@ def _enqueue_browser_ocr(tracking_id: int, frame_copy: np.ndarray, plate_bbox: l
             if worker and getattr(worker, "_agent", None) and pipeline:
                 res = worker._agent.process_image(frame_copy, plate_bbox, fast_mode=True)
                 if res.placa:
-                    status = "autorizado" if res.estado == "procesado" else "escaneando"
+                    status = "leida" if res.estado == "procesado" else "escaneando"
                     pipeline.update_browser_track_plate(
                         tracking_id,
                         res.placa,
                         res.confianza,
                         status,
+                        quality=_bbox_sharpness(frame_copy, plate_bbox),
                     )
         except Exception as e:
             logger.warning("Aviso en OCR browser asíncrono para track #%d: %s", tracking_id, e)
@@ -427,6 +439,32 @@ def _trigger_photo_capture(candidate, ocr_worker: AsyncOcrWorker) -> None:
                         verified_plate = fmt_p
                         verified_conf = max(deep_res.confianza, val_score)
 
+            # Consenso temporal: la lectura profunda de este fotograma se suma como un voto
+            # más al consenso del track (lecturas de varios frames), en lugar de reemplazarlo.
+            # Así un único frame mal leído no decide la placa registrada.
+            if pipeline and verified_plate:
+                use_browser = bool(info_browser)
+                add_vote = pipeline.update_browser_track_plate if use_browser else pipeline.update_track_plate
+                get_info = pipeline.get_browser_track_info if use_browser else pipeline.get_track_info
+                add_vote(
+                    tracking_id,
+                    verified_plate,
+                    verified_conf,
+                    "",
+                    quality=_bbox_sharpness(frame_copy, candidate.plate_bbox),
+                )
+                consensus = get_info(tracking_id)
+                consensus_plate = consensus.get("plate", "")
+                if consensus_plate and consensus_plate != verified_plate.replace("-", "").upper():
+                    is_val, fmt_p, _ = validate_ecuadorian_plate(consensus_plate)
+                    if is_val:
+                        logger.info(
+                            "[CONSENSO] Track #%d | lectura del frame '%s' reemplazada por consenso multi-frame '%s'",
+                            tracking_id, verified_plate, fmt_p,
+                        )
+                        verified_plate = fmt_p
+                        verified_conf = float(consensus.get("confidence", verified_conf))
+
             # Consenso con la lectura preliminar si deep_res no obtuvo certeza total
             if not verified_plate and preliminary_plate:
                 is_val, fmt_p, val_score = validate_ecuadorian_plate(preliminary_plate)
@@ -476,10 +514,11 @@ def _trigger_photo_capture(candidate, ocr_worker: AsyncOcrWorker) -> None:
                 for p in stale_keys:
                     _recent_plates_committed.pop(p, None)
 
-            # Confirmar en ambos namespaces del tracker
+            # Marcar el track como confirmado (el estado autorizado/alerta lo decide el backend
+            # al cruzar con las listas; aquí solo se indica que la placa ya fue registrada).
             if pipeline:
-                pipeline.update_track_plate(tracking_id, verified_plate, verified_conf, "autorizado")
-                pipeline.update_browser_track_plate(tracking_id, verified_plate, verified_conf, "autorizado")
+                pipeline.update_track_plate(tracking_id, "", 0.0, "confirmada")
+                pipeline.update_browser_track_plate(tracking_id, "", 0.0, "confirmada")
 
             # 4. Confirmado como vehículo/motocicleta real: Guardar evidencia fotográfica
             ts_str = time.strftime("%Y%m%d_%H%M%S")

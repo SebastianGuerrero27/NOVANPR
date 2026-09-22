@@ -92,6 +92,18 @@ def is_valid_ecuador_plate(raw_text: str) -> bool:
     return bool(_PLATE_PATTERN_CAR.match(clean) or _PLATE_PATTERN_MOTO.match(clean))
 
 
+def byte_track_thresholds() -> tuple[float, float]:
+    """
+    Umbrales de ByteTrack derivados de PLATE_CONFIDENCE_THRESHOLD (.env):
+      - alto: detecciones que crean y actualizan tracks (fase 1).
+      - bajo: detecciones débiles que solo rescatan tracks existentes (fase 2).
+    Antes el valor configurado se forzaba al rango [0.12, 0.20] y se ignoraba.
+    """
+    high = float(PLATE_CONFIDENCE_THRESHOLD)
+    low = min(high, max(0.05, high * 0.25))
+    return high, low
+
+
 def compute_crop_sharpness(crop: np.ndarray) -> float:
     """
     Calcula la nitidez de un recorte mediante la varianza del Laplaciano
@@ -622,7 +634,7 @@ class DetectionPipeline:
     def detect_fast(self, frame: np.ndarray) -> list[TrackedPlateROI]:
         """
         Detección ultra-rápida y directa para frames del navegador.
-        - Sensibilidad optimizada para distancias cortas y largas (conf >= 0.14).
+        - Umbral de confianza tomado de PLATE_CONFIDENCE_THRESHOLD (.env).
         - Filtro geométrico amplio para permitir placas inclinadas y de cerca (0.55 <= AR <= 6.5).
         - Mantiene la identidad del tracker estable mediante asociación por distancia adaptativa e IoU.
         - Retorna las matrículas detectadas en el fotograma actual.
@@ -657,7 +669,7 @@ class DetectionPipeline:
             self._last_motion_bbox = None
             self._last_motion_pct = 0
 
-        conf_thresh = 0.14
+        conf_thresh, _ = byte_track_thresholds()
         det_boxes: list[list[float]] = []
         det_confs: list[float] = []
 
@@ -924,8 +936,7 @@ class DetectionPipeline:
         all_raw_boxes: list[list[float]] = []
         all_raw_confs: list[float] = []
 
-        conf_thresh = min(0.20, max(0.12, PLATE_CONFIDENCE_THRESHOLD))
-        raw_pred_thresh = max(0.08, conf_thresh - 0.08)
+        conf_thresh, raw_pred_thresh = byte_track_thresholds()
         try:
             raw_detections = self.detector.predict(frame)
             for d in raw_detections:
@@ -1038,7 +1049,7 @@ class DetectionPipeline:
         for trk in self._trackers:
             # Seguimiento inteligente ITS profesional: usar predicción Kalman cuando no hay detección reciente
             # Permitir hasta 4 frames de predicción (~130ms a 30 FPS) para seguimiento fluido sin parpadeos
-            if (trk.hits >= 1 and trk.confidence >= 0.18) and trk.time_since_update <= 4:
+            if (trk.hits >= 1 and trk.confidence >= raw_pred_thresh) and trk.time_since_update <= 4:
                 state_box = trk.get_state()
                 x1 = max(0, min(orig_w - 5, int(state_box[0])))
                 y1 = max(0, min(orig_h - 5, int(state_box[1])))
@@ -1318,9 +1329,8 @@ def create_detection_pipeline(
     else:
         logger.info("Modelo de placas detectado correctamente en: %s", model_path)
 
-    conf_thresh = min(0.20, max(0.12, PLATE_CONFIDENCE_THRESHOLD))
-    raw_thresh = max(0.08, conf_thresh - 0.08)
-    browser_conf = min(0.12, max(0.07, PLATE_CONFIDENCE_THRESHOLD - 0.08))
+    _, raw_thresh = byte_track_thresholds()
+    browser_conf = raw_thresh
 
     # Detector principal (loop RTSP @ 512px)
     rtsp_det = create_detector(

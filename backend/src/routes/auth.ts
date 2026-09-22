@@ -3,10 +3,9 @@ import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import sql from 'mssql';
 import { getDB } from '../config/db';
-import { authMiddleware } from '../middlewares/auth';
+import { authMiddleware, JWT_SECRET } from '../middlewares/auth';
 
 const router = Router();
-const JWT_SECRET = process.env.JWT_SECRET || 'ecu911_super_secret_token_key_2026';
 
 // POST /api/auth/login
 router.post('/login', async (req: Request, res: Response) => {

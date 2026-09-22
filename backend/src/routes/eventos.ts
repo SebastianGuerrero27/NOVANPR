@@ -3,6 +3,7 @@ import sql from 'mssql';
 import { getDB } from '../config/db';
 import { authMiddleware } from '../middlewares/auth';
 import { emitEvent } from '../services/socket';
+import { findBlacklistMatch } from '../services/plateMatching';
 
 const router = Router();
 
@@ -75,19 +76,17 @@ router.post('/sync', async (req: Request, res: Response) => {
     }
     const camara = camaraCheck.recordset[0];
 
-    // 2. Verificar si la placa está en la Lista Negra activa
-    const blacklistCheck = await db.request()
-      .input('placa', sql.VarChar, placa)
-      .query('SELECT * FROM ListaNegra WHERE placa = @placa AND activo = 1');
+    // 2. Verificar si la placa está en la Lista Negra activa (tolerante a errores de OCR)
+    const blacklistMatch = await findBlacklistMatch(db, placa);
 
     let alerta_detectada = 0;
     let alerta_id = null;
     let alerta_info = null;
 
-    if (blacklistCheck.recordset.length > 0) {
+    if (blacklistMatch) {
       alerta_detectada = 1;
-      alerta_id = blacklistCheck.recordset[0].id;
-      alerta_info = blacklistCheck.recordset[0];
+      alerta_id = blacklistMatch.row.id;
+      alerta_info = { ...blacklistMatch.row, coincidencia: blacklistMatch.coincidencia };
     }
 
     // 3. Insertar el evento en SQL Server

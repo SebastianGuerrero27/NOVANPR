@@ -12,7 +12,7 @@ const defaultDbPort = isDocker ? 1433 : 14333;
 
 const config: sql.config = {
   user: process.env.DB_USER || 'sa',
-  password: process.env.DB_PASSWORD || 'SecurePassword123!',
+  password: process.env.DB_PASSWORD,
   server: process.env.DB_SERVER || defaultDbHost,
   port: parseInt(process.env.DB_PORT || String(defaultDbPort)),
   database: 'master', // Inicialmente conectamos a master para poder crear la DB si no existe

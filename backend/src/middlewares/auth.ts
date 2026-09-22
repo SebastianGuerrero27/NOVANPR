@@ -1,7 +1,11 @@
 import { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
 
-const JWT_SECRET = process.env.JWT_SECRET || 'ecu911_super_secret_token_key_2026';
+// Sin valor por defecto: un secreto conocido permitiría falsificar tokens de administrador.
+if (!process.env.JWT_SECRET) {
+  throw new Error('JWT_SECRET no está definido. Configúrelo en backend/.env o en el .env de docker compose.');
+}
+export const JWT_SECRET: string = process.env.JWT_SECRET;
 
 export interface UserPayload {
   id: number;

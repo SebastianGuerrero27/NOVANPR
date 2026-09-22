@@ -12,6 +12,7 @@ Caracteristicas Principales:
 import os
 import sys
 import shutil
+import time
 from pathlib import Path
 import torch
 from ultralytics import YOLO
@@ -24,6 +25,18 @@ IMAGES_TRAIN = DATASET_DIR / "images" / "train"
 MODELS_DIR = BASE_DIR / "services" / "anpr" / "models"
 BASE_MODEL_PT = MODELS_DIR / "license_plate_detector.pt"
 FALLBACK_YOLO11 = BASE_DIR / "services" / "anpr" / "yolo11n.pt"
+CANDIDATE_PT = MODELS_DIR / "license_plate_detector_candidato.pt"
+ARCHIVE_DIR = MODELS_DIR / "archive"
+
+# Por debajo de este numero de imagenes el entrenamiento no tiene validez estadistica
+# y solo altera el modelo base (ver models/MODEL_CARD.md).
+MIN_TRAIN_IMAGES = 200
+
+
+def _map50_95(weights: Path, imgsz: int, device: str) -> float:
+    """mAP50-95 del modelo sobre el conjunto de validacion de data.yaml."""
+    metrics = YOLO(str(weights)).val(data=str(DATA_YAML), imgsz=imgsz, device=device, verbose=False, plots=False)
+    return float(metrics.box.map)
 
 
 def train_plate_detector(
@@ -31,6 +44,8 @@ def train_plate_detector(
     imgsz: int = 640,
     batch_size: int = 8,
     patience: int = 12,
+    force: bool = False,
+    promote: bool = False,
 ):
     print("=" * 70)
     print("  ENTRENAMIENTO ESPECIALIZADO DE PLACAS — MULTI-DISTANCIA")
@@ -45,6 +60,12 @@ def train_plate_detector(
         print("\n    Pasos requeridos antes de entrenar:")
         print("    1. Coloca fotos de placas tomadas a distintas distancias en 'dataset/raw/'")
         print(r"    2. Ejecuta: .\services\anpr\.venv\Scripts\python services\anpr\scripts\auto_annotate.py")
+        return False
+
+    if len(train_images) < MIN_TRAIN_IMAGES and not force:
+        print(f"\n[!] Solo hay {len(train_images)} imagenes de entrenamiento (minimo {MIN_TRAIN_IMAGES}).")
+        print("    Entrenar con tan pocas imagenes no produce un modelo valido para la tesis.")
+        print("    Use --force solo para pruebas; el modelo de produccion no se modificara.")
         return False
 
     print(f"\n[+] Imagenes de entrenamiento listas: {len(train_images)}")
@@ -116,29 +137,34 @@ def train_plate_detector(
         print(f"[!] No se encontro best.pt en {best_pt}. Usando last.pt...")
         best_pt = runs_dir / "plate_multiscale_experiment" / "weights" / "last.pt"
 
-    if best_pt.exists():
-        MODELS_DIR.mkdir(parents=True, exist_ok=True)
-        dest_pt = MODELS_DIR / "license_plate_detector.pt"
-        shutil.copy2(best_pt, dest_pt)
-        print("\n" + "=" * 70)
-        print(f"  [✓] MODELO ENTRENADO EXITOSAMENTE Y COPIADO A:")
-        print(f"      {dest_pt}")
-        print("=" * 70)
+    if not best_pt.exists():
+        return False
 
-        # 6. Exportar a formato ONNX si las librerias estan presentes
-        try:
-            import onnx
-            print("\n[+] Exportando modelo a formato ONNX optimizado para produccion...")
-            best_model = YOLO(str(dest_pt))
-            onnx_path = best_model.export(format="onnx", imgsz=imgsz, dynamic=True)
-            print(f"  [✓] Modelo ONNX generado: {onnx_path}")
-        except Exception:
-            print(f"\n  [i] Inferencia activa en produccion mediante PyTorch directo ({dest_pt.name}).")
+    # El modelo nuevo se guarda como CANDIDATO; nunca sobrescribe produccion automaticamente.
+    MODELS_DIR.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(best_pt, CANDIDATE_PT)
+    print(f"\n[+] Modelo candidato guardado en: {CANDIDATE_PT}")
 
-        print("\n[+] El microservicio ANPR utilizara automaticamente este modelo nuevo.")
+    cand_map = _map50_95(CANDIDATE_PT, imgsz, device)
+    prod_map = _map50_95(BASE_MODEL_PT, imgsz, device) if BASE_MODEL_PT.exists() else 0.0
+    print(f"[+] mAP50-95 en validacion | produccion: {prod_map:.4f} | candidato: {cand_map:.4f}")
+
+    if not promote:
+        print("[i] Produccion sin cambios. Use --promote para reemplazarlo si el candidato es mejor.")
+        return True
+    if cand_map <= prod_map:
+        print("[!] El candidato no supera al modelo de produccion. No se promueve.")
         return True
 
-    return False
+    ARCHIVE_DIR.mkdir(parents=True, exist_ok=True)
+    if BASE_MODEL_PT.exists():
+        backup = ARCHIVE_DIR / f"license_plate_detector_{time.strftime('%Y%m%d_%H%M%S')}.pt"
+        shutil.copy2(BASE_MODEL_PT, backup)
+        print(f"[+] Respaldo del modelo anterior: {backup}")
+    shutil.copy2(CANDIDATE_PT, BASE_MODEL_PT)
+    print(f"[OK] Candidato promovido a produccion: {BASE_MODEL_PT}")
+    print("     Actualice models/MODEL_CARD.md con el dataset y las metricas de este entrenamiento.")
+    return True
 
 
 if __name__ == "__main__":
@@ -147,6 +173,11 @@ if __name__ == "__main__":
     parser.add_argument("--epochs", type=int, default=30, help="Numero maximo de epocas (default: 30)")
     parser.add_argument("--imgsz", type=int, default=640, help="Resolucion de entrenamiento (default: 640)")
     parser.add_argument("--batch", type=int, default=8, help="Tamano del lote (default: 8)")
+    parser.add_argument("--force", action="store_true", help=f"Entrenar aunque haya menos de {MIN_TRAIN_IMAGES} imagenes")
+    parser.add_argument("--promote", action="store_true", help="Reemplazar produccion si el candidato tiene mejor mAP50-95")
     args = parser.parse_args()
 
-    train_plate_detector(epochs=args.epochs, imgsz=args.imgsz, batch_size=args.batch)
+    train_plate_detector(
+        epochs=args.epochs, imgsz=args.imgsz, batch_size=args.batch,
+        force=args.force, promote=args.promote,
+    )
