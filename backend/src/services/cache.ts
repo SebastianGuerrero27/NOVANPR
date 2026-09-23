@@ -116,7 +116,7 @@ class CacheService {
 
     try {
       const serialized = JSON.stringify(value);
-      const expiry = ttl || this.config.ttl;
+      const expiry = ttl || this.config.ttl || 3600;
       await this.client!.setex(key, expiry, serialized);
       return true;
     } catch (error) {
@@ -190,7 +190,7 @@ class CacheService {
 
     try {
       const serialized = JSON.stringify(value);
-      const result = await this.client!.set(key, serialized, 'NX', 'EX', ttl || this.config.ttl);
+      const result = await this.client!.set(key, serialized, 'EX', ttl || this.config.ttl || 3600, 'NX');
       return result === 'OK';
     } catch (error) {
       logger.error(`Error en setNX para clave ${key}:`, error);
@@ -268,7 +268,7 @@ class CacheService {
 
     try {
       const pipeline = this.client!.pipeline();
-      const expiry = ttl || this.config.ttl;
+      const expiry = ttl || this.config.ttl || 3600;
 
       for (const [key, value] of Object.entries(keyValuePairs)) {
         const serialized = JSON.stringify(value);
@@ -402,7 +402,7 @@ export const cacheHelper = {
     return cacheService.get(`detections:recent:${limit}`);
   },
 
-  async setRecentDetections(detections: any[], ttl: number = 60): Promise<boolean> {
+  async setRecentDetections(detections: any[], limit: number = 100, ttl: number = 60): Promise<boolean> {
     return cacheService.set(`detections:recent:${limit}`, detections, ttl);
   },
 };
