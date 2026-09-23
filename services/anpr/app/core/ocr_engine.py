@@ -11,6 +11,7 @@ Implementaciones Científicas:
 
 from __future__ import annotations
 
+import os
 import re
 from abc import ABC, abstractmethod
 from typing import NamedTuple, List, Optional
@@ -25,11 +26,22 @@ from app.config import (
     OCR_ENGINE,
     OPENCV_CLAHE_ENABLED,
     OPENCV_UNSHARP_ENABLED,
+    PLATE_OCR_CONFIG_PATH,
+    PLATE_OCR_HUB_MODEL,
+    PLATE_OCR_ONNX_PATH,
+    PLATE_OCR_PREPROCESS,
     TESSERACT_CMD,
 )
 from app.utils.logger import get_logger
 
 logger = get_logger("ocr_engine")
+
+_SERVICE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+
+def _resolve_service_path(path: str) -> str:
+    """Rutas relativas se resuelven respecto a services/anpr (funciona en local y en Docker)."""
+    return path if os.path.isabs(path) else os.path.join(_SERVICE_DIR, path)
 
 
 class OcrResult(NamedTuple):
@@ -137,31 +149,40 @@ class FastPlateOcrEngine(OcrEngine):
     Modelo optimizado para reconocimiento de caracteres en matrículas en ~3-10ms por inferencia.
     """
 
-    def __init__(self, model_name: Optional[str] = None) -> None:
-        model = model_name or FASTALPR_OCR_MODEL
+    def __init__(self, model_name: Optional[str] = None, preprocess: Optional[bool] = None) -> None:
+        from fast_plate_ocr import LicensePlateRecognizer
+
+        self._preprocess = PLATE_OCR_PREPROCESS if preprocess is None else preprocess
+        onnx_path = _resolve_service_path(PLATE_OCR_ONNX_PATH)
+        config_path = _resolve_service_path(PLATE_OCR_CONFIG_PATH)
+
+        if model_name is None and os.path.exists(onnx_path) and os.path.exists(config_path):
+            # Modelo afinado con placas ecuatorianas (scripts/train_ocr.py)
+            self._recognizer = LicensePlateRecognizer(
+                onnx_model_path=onnx_path, plate_config_path=config_path, device="cpu"
+            )
+            self.model_id = os.path.basename(onnx_path)
+            logger.info("FastPlateOcrEngine con modelo afinado Ecuador: %s", onnx_path)
+            return
+
+        model = model_name or PLATE_OCR_HUB_MODEL
         try:
-            from fast_plate_ocr import LicensePlateRecognizer
             self._recognizer = LicensePlateRecognizer(hub_ocr_model=model, device="cpu")
-            logger.info("FastPlateOcrEngine inicializado con modelo SOTA '%s' en ONNX Runtime.", model)
+            self.model_id = model
         except Exception as e:
-            logger.warning("Fallo al inicializar FastPlateOcrEngine con '%s': %s. Intentando modelo global estándar.", model, e)
-            try:
-                from fast_plate_ocr import LicensePlateRecognizer
-                self._recognizer = LicensePlateRecognizer(hub_ocr_model="cct-s-v2-global-model", device="cpu")
-                logger.info("FastPlateOcrEngine inicializado con 'cct-s-v2-global-model'.")
-            except Exception as e2:
-                logger.error("Error crítico en FastPlateOcrEngine: %s", e2)
-                raise
+            logger.warning("Fallo al cargar '%s' (%s). Usando 'cct-s-v2-global-model'.", model, e)
+            self._recognizer = LicensePlateRecognizer(hub_ocr_model="cct-s-v2-global-model", device="cpu")
+            self.model_id = "cct-s-v2-global-model"
+        logger.info("FastPlateOcrEngine con modelo del hub '%s' (preprocesado=%s).", self.model_id, self._preprocess)
 
     def read_text(self, image: np.ndarray) -> list[OcrResult]:
         if image is None or image.size == 0:
             return []
 
-        # Preprocesamiento con OpenCV
-        prep = preprocess_plate_opencv(
-            image,
-            enable_clahe=OPENCV_CLAHE_ENABLED,
-            enable_unsharp=OPENCV_UNSHARP_ENABLED,
+        prep = (
+            preprocess_plate_opencv(image, enable_clahe=OPENCV_CLAHE_ENABLED, enable_unsharp=OPENCV_UNSHARP_ENABLED)
+            if self._preprocess
+            else image
         )
 
         # Adaptar modo de color según la arquitectura del modelo ONNX (Grayscale vs RGB)
@@ -450,6 +471,11 @@ class HybridOcrEngine(OcrEngine):
 def create_ocr_engine() -> OcrEngine:
     """Factory que crea el motor OCR según OCR_ENGINE en .env."""
     engine_type = OCR_ENGINE.lower().strip()
+
+    # OCR especializado de placas sin respaldos (recomendado según scripts/benchmark_ocr.py:
+    # los respaldos RapidOCR/EasyOCR y el preprocesado bajaban la exactitud).
+    if engine_type in ("plate", "fast-plate-ocr", "cct"):
+        return FastPlateOcrEngine()
 
     if engine_type in ("fastalpr", "fastplateocr", "fast-alpr"):
         try:

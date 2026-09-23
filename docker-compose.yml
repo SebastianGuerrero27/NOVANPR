@@ -142,7 +142,7 @@ services:
       - PORT=8000
       - BACKEND_URL=http://backend:5000
       - BACKEND_SOCKETIO_URL=http://backend:5000
-      - OCR_ENGINE=easyocr
+      - OCR_ENGINE=plate
       - MEDIA_DIR=/app/media
       - CAMERA_SOURCE=rtsp
       - RTSP_URL=rtsp://mediamtx:8554/camara_raw

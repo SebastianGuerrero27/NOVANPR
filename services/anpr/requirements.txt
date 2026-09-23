@@ -7,15 +7,19 @@ python-dotenv==1.1.0
 
 # --- Visión por Computador ---
 opencv-python==4.11.0.86
-numpy==1.26.4
+numpy>=1.26
 
 # --- Detección de Objetos (YOLOv11) ---
-ultralytics==8.3.145
+ultralytics>=8.4          # YOLO26 (sin NMS) requiere 8.4+
 
 # --- OCR & ALPR ---
 easyocr==1.7.2
 pytesseract==0.3.13
 rapidocr-onnxruntime>=1.3.0
+# OCR especializado de placas (cct-s-v2) y verificador PP-OCRv6 con OpenVINO
+fast-plate-ocr[onnx]>=1.1
+rapidocr>=3.9
+openvino>=2025.0
 
 # --- Comunicación Async ---
 httpx==0.28.1

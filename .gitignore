@@ -60,6 +60,7 @@ scratch/
 
 # Models & Weights
 yolo11n.pt
+yolo26n.pt
 *.weights
 
 # Environment Variables
@@ -75,4 +76,20 @@ yolo11n.pt
 
 # Modelos: respaldos y candidatos de entrenamiento (ver services/anpr/models/MODEL_CARD.md)
 services/anpr/models/archive/
-services/anpr/models/*_candidato.pt
+services/anpr/models/*_candidato.*
+services/anpr/models/ocr/*_candidato*
+
+# Entorno de entrenamiento (RF-DETR, Keras, fast-plate-ocr[train])
+.venv-train/
+**/.venv-train/
+
+# Datos generados por los scripts de entrenamiento (se regeneran; no versionar)
+dataset/ocr/
+dataset/detector/
+dataset/detector_coco/
+dataset/runs/
+dataset/preview_annotate/
+services/anpr/models/ocr/pretrained/
+
+# Exportaciones OpenVINO de los detectores (se regeneran con model.export)
+services/anpr/models/*_openvino_model/

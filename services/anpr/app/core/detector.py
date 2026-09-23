@@ -1299,6 +1299,7 @@ def create_detection_pipeline(
         return DetectionPipeline(detector=detector, browser_detector=browser_detector)
 
     from app.config import (
+        DETECTOR_BACKEND,
         PLATE_MODEL_PATH,
         YOLO_MODEL_PATH,
         PLATE_CONFIDENCE_THRESHOLD,
@@ -1333,14 +1334,16 @@ def create_detection_pipeline(
     browser_conf = raw_thresh
 
     # Detector principal (loop RTSP @ 512px)
+    # "yolo" cubre YOLOv8/YOLO11/YOLO26; "rfdetr" o "rfdetr-<variante>" usa RF-DETR
+    model_type = "rfdetr-nano" if DETECTOR_BACKEND == "rfdetr" else DETECTOR_BACKEND
     rtsp_det = create_detector(
-        model_path, confidence=raw_thresh, device=device, imgsz=512
+        model_path, model_type=model_type, confidence=raw_thresh, device=device, imgsz=512
     )
     rtsp_det.warmup()
 
     # Detector browser (@ 512px para máxima agudeza visual a distancias largas)
-    browser_det = create_detector(
-        model_path, confidence=browser_conf, device=device, imgsz=512
+    browser_det = rtsp_det if model_type.startswith("rfdetr") else create_detector(
+        model_path, model_type=model_type, confidence=browser_conf, device=device, imgsz=512
     )
     browser_det.warmup()
 

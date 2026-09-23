@@ -73,6 +73,27 @@ FASTALPR_OCR_MODEL: str = os.getenv("FASTALPR_OCR_MODEL", "global-plates-mobile-
 OPENCV_CLAHE_ENABLED: bool = os.getenv("OPENCV_CLAHE_ENABLED", "true").lower() in ("true", "1", "yes")
 OPENCV_UNSHARP_ENABLED: bool = os.getenv("OPENCV_UNSHARP_ENABLED", "true").lower() in ("true", "1", "yes")
 
+# OCR especializado de placas (fast-plate-ocr). Si existe un modelo afinado con placas
+# ecuatorianas (scripts/train_ocr.py), se usa ese ONNX + su plate config; si no, el modelo
+# global del hub. El preprocesado OpenCV se desactiva por defecto: el modelo se entrenó con
+# imágenes sin realzar y el benchmark mostró que CLAHE/bilateral/unsharp lo empeoran.
+PLATE_OCR_HUB_MODEL: str = os.getenv("PLATE_OCR_HUB_MODEL", "cct-s-v2-global-model")
+PLATE_OCR_ONNX_PATH: str = os.getenv("PLATE_OCR_ONNX_PATH", "models/ocr/cct_s_v2_ecuador.onnx")
+PLATE_OCR_CONFIG_PATH: str = os.getenv("PLATE_OCR_CONFIG_PATH", "models/ocr/cct_s_v2_ecuador_plate_config.yaml")
+PLATE_OCR_PREPROCESS: bool = os.getenv("PLATE_OCR_PREPROCESS", "false").lower() in ("true", "1", "yes")
+
+# Segunda lectura con PP-OCRv6 (RapidOCR + OpenVINO) sobre la mejor foto, en la fase
+# asíncrona de verificación. Si excede OCR_VERIFIER_MAX_MS se descarta su resultado.
+OCR_VERIFIER_ENABLED: bool = os.getenv("OCR_VERIFIER_ENABLED", "true").lower() in ("true", "1", "yes")
+OCR_VERIFIER_MODEL: str = os.getenv("OCR_VERIFIER_MODEL", "medium").lower()  # tiny | small | medium
+OCR_VERIFIER_ENGINE: str = os.getenv("OCR_VERIFIER_ENGINE", "openvino").lower()  # openvino | onnxruntime
+OCR_VERIFIER_MAX_MS: float = float(os.getenv("OCR_VERIFIER_MAX_MS", "2000"))
+# Peso del voto del verificador en el consenso temporal (una lectura normal pesa su confianza ≤ 1)
+OCR_VERIFIER_VOTE_WEIGHT: float = float(os.getenv("OCR_VERIFIER_VOTE_WEIGHT", "2.0"))
+
+# Detector de placas: "yolo" (YOLOv8/YOLO11/YOLO26 vía Ultralytics) o "rfdetr" (RF-DETR)
+DETECTOR_BACKEND: str = os.getenv("DETECTOR_BACKEND", "yolo").lower()
+
 # =============================================================================
 # Tracking y Deduplicación
 # =============================================================================

@@ -1,183 +1,196 @@
 """
-Entrenamiento y Ajuste Fino (Fine-Tuning) del Detector de Placas Multi-Distancia.
-Optimizado para Sistemas Inteligentes de Transporte (ITS / ECU 911).
+Afinamiento del detector de placas con placas ecuatorianas: YOLO26n o RF-DETR-nano.
 
-Caracteristicas Principales:
-  - Invarianza a la distancia: Escalamiento dinamico (scale 0.5 - 1.5) y mosaico.
-  - Invarianza angular: Jitter de rotacion (+/- 12 deg) y correccion de perspectiva.
-  - Exportacion automatica a ONNX Runtime para inferencia ultra-rapida (< 10ms).
-  - Actualizacion directa del modelo en produccion (services/anpr/models/license_plate_detector.pt).
+Ambas arquitecturas se entrenan con el MISMO dataset (dataset/detector, generado por
+scripts/annotate_plates.py con partición por grupo) para compararlas en la tesis con
+scripts/evaluate_detectors.py.
+
+  - YOLO26n (Ultralytics, 2026): sin NMS, optimizado para CPU y objetos pequeños.
+  - RF-DETR-nano (Robinson et al., ICLR 2026): transformer con backbone DINOv2; se adapta
+    mejor con pocos datos, pero es más lento en CPU.
+
+El resultado se guarda como CANDIDATO; nunca reemplaza el modelo de producción salvo con
+--promote y solo si supera al actual en el conjunto de validación (ver models/MODEL_CARD.md).
+
+Uso (entorno de entrenamiento, desde services/anpr):
+    .venv-train/Scripts/python scripts/train_plate_detector.py --arch yolo26n --epochs 80
+    .venv-train/Scripts/python scripts/train_plate_detector.py --arch rfdetr-nano --epochs 30
 """
 
+from __future__ import annotations
+
+import argparse
+import json
 import os
-import sys
 import shutil
 import time
 from pathlib import Path
-import torch
-from ultralytics import YOLO
 
-# Rutas base
+import cv2
+
 BASE_DIR = Path(__file__).resolve().parent.parent.parent.parent
-DATASET_DIR = BASE_DIR / "dataset"
-DATA_YAML = DATASET_DIR / "data.yaml"
-IMAGES_TRAIN = DATASET_DIR / "images" / "train"
+DATA_DIR = BASE_DIR / "dataset" / "detector"
+DATA_YAML = DATA_DIR / "data.yaml"
 MODELS_DIR = BASE_DIR / "services" / "anpr" / "models"
-BASE_MODEL_PT = MODELS_DIR / "license_plate_detector.pt"
-FALLBACK_YOLO11 = BASE_DIR / "services" / "anpr" / "yolo11n.pt"
-CANDIDATE_PT = MODELS_DIR / "license_plate_detector_candidato.pt"
+RUNS_DIR = BASE_DIR / "dataset" / "runs"
+PROD_PT = MODELS_DIR / "license_plate_detector.pt"
 ARCHIVE_DIR = MODELS_DIR / "archive"
 
-# Por debajo de este numero de imagenes el entrenamiento no tiene validez estadistica
-# y solo altera el modelo base (ver models/MODEL_CARD.md).
+# Por debajo de este número de imágenes de entrenamiento el resultado no tiene validez
+# estadística para la tesis (solo sirve como prueba del pipeline con --force).
 MIN_TRAIN_IMAGES = 200
 
 
-def _map50_95(weights: Path, imgsz: int, device: str) -> float:
-    """mAP50-95 del modelo sobre el conjunto de validacion de data.yaml."""
-    metrics = YOLO(str(weights)).val(data=str(DATA_YAML), imgsz=imgsz, device=device, verbose=False, plots=False)
-    return float(metrics.box.map)
+def count_images(split: str) -> int:
+    d = DATA_DIR / "images" / split
+    return sum(1 for p in d.glob("*") if p.suffix.lower() in {".jpg", ".jpeg", ".png"}) if d.exists() else 0
 
 
-def train_plate_detector(
-    epochs: int = 35,
-    imgsz: int = 640,
-    batch_size: int = 8,
-    patience: int = 12,
-    force: bool = False,
-    promote: bool = False,
-):
-    print("=" * 70)
-    print("  ENTRENAMIENTO ESPECIALIZADO DE PLACAS — MULTI-DISTANCIA")
-    print("  SISTEMA ITS ECU 911")
-    print("=" * 70)
+# ---------------------------------------------------------------------------
+# YOLO26n
+# ---------------------------------------------------------------------------
 
-    # 1. Validar existencia del dataset
-    train_images = list(IMAGES_TRAIN.glob("*.jpg")) + list(IMAGES_TRAIN.glob("*.png"))
-    if not train_images:
-        print("\n[!] ERROR: No se encontraron imagenes de entrenamiento en:")
-        print(f"    {IMAGES_TRAIN}")
-        print("\n    Pasos requeridos antes de entrenar:")
-        print("    1. Coloca fotos de placas tomadas a distintas distancias en 'dataset/raw/'")
-        print(r"    2. Ejecuta: .\services\anpr\.venv\Scripts\python services\anpr\scripts\auto_annotate.py")
-        return False
+def train_yolo(arch: str, epochs: int, imgsz: int, batch: int, device: str) -> Path:
+    from ultralytics import YOLO
 
-    if len(train_images) < MIN_TRAIN_IMAGES and not force:
-        print(f"\n[!] Solo hay {len(train_images)} imagenes de entrenamiento (minimo {MIN_TRAIN_IMAGES}).")
-        print("    Entrenar con tan pocas imagenes no produce un modelo valido para la tesis.")
-        print("    Use --force solo para pruebas; el modelo de produccion no se modificara.")
-        return False
-
-    print(f"\n[+] Imagenes de entrenamiento listas: {len(train_images)}")
-    print(f"[+] Archivo de configuracion: {DATA_YAML}")
-
-    # 2. Seleccionar dispositivo (GPU CUDA o CPU multi-hilo)
-    device = "0" if torch.cuda.is_available() else "cpu"
-    num_threads = min(8, max(2, os.cpu_count() or 4))
-    if device == "cpu":
-        torch.set_num_threads(num_threads)
-        print(f"[+] Entorno de ejecucion: CPU Multi-Core ({num_threads} hilos)")
-        batch_size = min(batch_size, 4)
-    else:
-        gpu_name = torch.cuda.get_device_name(0)
-        print(f"[+] Aceleracion por Hardware: GPU NVIDIA ({gpu_name})")
-
-    # 3. Cargar pesos base
-    if BASE_MODEL_PT.exists():
-        start_weights = str(BASE_MODEL_PT)
-        print(f"[+] Reanudando fine-tuning desde pesos existentes: {start_weights}")
-    elif FALLBACK_YOLO11.exists():
-        start_weights = str(FALLBACK_YOLO11)
-        print(f"[+] Iniciando desde detector base: {start_weights}")
-    else:
-        start_weights = "yolo11n.pt"
-        print(f"[+] Descargando detector base oficial: {start_weights}")
-
-    model = YOLO(start_weights)
-
-    # 4. Iniciar entrenamiento con hiperparámetros adaptados a multi-distancia
-    print(f"\n[+] Iniciando entrenamiento por {epochs} epocas (patience={patience})...")
-    print("    Aumentaciones activadas:")
-    print("    - Multi-scale jitter (0.5 a 1.5x) para detectar placas de 1m a 10m")
-    print("    - Rotacion +/- 12 grados para soportar celulares inclinados")
-    print("    - Mosaic y perspectiva angular para robustez en transito")
-
-    runs_dir = DATASET_DIR / "runs"
-    runs_dir.mkdir(parents=True, exist_ok=True)
-
-    results = model.train(
+    weights = f"{arch}.pt"  # yolo26n.pt se descarga de los releases oficiales de Ultralytics
+    model = YOLO(weights)
+    model.train(
         data=str(DATA_YAML),
         epochs=epochs,
         imgsz=imgsz,
-        batch=batch_size,
+        batch=batch,
         device=device,
-        patience=patience,
-        save=True,
-        project=str(runs_dir),
-        name="plate_multiscale_experiment",
+        patience=max(10, epochs // 4),
+        project=str(RUNS_DIR),
+        name=f"{arch}_ecuador",
         exist_ok=True,
-        # Aumentaciones espaciales para distintas distancias y angulos
-        scale=0.55,          # Simula acercamiento (1m) y alejamiento (8m)
-        degrees=12.0,        # Inclinacion vehicular y de smartphone
-        perspective=0.001,   # Perspectiva de camara
-        shear=2.0,           # Deformacion por velocidad
-        mosaic=1.0,          # Composicion de 4 fotos simultaneas
-        hsv_h=0.015,
-        hsv_s=0.5,
-        hsv_v=0.4,           # Invarianza ante luz directa y sombra
+        # Aumentaciones pensadas para placas: sin volteo horizontal (invierte los caracteres)
+        fliplr=0.0,
         flipud=0.0,
-        fliplr=0.5,          # Reflejo horizontal
-        verbose=True,
+        degrees=8.0,
+        perspective=0.0008,
+        shear=3.0,
+        scale=0.6,          # placas grandes (cerca) y pequeñas (lejos)
+        mosaic=1.0,
+        close_mosaic=max(5, epochs // 8),
+        hsv_v=0.5,          # día / noche / contraluz
         plots=True,
+        verbose=True,
     )
+    best = RUNS_DIR / f"{arch}_ecuador" / "weights" / "best.pt"
+    dest = MODELS_DIR / f"{arch}_ecuador_candidato.pt"
+    shutil.copy2(best, dest)
+    return dest
 
-    # 5. Obtener mejores pesos
-    best_pt = runs_dir / "plate_multiscale_experiment" / "weights" / "best.pt"
-    if not best_pt.exists():
-        print(f"[!] No se encontro best.pt en {best_pt}. Usando last.pt...")
-        best_pt = runs_dir / "plate_multiscale_experiment" / "weights" / "last.pt"
 
-    if not best_pt.exists():
-        return False
+# ---------------------------------------------------------------------------
+# RF-DETR-nano (requiere formato COCO: se convierte desde las etiquetas YOLO)
+# ---------------------------------------------------------------------------
 
-    # El modelo nuevo se guarda como CANDIDATO; nunca sobrescribe produccion automaticamente.
-    MODELS_DIR.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(best_pt, CANDIDATE_PT)
-    print(f"\n[+] Modelo candidato guardado en: {CANDIDATE_PT}")
+def yolo_to_coco(coco_dir: Path) -> None:
+    """Convierte dataset/detector (YOLO) a la estructura COCO que espera RF-DETR."""
+    if coco_dir.exists():
+        shutil.rmtree(coco_dir)
+    for split, coco_split in (("train", "train"), ("val", "valid"), ("test", "test")):
+        img_dir = DATA_DIR / "images" / split
+        if not img_dir.exists():
+            continue
+        out = coco_dir / coco_split
+        out.mkdir(parents=True)
+        images, annotations = [], []
+        ann_id = 1
+        for img_id, img_path in enumerate(sorted(img_dir.glob("*")), start=1):
+            if img_path.suffix.lower() not in {".jpg", ".jpeg", ".png"}:
+                continue
+            h, w = cv2.imread(str(img_path)).shape[:2]
+            shutil.copy2(img_path, out / img_path.name)
+            images.append({"id": img_id, "file_name": img_path.name, "width": w, "height": h})
+            label = DATA_DIR / "labels" / split / f"{img_path.stem}.txt"
+            for line in (label.read_text().splitlines() if label.exists() else []):
+                _, cx, cy, bw, bh = map(float, line.split())
+                x, y = (cx - bw / 2) * w, (cy - bh / 2) * h
+                annotations.append({
+                    "id": ann_id, "image_id": img_id, "category_id": 0,
+                    "bbox": [x, y, bw * w, bh * h], "area": bw * w * bh * h, "iscrowd": 0,
+                })
+                ann_id += 1
+        coco = {"images": images, "annotations": annotations,
+                "categories": [{"id": 0, "name": "license_plate", "supercategory": "none"}]}
+        (out / "_annotations.coco.json").write_text(json.dumps(coco), encoding="utf-8")
 
-    cand_map = _map50_95(CANDIDATE_PT, imgsz, device)
-    prod_map = _map50_95(BASE_MODEL_PT, imgsz, device) if BASE_MODEL_PT.exists() else 0.0
-    print(f"[+] mAP50-95 en validacion | produccion: {prod_map:.4f} | candidato: {cand_map:.4f}")
 
-    if not promote:
-        print("[i] Produccion sin cambios. Use --promote para reemplazarlo si el candidato es mejor.")
-        return True
-    if cand_map <= prod_map:
-        print("[!] El candidato no supera al modelo de produccion. No se promueve.")
-        return True
+def train_rfdetr(epochs: int, batch: int, device: str) -> Path:
+    from rfdetr import RFDETRNano
 
+    coco_dir = BASE_DIR / "dataset" / "detector_coco"
+    yolo_to_coco(coco_dir)
+    out_dir = RUNS_DIR / "rfdetr_nano_ecuador"
+    model = RFDETRNano()  # descarga los pesos preentrenados COCO de RF-DETR-nano
+    model.train(
+        dataset_dir=str(coco_dir),
+        epochs=epochs,
+        batch_size=batch,
+        grad_accum_steps=max(1, 16 // batch),
+        lr=1e-4,
+        output_dir=str(out_dir),
+        device=device,
+    )
+    best = next((out_dir / n for n in ("checkpoint_best_total.pth", "checkpoint_best_ema.pth", "checkpoint_best_regular.pth")
+                 if (out_dir / n).exists()), out_dir / "checkpoint.pth")
+    dest = MODELS_DIR / "rfdetr_nano_ecuador_candidato.pth"
+    shutil.copy2(best, dest)
+    return dest
+
+
+# ---------------------------------------------------------------------------
+
+def promote(candidate: Path) -> None:
+    """Reemplaza el detector de producción (solo modelos YOLO .pt) respaldando el anterior."""
+    from ultralytics import YOLO
+
+    cand = YOLO(str(candidate)).val(data=str(DATA_YAML), split="val", verbose=False, plots=False).box.map
+    prod = YOLO(str(PROD_PT)).val(data=str(DATA_YAML), split="val", verbose=False, plots=False).box.map
+    print(f"[+] mAP50-95 validación | producción: {prod:.4f} | candidato: {cand:.4f}")
+    if cand <= prod:
+        print("[!] El candidato no supera a producción. No se promueve.")
+        return
     ARCHIVE_DIR.mkdir(parents=True, exist_ok=True)
-    if BASE_MODEL_PT.exists():
-        backup = ARCHIVE_DIR / f"license_plate_detector_{time.strftime('%Y%m%d_%H%M%S')}.pt"
-        shutil.copy2(BASE_MODEL_PT, backup)
-        print(f"[+] Respaldo del modelo anterior: {backup}")
-    shutil.copy2(CANDIDATE_PT, BASE_MODEL_PT)
-    print(f"[OK] Candidato promovido a produccion: {BASE_MODEL_PT}")
-    print("     Actualice models/MODEL_CARD.md con el dataset y las metricas de este entrenamiento.")
-    return True
+    backup = ARCHIVE_DIR / f"license_plate_detector_{time.strftime('%Y%m%d_%H%M%S')}.pt"
+    shutil.copy2(PROD_PT, backup)
+    shutil.copy2(candidate, PROD_PT)
+    print(f"[OK] Promovido a producción. Respaldo: {backup}. Actualice models/MODEL_CARD.md.")
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser(description="Afinar detector de placas ecuatorianas (YOLO26n / RF-DETR-nano).")
+    ap.add_argument("--arch", default="yolo26n", choices=["yolo26n", "yolo11n", "yolov8n", "rfdetr-nano"])
+    ap.add_argument("--epochs", type=int, default=80)
+    ap.add_argument("--imgsz", type=int, default=640)
+    ap.add_argument("--batch", type=int, default=8)
+    ap.add_argument("--device", default="0" if os.environ.get("CUDA_VISIBLE_DEVICES") else "cpu")
+    ap.add_argument("--force", action="store_true", help=f"Entrenar con menos de {MIN_TRAIN_IMAGES} imágenes (solo pruebas)")
+    ap.add_argument("--promote", action="store_true", help="Reemplazar producción si el candidato YOLO es mejor")
+    args = ap.parse_args()
+
+    if not DATA_YAML.exists():
+        raise SystemExit(f"No existe {DATA_YAML}. Ejecute primero scripts/annotate_plates.py")
+    n_train = count_images("train")
+    print(f"[+] Dataset: train={n_train} val={count_images('val')} test={count_images('test')}")
+    if n_train < MIN_TRAIN_IMAGES and not args.force:
+        raise SystemExit(f"[!] Solo {n_train} imágenes de entrenamiento (mínimo {MIN_TRAIN_IMAGES}). Use --force solo para pruebas.")
+
+    RUNS_DIR.mkdir(parents=True, exist_ok=True)
+    if args.arch == "rfdetr-nano":
+        cand = train_rfdetr(args.epochs, args.batch, args.device)
+    else:
+        cand = train_yolo(args.arch, args.epochs, args.imgsz, args.batch, args.device)
+    print(f"[+] Candidato guardado: {cand}")
+    print("    Compárelo con: scripts/evaluate_detectors.py")
+
+    if args.promote and cand.suffix == ".pt":
+        promote(cand)
 
 
 if __name__ == "__main__":
-    import argparse
-    parser = argparse.ArgumentParser(description="Entrenar detector de placas ecuatorianas multi-distancia.")
-    parser.add_argument("--epochs", type=int, default=30, help="Numero maximo de epocas (default: 30)")
-    parser.add_argument("--imgsz", type=int, default=640, help="Resolucion de entrenamiento (default: 640)")
-    parser.add_argument("--batch", type=int, default=8, help="Tamano del lote (default: 8)")
-    parser.add_argument("--force", action="store_true", help=f"Entrenar aunque haya menos de {MIN_TRAIN_IMAGES} imagenes")
-    parser.add_argument("--promote", action="store_true", help="Reemplazar produccion si el candidato tiene mejor mAP50-95")
-    args = parser.parse_args()
-
-    train_plate_detector(
-        epochs=args.epochs, imgsz=args.imgsz, batch_size=args.batch,
-        force=args.force, promote=args.promote,
-    )
+    main()
