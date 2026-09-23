@@ -1,0 +1,69 @@
+# Configuración de Prometheus para el Sistema ANPR
+# ECU 911 Zona 3 - Ambato
+
+global:
+  scrape_interval: 15s # Intervalo de recolección de métricas
+  evaluation_interval: 15s # Intervalo de evaluación de reglas
+  external_labels:
+    cluster: 'anpr-ecu911'
+    environment: 'production'
+
+# Configuración de alertas
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: []
+      # TODO: Configurar AlertManager cuando sea necesario
+
+# Reglas de alerta
+rule_files:
+  - 'rules/*.yml'
+
+# Configuración de scrape para recolectar métricas
+scrape_configs:
+  # Métricas del Backend Node.js
+  - job_name: 'anpr-backend'
+    static_configs:
+      - targets: ['backend:5000']
+        labels:
+          service: 'backend'
+          component: 'api'
+    scrape_interval: 10s
+    metrics_path: '/metrics'
+
+  # Métricas del Microservicio ANPR Python
+  - job_name: 'anpr-service'
+    static_configs:
+      - targets: ['anpr:8000']
+        labels:
+          service: 'anpr'
+          component: 'ml-inference'
+    scrape_interval: 10s
+    metrics_path: '/metrics'
+
+  # Métricas de Redis
+  - job_name: 'redis'
+    static_configs:
+      - targets: ['redis:6379']
+        labels:
+          service: 'redis'
+          component: 'cache'
+    scrape_interval: 15s
+
+  # Métricas de cAdvisor (contenedores)
+  - job_name: 'cadvisor'
+    static_configs:
+      - targets: ['cadvisor:8080']
+        labels:
+          service: 'cadvisor'
+          component: 'containers'
+    scrape_interval: 15s
+
+  # Métricas de Node Exporter (sistema)
+  - job_name: 'node-exporter'
+    static_configs:
+      - targets: ['node-exporter:9100']
+        labels:
+          service: 'node-exporter'
+          component: 'system'
+    scrape_interval: 15s

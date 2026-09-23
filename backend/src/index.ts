@@ -6,13 +6,16 @@ import cors from 'cors';
 import { createServer } from 'http';
 import { connectDB } from './config/db';
 import { initSocket } from './services/socket';
+import { metricsMiddleware, getMetrics, register } from './services/metrics';
 import authRoutes from './routes/auth';
 import eventosRoutes from './routes/eventos';
 import blacklistRoutes from './routes/blacklist';
 import usuariosRoutes from './routes/usuarios';
 import camarasRoutes from './routes/camaras';
+import camarasMultiRoutes from './routes/camaras-multi';
 import deteccionesRoutes from './routes/detecciones';
 import vehiculosAutorizadosRoutes from './routes/vehiculos-autorizados';
+import cacheRoutes from './routes/cache';
 import path from 'path';
 import fs from 'fs';
 
@@ -28,6 +31,9 @@ app.use(cors({
 }));
 
 app.use(express.json());
+
+// Middleware de métricas Prometheus
+app.use(metricsMiddleware);
 
 // Exponer las carpetas de imágenes multimedia para que el frontend pueda visualizarlas
 app.use('/media', (req, res, next) => {
@@ -66,8 +72,10 @@ app.use('/api/eventos', eventosRoutes);
 app.use('/api/blacklist', blacklistRoutes);
 app.use('/api/usuarios', usuariosRoutes);
 app.use('/api/camaras', camarasRoutes);
+app.use('/api/camaras', camarasMultiRoutes);
 app.use('/api/detecciones', deteccionesRoutes);
 app.use('/api/vehiculos-autorizados', vehiculosAutorizadosRoutes);
+app.use('/api/cache', cacheRoutes);
 
 // Endpoint simple de estado de la cámara
 app.get('/api/camera/stream-url', (req, res) => {
@@ -81,6 +89,16 @@ app.get('/api/camera/stream-url', (req, res) => {
 // Ruta base/Healthcheck
 app.get('/health', (req, res) => {
   res.json({ status: 'OK', service: 'ECU 911 ANPR API', time: new Date() });
+});
+
+// Endpoint de métricas Prometheus
+app.get('/metrics', async (req, res) => {
+  try {
+    res.set('Content-Type', register.contentType);
+    res.end(await getMetrics());
+  } catch (error: any) {
+    res.status(500).end(error.toString());
+  }
 });
 
 // Arrancar servidor

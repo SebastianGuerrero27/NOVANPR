@@ -12,13 +12,13 @@ Este repositorio contiene la solución completa de Reconocimiento Automático de
 ## Estructura del Monorepositorio
 
 - **`frontend/`**: Cliente web React 18 + TS + Vite.
-- **`backend/`**: Servidor de API Express + TS con soporte Socket.io y conexión a SQL Server.
+- **`backend/`**: Servidor de API Express + TS con soporte Socket.io 
 - **`services/anpr/`**: Microservicio Python + FastAPI que ejecuta inferencias de YOLOv8 y OCR de caracteres.
 - **`mediamtx/`**: Servidor relay de video para flujos HLS y RTSP.
-- **`db/`**: Archivos de esquema de base de datos (`init.sql`).
+
 - **`docker-compose.yml`**: Configuración de orquestación de contenedores.
 
----
+---- **`db/`**: Archivos de esquema de base de datos (`init.sql`).
 
 ## Cómo Ejecutar el Proyecto
 

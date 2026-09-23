@@ -4,7 +4,7 @@ services:
     container_name: anpr-db
     environment:
       - ACCEPT_EULA=Y
-      - MSSQL_SA_PASSWORD=SecurePassword123!
+      - MSSQL_SA_PASSWORD=${MSSQL_SA_PASSWORD:?Defina MSSQL_SA_PASSWORD en .env}
       - MSSQL_PID=Developer
     ports:
       - "14333:1433"
@@ -13,10 +13,64 @@ services:
       - ./db:/docker-entrypoint-initdb.d
     restart: always
     healthcheck:
-      test: ["CMD", "/opt/mssql-tools18/bin/sqlcmd", "-S", "localhost", "-U", "sa", "-P", "SecurePassword123!", "-C", "-Q", "SELECT 1"]
+      test: ["CMD-SHELL", "/opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P \"$$MSSQL_SA_PASSWORD\" -C -Q \"SELECT 1\""]
       interval: 10s
       timeout: 10s
       retries: 10
+
+  redis:
+    image: redis:7-alpine
+    container_name: anpr-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    restart: always
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: anpr-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+      - ./monitoring/prometheus/rules:/etc/prometheus/rules
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/usr/share/prometheus/console_libraries'
+      - '--web.console.templates=/usr/share/prometheus/consoles'
+      - '--storage.tsdb.retention.time=30d'
+    restart: always
+    depends_on:
+      - backend
+      - anpr
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: anpr-grafana
+    ports:
+      - "3001:3000"
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards
+      - grafana_data:/var/lib/grafana
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:?Defina GRAFANA_ADMIN_PASSWORD en .env}
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_SERVER_ROOT_URL=http://localhost:3001
+      - GF_INSTALL_PLUGINS=
+    restart: always
+    depends_on:
+      - prometheus
 
   mediamtx:
     image: bluenviron/mediamtx:1.6.0
@@ -41,14 +95,19 @@ services:
       - PORT=5000
       - NODE_ENV=development
       - DB_USER=sa
-      - DB_PASSWORD=SecurePassword123!
+      - DB_PASSWORD=${MSSQL_SA_PASSWORD:?Defina MSSQL_SA_PASSWORD en .env}
       - DB_SERVER=db
       - DB_PORT=1433
       - DB_NAME=ANPR_ECU911
-      - JWT_SECRET=ecu911_super_secret_token_key_2026
+      - JWT_SECRET=${JWT_SECRET:?Defina JWT_SECRET en .env}
       - MEDIA_DIR=/app/media
       - ANPR_SERVICE_URL=http://anpr:8000
       - DOCKER_CONTAINER=true
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_PASSWORD=
+      - ENABLE_REDIS_CACHE=true
+      - CACHE_TTL_SECONDS=3600
     volumes:
       - ./backend:/app
       - /app/node_modules
@@ -57,6 +116,8 @@ services:
       - ./services/anpr/media:/app/services/anpr/media
     depends_on:
       db:
+        condition: service_healthy
+      redis:
         condition: service_healthy
     restart: always
 
@@ -100,3 +161,6 @@ services:
 
 volumes:
   db_data:
+  redis_data:
+  prometheus_data:
+  grafana_data:

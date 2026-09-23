@@ -4,7 +4,7 @@ require('dotenv').config({ path: path.resolve(__dirname, '../../.env') });
 
 const config = {
   user: process.env.DB_USER || 'sa',
-  password: process.env.DB_PASSWORD || 'SecurePassword123!',
+  password: process.env.DB_PASSWORD,
   server: process.env.DB_SERVER || '127.0.0.1',
   port: parseInt(process.env.DB_PORT || '14333'),
   database: process.env.DB_NAME || 'ANPR_ECU911',

@@ -92,6 +92,18 @@ def is_valid_ecuador_plate(raw_text: str) -> bool:
     return bool(_PLATE_PATTERN_CAR.match(clean) or _PLATE_PATTERN_MOTO.match(clean))
 
 
+def byte_track_thresholds() -> tuple[float, float]:
+    """
+    Umbrales de ByteTrack derivados de PLATE_CONFIDENCE_THRESHOLD (.env):
+      - alto: detecciones que crean y actualizan tracks (fase 1).
+      - bajo: detecciones débiles que solo rescatan tracks existentes (fase 2).
+    Antes el valor configurado se forzaba al rango [0.12, 0.20] y se ignoraba.
+    """
+    high = float(PLATE_CONFIDENCE_THRESHOLD)
+    low = min(high, max(0.05, high * 0.25))
+    return high, low
+
+
 def compute_crop_sharpness(crop: np.ndarray) -> float:
     """
     Calcula la nitidez de un recorte mediante la varianza del Laplaciano
@@ -446,6 +458,8 @@ class DetectionPipeline:
         self._bg_subtractor = cv2.createBackgroundSubtractorMOG2(history=120, varThreshold=25, detectShadows=False)
         self._last_motion_bbox: Optional[list[int]] = None
         self._last_motion_pct: int = 0
+        # True solo cuando la zona de movimiento contiene una detección YOLO de placa/vehículo
+        self._last_motion_vehicle_detected: bool = False
 
         # Métricas de FPS
         self._fps_window: list[float] = []
@@ -456,9 +470,45 @@ class DetectionPipeline:
     def fps(self) -> float:
         return self._fps
 
-    def get_motion_info(self) -> tuple[Optional[list[int]], int]:
-        """Retorna (motion_bbox, motion_pct) detectado por MOG2 al estilo OpenALPR."""
-        return self._last_motion_bbox, self._last_motion_pct
+    def get_motion_info(self) -> tuple[Optional[list[int]], int, bool]:
+        """
+        Retorna (motion_bbox, motion_pct, vehicle_detected) detectado por MOG2.
+        vehicle_detected=True SOLO si la zona de movimiento se superpone con una
+        detección YOLO válida (placa de vehículo), eliminando falsos positivos por
+        personas, sombras o cambios de iluminación.
+        """
+        return self._last_motion_bbox, self._last_motion_pct, self._last_motion_vehicle_detected
+
+    @staticmethod
+    def _is_vehicle_motion(
+        motion_bbox: Optional[list[int]],
+        det_boxes: list[list[float]],
+        iou_threshold: float = 0.04,
+    ) -> bool:
+        """
+        Valida si la zona de movimiento MOG2 contiene al menos una detección YOLO
+        de placa/vehículo (IoU > iou_threshold). Umbral bajo (0.04) porque la placa
+        puede estar en el borde de la zona de movimiento cuando el vehículo entra
+        o sale del encuadre — no se requiere superposición total.
+        """
+        if not motion_bbox or not det_boxes:
+            return False
+        mx1, my1, mx2, my2 = motion_bbox
+        for box in det_boxes:
+            bx1, by1, bx2, by2 = box[0], box[1], box[2], box[3]
+            ix1 = max(mx1, bx1)
+            iy1 = max(my1, by1)
+            ix2 = min(mx2, bx2)
+            iy2 = min(my2, by2)
+            inter = max(0.0, ix2 - ix1) * max(0.0, iy2 - iy1)
+            if inter <= 0:
+                continue
+            area_motion = max(1.0, (mx2 - mx1) * (my2 - my1))
+            area_box = max(1.0, (bx2 - bx1) * (by2 - by1))
+            union = area_motion + area_box - inter
+            if union > 0 and (inter / union) >= iou_threshold:
+                return True
+        return False
 
     def update_track_plate(
         self,
@@ -584,7 +634,7 @@ class DetectionPipeline:
     def detect_fast(self, frame: np.ndarray) -> list[TrackedPlateROI]:
         """
         Detección ultra-rápida y directa para frames del navegador.
-        - Sensibilidad optimizada para distancias cortas y largas (conf >= 0.14).
+        - Umbral de confianza tomado de PLATE_CONFIDENCE_THRESHOLD (.env).
         - Filtro geométrico amplio para permitir placas inclinadas y de cerca (0.55 <= AR <= 6.5).
         - Mantiene la identidad del tracker estable mediante asociación por distancia adaptativa e IoU.
         - Retorna las matrículas detectadas en el fotograma actual.
@@ -592,6 +642,9 @@ class DetectionPipeline:
         orig_h, orig_w = frame.shape[:2]
 
         # OpenALPR Motion Detection (MOG2) para Zonas de Interés
+        # NOTA: La zona de movimiento se valida DESPUÉS de la inferencia YOLO
+        # para que solo se active cuando hay una detección de placa/vehículo real.
+        _raw_motion_bbox: Optional[list[int]] = None
         try:
             gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
             fg_mask = self._bg_subtractor.apply(gray)
@@ -611,16 +664,12 @@ class DetectionPipeline:
                     my = max(0, my - int(mh * 0.10))
                     mw = min(orig_w - mx, int(mw * 1.20))
                     mh = min(orig_h - my, int(mh * 1.20))
-                    self._last_motion_bbox = [mx, my, mx + mw, my + mh]
-                else:
-                    self._last_motion_bbox = None
-            else:
-                self._last_motion_bbox = None
+                    _raw_motion_bbox = [mx, my, mx + mw, my + mh]
         except Exception:
             self._last_motion_bbox = None
             self._last_motion_pct = 0
 
-        conf_thresh = 0.14
+        conf_thresh, _ = byte_track_thresholds()
         det_boxes: list[list[float]] = []
         det_confs: list[float] = []
 
@@ -675,6 +724,17 @@ class DetectionPipeline:
                         det_confs.append(cand_confs[i])
         except Exception as e:
             logger.debug("Error en detect_fast: %s", e)
+
+        # Validación inteligente de movimiento: solo activar si hay un vehículo/placa
+        # dentro de la zona de movimiento MOG2. Elimina falsos positivos por personas,
+        # sombras, cambios de luz o cualquier objeto que no sea un auto.
+        if _raw_motion_bbox is not None:
+            vehicle_in_motion = self._is_vehicle_motion(_raw_motion_bbox, det_boxes)
+            self._last_motion_bbox = _raw_motion_bbox if vehicle_in_motion else None
+            self._last_motion_vehicle_detected = vehicle_in_motion
+        else:
+            self._last_motion_bbox = None
+            self._last_motion_vehicle_detected = False
 
         # Si no hay detecciones en este cuadro, avanzar Kalman y no destruir los tracks de golpe
         if not det_boxes:
@@ -828,6 +888,9 @@ class DetectionPipeline:
         orig_h, orig_w = frame.shape[:2]
 
         # OpenALPR Motion Detection (MOG2) para Zonas de Interés Dinámicas
+        # La validación contra YOLO se aplica DESPUÉS de la inferencia para filtrar
+        # movimiento que no corresponde a vehículos (personas, sombras, etc.).
+        _raw_motion_bbox_rtsp: Optional[list[int]] = None
         try:
             gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
             fg_mask = self._bg_subtractor.apply(gray)
@@ -847,11 +910,7 @@ class DetectionPipeline:
                     my = max(0, my - int(mh * 0.10))
                     mw = min(orig_w - mx, int(mw * 1.20))
                     mh = min(orig_h - my, int(mh * 1.20))
-                    self._last_motion_bbox = [mx, my, mx + mw, my + mh]
-                else:
-                    self._last_motion_bbox = None
-            else:
-                self._last_motion_bbox = None
+                    _raw_motion_bbox_rtsp = [mx, my, mx + mw, my + mh]
         except Exception:
             pass
 
@@ -877,8 +936,7 @@ class DetectionPipeline:
         all_raw_boxes: list[list[float]] = []
         all_raw_confs: list[float] = []
 
-        conf_thresh = min(0.20, max(0.12, PLATE_CONFIDENCE_THRESHOLD))
-        raw_pred_thresh = max(0.08, conf_thresh - 0.08)
+        conf_thresh, raw_pred_thresh = byte_track_thresholds()
         try:
             raw_detections = self.detector.predict(frame)
             for d in raw_detections:
@@ -934,6 +992,17 @@ class DetectionPipeline:
         except Exception as e:
             logger.error("Error en inferencia de matrículas: %s", e)
 
+        # Validación inteligente de movimiento para stream RTSP: activar zona de movimiento
+        # SOLO cuando hay una detección YOLO de placa/vehículo en esa zona.
+        _all_det_boxes_rtsp = det_high_boxes + det_low_boxes
+        if _raw_motion_bbox_rtsp is not None:
+            _vehicle_in_motion_rtsp = self._is_vehicle_motion(_raw_motion_bbox_rtsp, _all_det_boxes_rtsp)
+            self._last_motion_bbox = _raw_motion_bbox_rtsp if _vehicle_in_motion_rtsp else None
+            self._last_motion_vehicle_detected = _vehicle_in_motion_rtsp
+        else:
+            self._last_motion_bbox = None
+            self._last_motion_vehicle_detected = False
+
         # 3. Asociación ByteTrack FASE 1: Detecciones con DIoU (tolerante a movimiento rápido).
         # Umbral -0.25: ahora que compute_diou_matrix descarta por escala inconsistente
         # (ver compuerta de área), no hace falta relajar más este valor — así se evita
@@ -980,7 +1049,7 @@ class DetectionPipeline:
         for trk in self._trackers:
             # Seguimiento inteligente ITS profesional: usar predicción Kalman cuando no hay detección reciente
             # Permitir hasta 4 frames de predicción (~130ms a 30 FPS) para seguimiento fluido sin parpadeos
-            if (trk.hits >= 1 and trk.confidence >= 0.18) and trk.time_since_update <= 4:
+            if (trk.hits >= 1 and trk.confidence >= raw_pred_thresh) and trk.time_since_update <= 4:
                 state_box = trk.get_state()
                 x1 = max(0, min(orig_w - 5, int(state_box[0])))
                 y1 = max(0, min(orig_h - 5, int(state_box[1])))
@@ -1128,13 +1197,26 @@ class DetectionPipeline:
         out_frame = frame.copy()
         h, w = out_frame.shape[:2]
 
-        # 0. Zona de Movimiento MOG2 translúcida (OpenALPR / Rekor Scout)
-        if self._last_motion_bbox and self._last_motion_pct > 3:
+        # 0. Zona de Movimiento MOG2 translúcida — SOLO si hay un vehículo/placa
+        # detectado por YOLO en esa zona (vehicle_detected=True). Elimina el cuadro
+        # verde que aparecía con personas, sombras o cualquier movimiento que no sea un auto.
+        if self._last_motion_bbox and self._last_motion_pct > 3 and self._last_motion_vehicle_detected:
             mx1, my1, mx2, my2 = self._last_motion_bbox
             overlay = out_frame.copy()
             cv2.rectangle(overlay, (mx1, my1), (mx2, my2), (40, 190, 70), -1)
             cv2.addWeighted(overlay, 0.18, out_frame, 0.82, 0, out_frame)
             cv2.rectangle(out_frame, (mx1, my1), (mx2, my2), (40, 200, 70), 1)
+            # Etiqueta táctica "VEHÍCULO DETECTADO" en la zona de movimiento
+            cv2.putText(
+                out_frame,
+                "VEHICULO",
+                (mx1 + 4, my1 + 14),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.40,
+                (60, 230, 80),
+                1,
+                cv2.LINE_AA,
+            )
 
         with self._overlays_lock:
             overlays = list(self._current_overlays)
@@ -1247,9 +1329,8 @@ def create_detection_pipeline(
     else:
         logger.info("Modelo de placas detectado correctamente en: %s", model_path)
 
-    conf_thresh = min(0.20, max(0.12, PLATE_CONFIDENCE_THRESHOLD))
-    raw_thresh = max(0.08, conf_thresh - 0.08)
-    browser_conf = min(0.12, max(0.07, PLATE_CONFIDENCE_THRESHOLD - 0.08))
+    _, raw_thresh = byte_track_thresholds()
+    browser_conf = raw_thresh
 
     # Detector principal (loop RTSP @ 512px)
     rtsp_det = create_detector(

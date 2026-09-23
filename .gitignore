@@ -67,3 +67,12 @@ yolo11n.pt
 .env.development.local
 .env.test.local
 .env.production.local
+
+# Secretos: nunca versionar archivos .env reales (solo las plantillas .env.example)
+.env
+**/.env
+!**/.env.example
+
+# Modelos: respaldos y candidatos de entrenamiento (ver services/anpr/models/MODEL_CARD.md)
+services/anpr/models/archive/
+services/anpr/models/*_candidato.pt

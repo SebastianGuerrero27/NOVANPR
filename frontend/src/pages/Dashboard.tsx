@@ -438,7 +438,7 @@ const Dashboard: React.FC = () => {
         try {
           const data = JSON.parse(event.data as string);
           if (data.rois !== undefined) {
-            drawWebcamHUD(data.rois, data.motion_bbox, data.motion_pct);
+            drawWebcamHUD(data.rois, data.motion_bbox, data.motion_pct, data.motion_vehicle_detected);
           }
         } catch {
           // frame corrupto, ignorar
@@ -480,6 +480,8 @@ const Dashboard: React.FC = () => {
   const motionBboxRef = useRef<[number, number, number, number] | null>(null);
   const motionPctRef = useRef<number>(0);
   const motionLastSeenRef = useRef<number>(0);
+  // Nueva bandera: solo mostrar cuadro de movimiento si el backend confirmó un vehículo en esa zona
+  const motionVehicleRef = useRef<boolean>(false);
 
   const animatedTracksRef = useRef<Map<number, {
     id: number;
@@ -490,9 +492,11 @@ const Dashboard: React.FC = () => {
     vy: number;
     confidence: number;
     plate: string;
+    partialPlate: string;   // Texto OCR parcial para mostrar mientras se escanea
     status: string;
     plateConfidence: number;
     lastSeen: number;
+    lastUpdate: number;    // Timestamp del último update del servidor (para extrapolación)
     opacity: number;
   }>>(new Map());
   const lastRafTimeRef = useRef<number>(performance.now());
@@ -559,12 +563,15 @@ const Dashboard: React.FC = () => {
     const scaleY = renderHeight / targetH;
 
     // ─────────────────────────────────────────────────────────────────────────
-    // 0. Renderizar Zona de Interés de Movimiento MOG2 (Estilo Rekor Scout / OpenALPR)
+    // 0. Renderizar Zona de Interés de Movimiento MOG2 — INTELIGENTE PARA AUTOS
+    // Solo se muestra si el backend confirmó un vehículo en esa zona (motionVehicleRef=true).
+    // Elimina el parpadeo de cuadro verde cuando se mueve una persona, sombra u objeto.
     // ─────────────────────────────────────────────────────────────────────────
     if (
       motionBboxRef.current &&
       now - motionLastSeenRef.current < 600 &&
-      motionPctRef.current > 3
+      motionPctRef.current > 3 &&
+      motionVehicleRef.current   // <— NUEVO: filtro inteligente por vehículo
     ) {
       const [mx1_raw, my1_raw, mx2_raw, my2_raw] = motionBboxRef.current;
       const mx1 = offsetX + mx1_raw * scaleX;
@@ -591,8 +598,8 @@ const Dashboard: React.FC = () => {
       ctx.strokeRect(mx1, my1, mw, mh);
       ctx.setLineDash([]);
 
-      // Etiqueta táctica de movimiento
-      const mLabel = `ZONA MOVIMIENTO • ${motionPctRef.current}%`;
+      // Etiqueta táctica con indicador de VEHÍCULO confirmado por YOLO
+      const mLabel = `VEHÍCULO • MOV ${motionPctRef.current}%`;
       ctx.font = 'bold 10px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, monospace';
       const mTextW = ctx.measureText(mLabel).width;
       const mBadgeW = mTextW + 14;
@@ -624,11 +631,21 @@ const Dashboard: React.FC = () => {
         }
       }
 
-      // Mapeo directo 1:1 con anclaje instantáneo sin retardo ni deriva
-      track.currentBbox[0] = track.anchorBbox[0];
-      track.currentBbox[1] = track.anchorBbox[1];
-      track.currentBbox[2] = track.anchorBbox[2];
-      track.currentBbox[3] = track.anchorBbox[3];
+      // Extrapolación Kalman de posición en tiempo real:
+      // En vez de anclar el bbox directamente, usamos la velocidad del estado Kalman
+      // para predecir la posición actual de la placa entre actualizaciones del servidor.
+      // Máximo 80ms de look-ahead para evitar deriva excesiva si el auto frena.
+      const timeSinceUpdate = (now - track.lastUpdate) / 1000; // segundos
+      const lookAhead = Math.min(0.080, timeSinceUpdate);
+      // Los valores vx/vy del servidor están en píxeles del frame de inferencia (640px).
+      // Nota: scaleX/scaleY (definidos abajo) aún no están en scope aquí,
+      // por eso la extrapolación se aplica en coordenadas de frame y se escala al renderizar.
+      const extraX = track.vx * lookAhead;
+      const extraY = track.vy * lookAhead;
+      track.currentBbox[0] = track.anchorBbox[0] + extraX;
+      track.currentBbox[1] = track.anchorBbox[1] + extraY;
+      track.currentBbox[2] = track.anchorBbox[2] + extraX;
+      track.currentBbox[3] = track.anchorBbox[3] + extraY;
 
       const bx1 = offsetX + track.currentBbox[0] * scaleX;
       const by1 = offsetY + track.currentBbox[1] * scaleY;
@@ -751,18 +768,23 @@ const Dashboard: React.FC = () => {
 
       // ─────────────────────────────────────────────────────────────────
       // 2. Badge OCR Flotante Glassmorphism encima de la placa
+      // Muestra texto parcial mientras el OCR sigue escaneando (no solo "ESCANEANDO").
       // ─────────────────────────────────────────────────────────────────
       const confPct = track.plateConfidence > 0
         ? Math.round(track.plateConfidence * 100)
         : Math.round(track.confidence * 100);
 
-      const hasPlate = Boolean(track.plate && track.plate.length >= 3);
-      const labelText = hasPlate 
+      const hasPlate = Boolean(track.plate && track.plate.length >= 6);
+      const isScanning = !hasPlate && (track.status === 'escaneando' || track.status === '');
+      // Si hay texto parcial del OCR, mostrarlo en lugar del genérico "ESCANEANDO"
+      const displayText = hasPlate
         ? `${track.plate}  •  ${confPct}%`
-        : `ESCANEANDO OCR...  •  ${confPct}%`;
+        : track.partialPlate && track.partialPlate.length >= 3
+          ? `◌ ${track.partialPlate}  •  ${confPct}%`
+          : `◌ ESCANEANDO OCR  •  ${confPct}%`;
 
       ctx.font = 'bold 13px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, monospace';
-      const textMetrics = ctx.measureText(labelText);
+      const textMetrics = ctx.measureText(displayText);
       const badgeW = textMetrics.width + 24;
       const badgeH = 22;
       const finalBadgeX = Math.max(offsetX + 4, Math.min(rect.width - badgeW - 4, badgeX - badgeW / 2));
@@ -790,7 +812,22 @@ const Dashboard: React.FC = () => {
 
       // Texto de la Matrícula
       ctx.fillStyle = '#ffffff';
-      ctx.fillText(labelText, finalBadgeX + 18, finalBadgeY + 15);
+      ctx.fillText(displayText, finalBadgeX + 18, finalBadgeY + 15);
+
+      // Animación de escaner pulsante: barra de progreso debajo del badge
+      // mientras el OCR está activo (status='escaneando' o aún sin placa confirmada).
+      if (isScanning) {
+        const scanProgress = ((now / 800) % 1); // ciclo de 800ms
+        const scanBarW = badgeW * scanProgress;
+        const scanY = finalBadgeY + badgeH + 2;
+        // Fondo gris de la barra
+        ctx.fillStyle = 'rgba(255,255,255,0.08)';
+        ctx.fillRect(finalBadgeX, scanY, badgeW, 3);
+        // Barra animada de color ámbar pulsante
+        const scanAlpha = 0.5 + 0.5 * Math.sin(now / 200);
+        ctx.fillStyle = `rgba(245, 158, 11, ${scanAlpha})`;
+        ctx.fillRect(finalBadgeX, scanY, scanBarW, 3);
+      }
 
       ctx.restore();
     });
@@ -803,7 +840,8 @@ const Dashboard: React.FC = () => {
   const drawWebcamHUD = (
     rois: any[],
     motionBbox?: [number, number, number, number] | null,
-    motionPct?: number
+    motionPct?: number,
+    motionVehicleDetected?: boolean
   ) => {
     const now = performance.now();
     const tracksMap = animatedTracksRef.current;
@@ -812,6 +850,12 @@ const Dashboard: React.FC = () => {
       motionBboxRef.current = motionBbox;
       motionPctRef.current = motionPct ?? 0;
       motionLastSeenRef.current = now;
+      // Actualizar bandera de vehículo detectado: si el backend confirmó un vehículo,
+      // mantenerlo visible hasta que expire el cuadro de movimiento (600ms).
+      motionVehicleRef.current = motionVehicleDetected ?? false;
+    } else {
+      // Sin zona de movimiento activa: limpiar la bandera
+      motionVehicleRef.current = false;
     }
 
     rois.forEach((r: any) => {
@@ -823,6 +867,10 @@ const Dashboard: React.FC = () => {
         Array.isArray(r.oriented_box) && r.oriented_box.length === 4
           ? r.oriented_box
           : undefined;
+      // Texto parcial: placa cruda que el OCR leyó aunque aún no sea válida (>= 3 chars)
+      const partialPlate = (!r.plate && r.partial_plate && r.partial_plate.length >= 3)
+        ? r.partial_plate
+        : '';
 
       if (tracksMap.has(tid)) {
         const trk = tracksMap.get(tid)!;
@@ -833,10 +881,14 @@ const Dashboard: React.FC = () => {
         trk.confidence = r.confidence ?? trk.confidence;
         if (r.plate) {
           trk.plate = r.plate;
+          trk.partialPlate = '';
           trk.plateConfidence = r.plate_confidence ?? trk.plateConfidence;
+        } else if (partialPlate) {
+          trk.partialPlate = partialPlate;
         }
         if (r.status) trk.status = r.status;
         trk.lastSeen = now;
+        trk.lastUpdate = now;
         trk.opacity = 1.0;
       } else {
         tracksMap.set(tid, {
@@ -848,9 +900,11 @@ const Dashboard: React.FC = () => {
           vy,
           confidence: r.confidence ?? 0.8,
           plate: r.plate || '',
+          partialPlate: partialPlate,
           status: r.status || '',
           plateConfidence: r.plate_confidence || 0,
           lastSeen: now,
+          lastUpdate: now,
           opacity: 1.0,
         });
       }
@@ -984,7 +1038,7 @@ const Dashboard: React.FC = () => {
         if (res.ok) {
           const data = await res.json();
           if (data.rois) {
-            drawWebcamHUD(data.rois, data.motion_bbox, data.motion_pct);
+            drawWebcamHUD(data.rois, data.motion_bbox, data.motion_pct, data.motion_vehicle_detected);
           }
           const latency = Math.round(performance.now() - t0);
           setWebcamLatency(latency);

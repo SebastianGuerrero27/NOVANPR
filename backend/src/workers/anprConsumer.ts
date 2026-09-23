@@ -7,6 +7,7 @@
 import { Server as SocketIOServer } from 'socket.io';
 import sql from 'mssql';
 import { getDB } from '../config/db';
+import { findBlacklistMatch } from '../services/plateMatching';
 
 export interface AnprStreamPayload {
   event_id: string;
@@ -43,17 +44,11 @@ export class AnprEventConsumer {
       const placaLimpia = event.placa.replace(/[^A-Z0-9]/g, '');
 
       // 1. Verificación en SQL Server: Lista Negra (Alertas Críticas ECU 911 / Policía Nacional)
-      const queryListaNegra = `
-        SELECT TOP 1 id, placa, motivo, nivel_alerta, fecha_registro
-        FROM ListaNegra
-        WHERE REPLACE(REPLACE(placa, '-', ''), ' ', '') = @placa AND activo = 1
-      `;
-      const resultLN = await pool.request()
-        .input('placa', sql.VarChar(20), placaLimpia)
-        .query(queryListaNegra);
+      //    Coincidencia tolerante a errores de OCR (exacta o aproximada).
+      const matchLN = await findBlacklistMatch(pool, placaLimpia);
 
-      const estaEnListaNegra = resultLN.recordset.length > 0;
-      const alertaData = estaEnListaNegra ? resultLN.recordset[0] : null;
+      const estaEnListaNegra = matchLN !== null;
+      const alertaData = matchLN ? { ...matchLN.row, coincidencia: matchLN.coincidencia } : null;
 
       // 2. Verificación en SQL Server: Lista Blanca (Vehículos Autorizados Institucionales)
       const queryListaBlanca = `
