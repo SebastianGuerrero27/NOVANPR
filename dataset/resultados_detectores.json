@@ -1,0 +1,36 @@
+{
+  "split": "test",
+  "conf": 0.35,
+  "resultados": {
+    "actual_koushim": {
+      "precision": 0.42857142857142855,
+      "recall": 0.3333333333333333,
+      "f1": 0.375,
+      "ap50": 0.39287749287749285,
+      "iou_medio": 0.7601251472655061,
+      "detector_ocr_exacto": 0.4444444444444444,
+      "ms_por_imagen": 489.93436000018846,
+      "ruta": "models/license_plate_detector.pt"
+    },
+    "yolo26n_ecuador": {
+      "precision": 0.8888888888888888,
+      "recall": 0.8888888888888888,
+      "f1": 0.8888888888888888,
+      "ap50": 0.9777777777777779,
+      "iou_medio": 0.868895847454863,
+      "detector_ocr_exacto": 0.7777777777777778,
+      "ms_por_imagen": 790.0855299994873,
+      "ruta": "models/yolo26n_ecuador_candidato.pt"
+    },
+    "rfdetr_nano_ecuador": {
+      "precision": 0.9,
+      "recall": 1.0,
+      "f1": 0.9473684210526316,
+      "ap50": 0.9555555555555556,
+      "iou_medio": 0.875314828927055,
+      "detector_ocr_exacto": 0.7777777777777778,
+      "ms_por_imagen": 1148.0015800007095,
+      "ruta": "models/rfdetr_nano_ecuador_candidato.pth"
+    }
+  }
+}

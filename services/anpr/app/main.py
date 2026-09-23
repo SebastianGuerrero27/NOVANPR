@@ -36,6 +36,7 @@ from app.config import (
     FRAME_SKIP,
     INFERENCE_THROTTLE_MS,
     MEDIA_DIR,
+    OCR_VERIFIER_VOTE_WEIGHT,
     RUNNING_IN_DOCKER,
     WEBCAM_INDEX,
     RTSP_URL,
@@ -43,6 +44,7 @@ from app.config import (
 from app.core.detector import DetectionPipeline, compute_crop_sharpness, create_detection_pipeline
 from app.core.frame_selector import BestFrameSelector
 from app.core.ocr_engine import create_ocr_engine
+from app.core.ocr_verifier import get_verifier
 from app.core.video_source import RTSPSource, VideoSource, WebcamSource, create_video_source
 from app.services.debug_stream import (
     DebugFrameBuffer,
@@ -102,6 +104,15 @@ def _bbox_sharpness(frame: np.ndarray, plate_bbox: list[int]) -> Optional[float]
         return compute_crop_sharpness(frame[max(0, y1):min(h, y2), max(0, x1):min(w, x2)])
     except Exception:
         return None
+
+
+def _padded_crop(frame: np.ndarray, plate_bbox: list[int], pad_x: float = 0.10, pad_y: float = 0.15) -> np.ndarray:
+    """Recorte de la placa con margen, para que el OCR no pierda caracteres en los bordes."""
+    x1, y1, x2, y2 = [int(v) for v in plate_bbox]
+    h, w = frame.shape[:2]
+    px, py = int((x2 - x1) * pad_x), int((y2 - y1) * pad_y)
+    crop = frame[max(0, y1 - py):min(h, y2 + py), max(0, x1 - px):min(w, x2 + px)]
+    return crop if crop.size else frame
 
 
 def _enqueue_async_ocr(tracking_id: int, frame_copy: np.ndarray, plate_bbox: list[int]) -> None:
@@ -439,6 +450,25 @@ def _trigger_photo_capture(candidate, ocr_worker: AsyncOcrWorker) -> None:
                         verified_plate = fmt_p
                         verified_conf = max(deep_res.confianza, val_score)
 
+            # 2.1 Segunda lectura con PP-OCRv6 (OpenVINO) sobre la mejor foto. Solo aquí, una
+            # vez por vehículo, porque es más precisa pero demasiado lenta para cada frame.
+            verifier_plate = ""
+            verifier_conf = 0.0
+            verifier = get_verifier()
+            if verifier is not None:
+                ver = verifier.read(_padded_crop(frame_copy, candidate.plate_bbox))
+                if ver.plate and ver.within_budget:
+                    is_val, fmt_v, _ = validate_ecuadorian_plate(ver.plate)
+                    if is_val:
+                        verifier_plate, verifier_conf = fmt_v, ver.confidence
+                        if not verified_plate:
+                            verified_plate, verified_conf = fmt_v, ver.confidence
+                logger.info(
+                    "[VERIFICADOR %s] Track #%d | lectura '%s' (%.2f) en %.0f ms%s",
+                    verifier.description, tracking_id, ver.plate or "-", ver.confidence, ver.elapsed_ms,
+                    "" if ver.within_budget else " — descartada por exceder el presupuesto",
+                )
+
             # Consenso temporal: la lectura profunda de este fotograma se suma como un voto
             # más al consenso del track (lecturas de varios frames), en lugar de reemplazarlo.
             # Así un único frame mal leído no decide la placa registrada.
@@ -446,13 +476,11 @@ def _trigger_photo_capture(candidate, ocr_worker: AsyncOcrWorker) -> None:
                 use_browser = bool(info_browser)
                 add_vote = pipeline.update_browser_track_plate if use_browser else pipeline.update_track_plate
                 get_info = pipeline.get_browser_track_info if use_browser else pipeline.get_track_info
-                add_vote(
-                    tracking_id,
-                    verified_plate,
-                    verified_conf,
-                    "",
-                    quality=_bbox_sharpness(frame_copy, candidate.plate_bbox),
-                )
+                sharpness = _bbox_sharpness(frame_copy, candidate.plate_bbox)
+                add_vote(tracking_id, verified_plate, verified_conf, "", quality=sharpness)
+                if verifier_plate:
+                    # El verificador pesa más que una lectura rápida (OCR_VERIFIER_VOTE_WEIGHT)
+                    add_vote(tracking_id, verifier_plate, verifier_conf * OCR_VERIFIER_VOTE_WEIGHT, "", quality=sharpness)
                 consensus = get_info(tracking_id)
                 consensus_plate = consensus.get("plate", "")
                 if consensus_plate and consensus_plate != verified_plate.replace("-", "").upper():
@@ -607,6 +635,8 @@ async def lifespan(app: FastAPI):
     ocr_engine = create_ocr_engine()
     _ocr_worker = AsyncOcrWorker(ocr_engine, on_ocr_completed=_pipeline.update_track_plate)
     _ocr_worker.start()
+    # Precarga del verificador PP-OCRv6 (la compilación OpenVINO tarda unos segundos)
+    threading.Thread(target=get_verifier, daemon=True, name="OcrVerifierInit").start()
 
     _running = True
 
@@ -930,6 +960,17 @@ def get_active_camera():
 
 
 
+def _model_info() -> dict:
+    """Modelos realmente cargados (detector, OCR principal y verificador)."""
+    ocr = getattr(getattr(_ocr_worker, "_agent", None), "_ocr", None)
+    verifier = get_verifier() if _running else None
+    return {
+        "detector": os.path.basename(getattr(getattr(_pipeline, "detector", None), "model_path", "") or "") or None,
+        "ocr_engine": f"{getattr(ocr, 'engine_name', '?')} ({getattr(ocr, 'model_id', '?')})" if ocr else None,
+        "ocr_verifier": verifier.description if verifier else None,
+    }
+
+
 @app.get("/status")
 def get_status():
     """Estado y métricas de rendimiento del microservicio."""
@@ -939,7 +980,7 @@ def get_status():
         "camera_source": CAMERA_SOURCE,
         "capture_fps": round(_capture_fps, 1),
         "tracker_fps": round(_pipeline.fps if _pipeline else 0.0, 1),
-        "ocr_engine": "PaddleOCR (PP-OCRv4 ONNX)",
+        **_model_info(),
         "architecture": "Two-Phase: Fast Capture + Async OCR",
     }
 
@@ -1064,5 +1105,5 @@ def root():
         "service": "ECU 911 ANPR Microservice",
         "version": "2.0.0",
         "status": "running" if _running else "starting",
-        "ocr_engine": "PaddleOCR",
+        **_model_info(),
     }
