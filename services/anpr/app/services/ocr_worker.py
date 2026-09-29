@@ -31,7 +31,7 @@ import cv2
 import httpx
 import numpy as np
 
-from app.config import BACKEND_URL, MEDIA_DIR
+from app.config import BACKEND_HEADERS, BACKEND_URL, MEDIA_DIR
 from app.core.ocr_engine import OcrEngine, create_ocr_engine
 from app.core.plate_agent import PlateEnhancementAgent, PlateAnalysisResult
 from app.utils.logger import get_logger
@@ -232,7 +232,7 @@ class AsyncOcrWorker:
         self._on_ocr_completed = on_ocr_completed
         self._running = False
         self._worker_thread: Optional[threading.Thread] = None
-        self._client = httpx.Client(timeout=8.0)
+        self._client = httpx.Client(timeout=8.0, headers=BACKEND_HEADERS)
 
         # Acumuladores de hipotesis indexados por tracking_id
         self._accumulators: Dict[int, OcrHypothesisAccumulator] = {}

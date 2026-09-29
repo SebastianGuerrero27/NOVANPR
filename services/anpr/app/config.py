@@ -91,6 +91,20 @@ OCR_VERIFIER_MAX_MS: float = float(os.getenv("OCR_VERIFIER_MAX_MS", "2000"))
 # Peso del voto del verificador en el consenso temporal (una lectura normal pesa su confianza ≤ 1)
 OCR_VERIFIER_VOTE_WEIGHT: float = float(os.getenv("OCR_VERIFIER_VOTE_WEIGHT", "2.0"))
 
+# Rectificador aprendido (YOLO26n-pose, 4 esquinas). Si el archivo no existe se usa la
+# rectificación heurística por contornos. Entrenar con scripts/train_plate_rectifier.py.
+PLATE_RECTIFIER_PATH: str = os.getenv("PLATE_RECTIFIER_PATH", "models/plate_rectifier.pt")
+PLATE_RECTIFIER_MIN_KPT_CONF: float = float(os.getenv("PLATE_RECTIFIER_MIN_KPT_CONF", "0.5"))
+
+# Atributos del vehículo (tipo, color, marca, modelo) como segundo factor para las listas.
+# YOLO26n COCO ubica el vehículo y CLIP (zero-shot) clasifica contra el catálogo ecuatoriano.
+VEHICLE_ATTR_ENABLED: bool = os.getenv("VEHICLE_ATTR_ENABLED", "true").lower() in ("true", "1", "yes")
+VEHICLE_DETECTOR_PATH: str = os.getenv("VEHICLE_DETECTOR_PATH", "yolo26n.pt")
+VEHICLE_CLIP_MODEL: str = os.getenv("VEHICLE_CLIP_MODEL", "ViT-B-32")
+VEHICLE_CLIP_PRETRAINED: str = os.getenv("VEHICLE_CLIP_PRETRAINED", "laion2b_s34b_b79k")
+# Probabilidad mínima para aceptar un atributo; por debajo se reporta como desconocido
+VEHICLE_ATTR_MIN_CONF: float = float(os.getenv("VEHICLE_ATTR_MIN_CONF", "0.35"))
+
 # Detector de placas: "yolo" (YOLOv8/YOLO11/YOLO26 vía Ultralytics) o "rfdetr" (RF-DETR)
 DETECTOR_BACKEND: str = os.getenv("DETECTOR_BACKEND", "yolo").lower()
 
@@ -126,11 +140,10 @@ RUNNING_IN_DOCKER: bool = (
 BACKEND_URL: str = os.getenv("BACKEND_URL", "http://localhost:5000")
 BACKEND_SOCKETIO_URL: str = os.getenv("BACKEND_SOCKETIO_URL", "http://localhost:5000")
 
-# Endpoint de sincronización (nuevo modelo OpenALPR Scout)
-SYNC_ENDPOINT: str = os.getenv("SYNC_ENDPOINT", "/api/detecciones/sync")
-
-# Habilitar sincronización legacy (/api/eventos/sync → EventosIngreso) en paralelo
-LEGACY_SYNC_ENABLED: bool = os.getenv("LEGACY_SYNC_ENABLED", "true").lower() in ("true", "1", "yes")
+# Token compartido con el backend para las rutas máquina a máquina (/api/detecciones/ingreso,
+# /completar-ocr, /descarte). Debe coincidir con ANPR_SERVICE_TOKEN del backend.
+ANPR_SERVICE_TOKEN: str = os.getenv("ANPR_SERVICE_TOKEN", "")
+BACKEND_HEADERS: dict[str, str] = {"X-Servicio-Token": ANPR_SERVICE_TOKEN} if ANPR_SERVICE_TOKEN else {}
 
 # =============================================================================
 # Base de Datos / Cámara

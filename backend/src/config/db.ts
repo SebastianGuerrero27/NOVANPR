@@ -2,9 +2,9 @@ import dotenv from 'dotenv';
 dotenv.config();
 
 import sql from 'mssql';
+import { cargarConfiguracion } from '../services/configuracion';
 import fs from 'fs';
 import path from 'path';
-import bcrypt from 'bcryptjs';
 
 const isDocker = process.env.DOCKER_CONTAINER === 'true';
 const defaultDbHost = isDocker ? 'db' : '127.0.0.1';
@@ -48,8 +48,8 @@ export async function connectDB(): Promise<sql.ConnectionPool> {
       pool = await new sql.ConnectionPool(config).connect();
       console.log(`[DB] Conectado exitosamente a la base de datos principal: ${config.database}`);
 
-      // Sembrar datos (usuarios por defecto)
-      await seedDatabase();
+      await verificarConfiguracionInicial();
+      await cargarConfiguracion(pool);
 
       return pool;
     } catch (err: any) {
@@ -96,6 +96,12 @@ async function initDatabaseSchema() {
     await runMigration('migration_placa_varchar20.sql');
     await runMigration('migration_fuente_varchar255.sql');
     await runMigration('migration_auditoria_descartes.sql');
+    await runMigration('migration_evaluacion.sql');
+    await runMigration('migration_vehiculo_atributos.sql');
+    await runMigration('migration_auditoria_propietario.sql');
+    await runMigration('migration_v2_seguridad.sql');
+    await runMigration('migration_v3_operacion.sql');
+    await runMigration('migration_v4_lectura_valida.sql');
   } catch (error: any) {
     console.error('[DB] Error al inicializar el esquema de base de datos:', error.message);
   }
@@ -130,79 +136,19 @@ async function runMigration(filename: string) {
   }
 }
 
-async function seedDatabase() {
+/**
+ * Sin datos de siembra: el sistema no precarga usuarios, placas ni cámaras ficticias.
+ * Solo informa si falta crear el primer administrador (pantalla de configuración inicial).
+ */
+async function verificarConfiguracionInicial() {
   try {
-    const request = pool.request();
-    // Validar si ya existen usuarios
-    const checkUsers = await request.query('SELECT COUNT(*) as count FROM Usuarios');
-    const userCount = checkUsers.recordset[0].count;
-
-    if (userCount === 0) {
-      console.log('[DB] Sembrando usuarios por defecto (admin y operador)...');
-      
-      const adminPassHash = await bcrypt.hash('PasswordAdmin123!', 10);
-      const operatorPassHash = await bcrypt.hash('PasswordOperator123!', 10);
-
-      await request
-        .input('adminHash', sql.VarChar, adminPassHash)
-        .query(`
-          INSERT INTO Usuarios (username, password_hash, nombre, rol, activo)
-          VALUES ('admin', @adminHash, 'Administrador ECU 911', 'Admin', 1)
-        `);
-
-      await request
-        .input('opHash', sql.VarChar, operatorPassHash)
-        .query(`
-          INSERT INTO Usuarios (username, password_hash, nombre, rol, activo)
-          VALUES ('operator', @opHash, 'Operador Zona 3', 'Operador', 1)
-        `);
-      
-      console.log('[DB] Usuarios por defecto sembrados (admin / operator).');
-    }
-
-    // Sembrar placa de prueba en lista negra si está vacía
-    const checkBlacklist = await request.query('SELECT COUNT(*) as count FROM ListaNegra');
-    if (checkBlacklist.recordset[0].count === 0) {
-      console.log('[DB] Sembrando datos de prueba en Lista Negra...');
-      await request.query(`
-        INSERT INTO ListaNegra (placa, motivo, nivel_alerta, activo)
-        VALUES 
-        ('PBA-1234', 'Vehículo reportado por robo en Ambato', 'CRITICA', 1),
-        ('TBG-987', 'Vehículo sospechoso involucrado en asalto', 'ALTA', 1)
-      `);
-      console.log('[DB] Placas de prueba sembradas en Lista Negra.');
-    }
-
-    // Sembrar vehículos autorizados si la tabla existe y está vacía
-    try {
-      const checkWhitelist = await request.query('SELECT COUNT(*) as count FROM VehiculosAutorizados');
-      if (checkWhitelist.recordset[0].count === 0) {
-        console.log('[DB] Sembrando datos de prueba en VehiculosAutorizados...');
-        await pool.request().query(`
-          INSERT INTO VehiculosAutorizados (placa, propietario, departamento, tipo_vehiculo, activo)
-          VALUES 
-          ('PBA5678', 'Coordinación Zonal 3 - ECU 911', 'Dirección', 'Institucional', 1),
-          ('TCA9012', 'Ing. Carlos Medina', 'Operaciones', 'Funcionario', 1),
-          ('ABC999',  'Prueba Sistema ANPR', 'Desarrollo / Tesis', 'Prueba', 1)
-        `);
-        console.log('[DB] Vehículos autorizados de prueba sembrados.');
-      }
-    } catch (whitelistErr: any) {
-      // Ignorar si no existe
-    }
-
-    // Limpiar detecciones simuladas ficticias previas
-    try {
-      await pool.request().query(`
-        DELETE FROM DeteccionVehiculo WHERE fuente = 'simulacion' OR imagen_vehiculo_path LIKE '%simulado%';
-        DELETE FROM EventosIngreso WHERE imagen_vehiculo_path LIKE '%simulado%';
-      `);
-      console.log('[DB] Registros de simulación ficticios purgados.');
-    } catch (e: any) {
-      // Ignorar si no existe
+    const r = await pool.request().query(`
+      SELECT COUNT(*) AS n FROM Usuarios u JOIN Roles r ON r.id = u.rol_id WHERE r.codigo = 'ADMIN'`);
+    if (r.recordset[0].n === 0) {
+      console.log('[DB] No hay administradores: abra el sistema y complete la configuración inicial para crear el primero.');
     }
   } catch (error: any) {
-    console.error('[DB] Error al sembrar datos de prueba:', error.message);
+    console.error('[DB] No se pudo verificar la configuración inicial:', error.message);
   }
 }
 

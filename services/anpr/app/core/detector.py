@@ -48,6 +48,14 @@ from app.config import (
 from app.core.models import Detection
 from app.core.detectors import BaseDetector, create_detector
 from app.core.ocr_engine import create_ocr_engine
+from app.core.verificacion_placa import (
+    MIN_CARACTERES,
+    AnalisisCaracteres,
+    analizar_caracteres,
+    cuadrilatero_placa,
+    punto_en_roi,
+    recorte_con_margen,
+)
 from app.utils.logger import get_logger
 
 from concurrent.futures import ThreadPoolExecutor
@@ -70,6 +78,35 @@ _PLATE_PATTERN_MOTO = re.compile(r"^[A-Z]{2}\d{3,4}[A-Z]?$")     # Ej. AB123C, P
 # recorte se considera borroso por desenfoque de movimiento o desenfoque óptico
 # y no debería alimentar el consenso de placa ni el pipeline de OCR.
 _MIN_SHARPNESS_VARIANCE = 35.0
+
+# Verificación geométrica por track: el análisis de caracteres (≈3–5 ms) se repite como
+# máximo 4 veces por segundo por track; entre análisis se reutiliza el cuadrilátero.
+_INTERVALO_ANALISIS_S = 0.25
+
+# Estados que decide el backend (o la confirmación del registro): una lectura OCR posterior
+# ("leida"/"escaneando") no debe sobrescribirlos.
+_ESTADOS_FINALES = {"confirmada", "autorizado", "alerta", "no_reconocido", "pendiente_revision"}
+
+# Colores de estado (BGR) iguales a los del sistema web: autorizado #15803d,
+# pendiente #2563eb, no registrado #d97706, alerta #b91c1c; en lectura, cian.
+_COLOR_ESTADO = {
+    "autorizado": (61, 128, 21),
+    "pendiente_revision": (235, 99, 37),
+    "no_reconocido": (6, 119, 217),
+    "alerta": (28, 28, 185),
+}
+_COLOR_LEYENDO = (230, 200, 0)
+_TEXTO_ESTADO = {
+    "autorizado": "AUTORIZADO",
+    "pendiente_revision": "POR CONFIRMAR",
+    "no_reconocido": "NO REGISTRADO",
+    "alerta": "ALERTA",
+}
+
+
+def placa_con_guion(placa: str) -> str:
+    """PSY589 -> PSY-589 (formato de presentación ANT)."""
+    return re.sub(r"^([A-Z]{2,3})(\d)", r"\1-\2", placa or "")
 
 
 def normalize_plate_text(raw_text: str) -> str:
@@ -135,6 +172,9 @@ class KalmanBoxTracker:
       - (v_cx, v_cy, v_s): Velocidades de traslación y cambio de escala
     """
     count = 0
+    # Hora en que nació cada track (id -> time.time()). Sobrevive a la eliminación del track
+    # para poder medir la latencia de principio a fin cuando el vehículo ya salió de escena.
+    birth_times: dict[int, float] = {}
 
     # Ganancia base del término de velocidad del proceso (v_cx, v_cy, v_s).
     # Se usa como punto de partida y luego se escala dinámicamente en predict()
@@ -144,6 +184,10 @@ class KalmanBoxTracker:
     def __init__(self, bbox: list[float], confidence: float = 1.0) -> None:
         KalmanBoxTracker.count += 1
         self.id = KalmanBoxTracker.count
+        now = time.time()
+        KalmanBoxTracker.birth_times[self.id] = now
+        if len(KalmanBoxTracker.birth_times) > 2000:  # poda: conservar solo los últimos 10 minutos
+            KalmanBoxTracker.birth_times = {k: v for k, v in KalmanBoxTracker.birth_times.items() if now - v < 600}
 
         # Inicialización de matrices de Kalman
         self.kf = cv2.KalmanFilter(7, 4)
@@ -409,6 +453,8 @@ class VisualOverlayBox:
     in_sweet_spot: bool = False
     timestamp: float = field(default_factory=time.time)
     oriented_box: list[list[int]] = field(default_factory=list)
+    placa: str = ""
+    estado: str = ""
 
 
 # =============================================================================
@@ -461,6 +507,15 @@ class DetectionPipeline:
         # True solo cuando la zona de movimiento contiene una detección YOLO de placa/vehículo
         self._last_motion_vehicle_detected: bool = False
 
+        # 5. Verificación geométrica por track (análisis de caracteres estilo OpenALPR):
+        #    id -> {"t", "mejor": AnalisisCaracteres, "quad_rel", "es_placa"}
+        self._analisis: dict[int, dict] = {}
+        # 6. Región de interés de la cámara (polígono normalizado 0–1). Equivale a la
+        #    "detection mask" de OpenALPR: fuera de ella no se buscan placas.
+        self._roi_norm: Optional[list[list[float]]] = None
+        # Evidencias de tracks recién terminados: id -> (hora, consenso, análisis)
+        self._retirados: dict[int, tuple[float, Optional[dict], Optional[dict]]] = {}
+
         # Métricas de FPS
         self._fps_window: list[float] = []
         self._last_fps_calc = time.time()
@@ -469,6 +524,80 @@ class DetectionPipeline:
     @property
     def fps(self) -> float:
         return self._fps
+
+    # ------------------------------------------------------------------
+    # Región de interés y verificación geométrica
+    # ------------------------------------------------------------------
+
+    def set_roi(self, puntos: Optional[list]) -> Optional[list[list[float]]]:
+        """Fija la región de interés (≥ 3 vértices normalizados 0–1) o la quita con None/[]."""
+        roi = None
+        if puntos:
+            try:
+                roi = [[max(0.0, min(1.0, float(p[0]))), max(0.0, min(1.0, float(p[1])))] for p in puntos]
+            except (TypeError, ValueError, IndexError):
+                roi = None
+            if roi is not None and len(roi) < 3:
+                roi = None
+        self._roi_norm = roi
+        logger.info("Región de interés: %s", f"{len(roi)} vértices" if roi else "cuadro completo")
+        return roi
+
+    @property
+    def roi(self) -> Optional[list[list[float]]]:
+        return [list(p) for p in self._roi_norm] if self._roi_norm else None
+
+    def _roi_px(self, w: int, h: int) -> Optional[np.ndarray]:
+        roi = self._roi_norm
+        if not roi:
+            return None
+        return np.array([[p[0] * w, p[1] * h] for p in roi], dtype=np.float32)
+
+    def mejor_analisis(self, tracking_id: int) -> Optional[AnalisisCaracteres]:
+        """Mejor análisis de caracteres observado en la vida del track (para la validez de la lectura)."""
+        with self._overlays_lock:
+            reg = self._analisis.get(tracking_id) or (self._retirados.get(tracking_id, (0, None, None))[2])
+            return reg["mejor"] if reg else None
+
+    def conteo_lecturas(self, tracking_id: int) -> Counter:
+        """
+        Lecturas OCR con formato ANT registradas para el track, por texto de placa (una por
+        cuadro leído). Se toma el mayor conteo entre el flujo RTSP, el del navegador y el
+        track recién terminado.
+        """
+        with self._overlays_lock:
+            total: Counter = Counter()
+            retirado = self._retirados.get(tracking_id, (0, None, None))[1] or {}
+            for entry in (self._track_plates.get(tracking_id, {}), self._browser_track_plates.get(tracking_id, {}), retirado):
+                for placa, n in (entry.get("conteo") or {}).items():
+                    total[placa] = max(total[placa], n)
+            return total
+
+    def _verificar_track(self, frame: np.ndarray, tid: int, bbox: list[int], es_moto: bool) -> dict:
+        """
+        Análisis de caracteres del track (a lo sumo cada _INTERVALO_ANALISIS_S). Devuelve el
+        registro con el mejor análisis, el cuadrilátero relativo a la caja y si ya se
+        comprobó que la región es una placa (se mantiene una vez comprobado).
+        """
+        ahora = time.time()
+        with self._overlays_lock:
+            reg = self._analisis.get(tid)
+        if reg is not None and ahora - reg["t"] < _INTERVALO_ANALISIS_S:
+            return reg
+        h, w = frame.shape[:2]
+        x1, y1, x2, y2 = bbox
+        bw, bh = max(1, x2 - x1), max(1, y2 - y1)
+        recorte, origen = recorte_con_margen(frame, bbox)
+        an = analizar_caracteres(recorte, min_caracteres=2 if es_moto else MIN_CARACTERES)
+        quad = None if es_moto else cuadrilatero_placa(bbox, an, w, h, origen)
+        mejor = reg["mejor"] if reg else None
+        if mejor is None or (an.valida, an.caracteres, an.puntaje) > (mejor.valida, mejor.caracteres, mejor.puntaje):
+            mejor = an
+        quad_rel = [[(px - x1) / bw, (py - y1) / bh] for px, py in quad] if quad else (reg["quad_rel"] if reg else None)
+        nuevo = {"t": ahora, "mejor": mejor, "quad_rel": quad_rel, "es_placa": bool((reg and reg["es_placa"]) or an.valida)}
+        with self._overlays_lock:
+            self._analisis[tid] = nuevo
+        return nuevo
 
     def get_motion_info(self) -> tuple[Optional[list[int]], int, bool]:
         """
@@ -541,12 +670,13 @@ class DetectionPipeline:
                 entry = {"plate": "", "confidence": 0.0, "status": status.lower(), "time": time.time(), "votes": Counter()}
                 self._track_plates[tracking_id] = entry
 
-            entry["status"] = status.lower() or entry.get("status", "")
+            self._fijar_estado(entry, status)
             entry["time"] = time.time()
 
             if clean_plate and is_valid_ecuador_plate(clean_plate) and is_sharp_enough:
                 votes: Counter = entry.setdefault("votes", Counter())
                 votes[clean_plate] += max(0.05, confidence)
+                entry.setdefault("conteo", Counter())[clean_plate] += 1
 
                 # Ventana de consenso acotada: si un track lleva mucho tiempo vivo, se
                 # reduce el peso de votos antiguos a la mitad en vez de descartarlos de
@@ -561,6 +691,7 @@ class DetectionPipeline:
                 best_plate, best_score = votes.most_common(1)[0]
                 entry["plate"] = best_plate
                 entry["confidence"] = min(0.99, best_score / max(1.0, sum(votes.values())) * 0.85 + 0.15)
+                entry["lecturas"] = entry["conteo"].get(best_plate, 0)
             elif not entry.get("plate"):
                 # Sin voto válido todavía: mantener la mejor estimación cruda disponible
                 # (por ejemplo mientras el OCR aún no da una lectura completa) sin que
@@ -568,11 +699,36 @@ class DetectionPipeline:
                 entry["plate"] = clean_plate
                 entry["confidence"] = confidence
 
+    @staticmethod
+    def _fijar_estado(entry: dict, status: str) -> None:
+        """Actualiza el estado del track sin que una lectura OCR pise la decisión del backend."""
+        nuevo = (status or "").lower()
+        if nuevo and (nuevo in _ESTADOS_FINALES or entry.get("status") not in _ESTADOS_FINALES):
+            entry["status"] = nuevo
+
+    def fijar_estado_backend(self, tracking_id: int, estado: str) -> None:
+        """Estado decidido por el backend (autorizado, alerta, ...) para colorear la caja del track."""
+        with self._overlays_lock:
+            for tabla in (self._track_plates, self._browser_track_plates):
+                if tracking_id in tabla:
+                    self._fijar_estado(tabla[tracking_id], estado)
+
+    def track_eval_info(self, tracking_id: int) -> tuple[Optional[float], Optional[float]]:
+        """(hora de nacimiento del track, rapidez en píxeles/s) para los metadatos de evaluación."""
+        born = KalmanBoxTracker.birth_times.get(tracking_id)
+        speed = None
+        for trk in list(self._trackers) + list(self._browser_trackers):
+            if trk.id == tracking_id:
+                vx, vy = float(trk.kf.statePost[4, 0]), float(trk.kf.statePost[5, 0])
+                speed = round(((vx * vx + vy * vy) ** 0.5) * 30.0, 1)  # px/frame -> px/s a 30 FPS nominales
+                break
+        return born, speed
+
     def get_track_info(self, tracking_id: int) -> dict:
         """Obtiene la información de matrícula (por consenso) y estado asociada a un track RTSP."""
         with self._overlays_lock:
             entry = self._track_plates.get(tracking_id, {})
-            return {k: v for k, v in entry.items() if k != "votes"}
+            return {k: v for k, v in entry.items() if k not in ("votes", "conteo")}
 
     def update_browser_track_plate(
         self,
@@ -596,11 +752,12 @@ class DetectionPipeline:
             if entry is None:
                 entry = {"plate": "", "confidence": 0.0, "status": status.lower(), "time": time.time(), "votes": Counter()}
                 self._browser_track_plates[tracking_id] = entry
-            entry["status"] = status.lower() or entry.get("status", "")
+            self._fijar_estado(entry, status)
             entry["time"] = time.time()
             if clean_plate and is_valid_ecuador_plate(clean_plate) and is_sharp_enough:
                 votes: Counter = entry.setdefault("votes", Counter())
                 votes[clean_plate] += max(0.05, confidence)
+                entry.setdefault("conteo", Counter())[clean_plate] += 1
                 if sum(votes.values()) > 6.0:
                     for k in list(votes.keys()):
                         votes[k] *= 0.5
@@ -609,6 +766,7 @@ class DetectionPipeline:
                 best_plate, best_score = votes.most_common(1)[0]
                 entry["plate"] = best_plate
                 entry["confidence"] = min(0.99, best_score / max(1.0, sum(votes.values())) * 0.85 + 0.15)
+                entry["lecturas"] = entry["conteo"].get(best_plate, 0)
             elif not entry.get("plate"):
                 entry["plate"] = clean_plate
                 entry["confidence"] = confidence
@@ -617,7 +775,7 @@ class DetectionPipeline:
         """Obtiene la info de placa exclusiva del flujo WebSocket del navegador."""
         with self._overlays_lock:
             entry = self._browser_track_plates.get(tracking_id, {})
-            return {k: v for k, v in entry.items() if k != "votes"}
+            return {k: v for k, v in entry.items() if k not in ("votes", "conteo")}
 
     def clear_all_tracks(self) -> None:
         """Limpia completamente la memoria de seguimiento, consenso de placas y overlays visuales."""
@@ -629,6 +787,8 @@ class DetectionPipeline:
             self._track_plates.clear()
             self._browser_track_plates.clear()
             self._current_overlays.clear()
+            self._analisis.clear()
+            self._retirados.clear()
         logger.info("Pipeline ANPR: Memoria de tracking y overlays reiniciada por completo.")
 
     def detect_fast(self, frame: np.ndarray) -> list[TrackedPlateROI]:
@@ -937,6 +1097,7 @@ class DetectionPipeline:
         all_raw_confs: list[float] = []
 
         conf_thresh, raw_pred_thresh = byte_track_thresholds()
+        roi_px = self._roi_px(orig_w, orig_h)
         try:
             raw_detections = self.detector.predict(frame)
             for d in raw_detections:
@@ -945,6 +1106,9 @@ class DetectionPipeline:
                 bw = box[2] - box[0]
                 bh = box[3] - box[1]
                 ar = bw / max(1.0, float(bh))
+                # Región de interés: se descartan las placas cuyo centro queda fuera
+                if not punto_en_roi((box[0] + box[2]) / 2, (box[1] + box[3]) / 2, roi_px):
+                    continue
                 if (0.55 <= ar <= 6.5) and bw >= 10 and bh >= 5:
                     all_raw_boxes.append([float(box[0]), float(box[1]), float(box[2]), float(box[3])])
                     all_raw_confs.append(float(conf))
@@ -1040,7 +1204,12 @@ class DetectionPipeline:
         for i in reversed(dead_tracks):
             t_id = self._trackers[i].id
             self._trackers.pop(i)
-            self._track_plates.pop(t_id, None)
+            with self._overlays_lock:
+                # La captura del vehículo que sale de cuadro se confirma después de que su
+                # track muere: se conservan sus evidencias unos segundos para esa decisión.
+                self._retirados[t_id] = (time.time(), self._track_plates.pop(t_id, None), self._analisis.pop(t_id, None))
+                for k in [k for k, v in self._retirados.items() if time.time() - v[0] > 20.0]:
+                    del self._retirados[k]
 
         # 7. Construcción de ROIs y Overlays Visuales Tácticos (Respuesta Inmediata al Movimiento)
         tracked_rois: list[TrackedPlateROI] = []
@@ -1091,53 +1260,24 @@ class DetectionPipeline:
                 # Rango de Operación Inteligente Extendido (hasta 15.0 metros)
                 in_sweet_spot = (0.5 <= dist_m <= 15.0) or (pw >= 16)
 
-                # 7.2. Etiquetas del Bounding Box (Estilo idéntico a la imagen solicitada)
-                if plate_info and plate_info.get("plate"):
-                    plate_str = plate_info["plate"]
-                    status_str = plate_info.get("status", "")
-                    plate_conf = int(plate_info.get("confidence", 0.95) * 100)
-
-                    if status_str == "alerta":
-                        box_color = (0, 0, 255)  # Rojo vivo para alerta
-                        box_label = f"ALERTA: {plate_str} ({plate_conf}%)"
-                    else:
-                        box_color = (0, 255, 0)  # Verde brillante idéntico a la imagen
-                        box_label = f"{plate_str} ({plate_conf}%)"
-                else:
-                    box_color = (0, 255, 0)  # Verde brillante idéntico a la imagen
-                    conf_pct = int(trk.confidence * 100)
-                    box_label = f"Detectando OCR... ({conf_pct}%)"
-
                 # Extraer velocidad del centro en píxeles/frame desde el vector de estado Kalman
                 # Estado: [cx, cy, s, r, v_cx, v_cy, v_s]
                 # Multiplicar por FPS nominal (30) para obtener píxeles/segundo
                 _FPS = 30.0
                 vx_px_s = float(trk.kf.statePost[4, 0]) * _FPS
                 vy_px_s = float(trk.kf.statePost[5, 0]) * _FPS
-                # 4 vértices orientados estilo Rekor Scout / OpenALPR
-                oriented_box = [[x1, y1], [x2, y1], [x2, y2], [x1, y2]]
-                plate_crop = frame[y1:y2, x1:x2]
-                if plate_crop.size > 0:
-                    try:
-                        c_gray = cv2.cvtColor(plate_crop, cv2.COLOR_BGR2GRAY)
-                        edges = cv2.Canny(c_gray, 40, 140)
-                        kernel_c = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
-                        edges_dil = cv2.dilate(edges, kernel_c, iterations=1)
-                        c_cnts, _ = cv2.findContours(edges_dil, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-                        if not c_cnts:
-                            _, c_thresh = cv2.threshold(c_gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-                            c_cnts, _ = cv2.findContours(c_thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-                        if c_cnts:
-                            c_largest = max(c_cnts, key=cv2.contourArea)
-                            if cv2.contourArea(c_largest) > 0.15 * (pw * ph):
-                                rect = cv2.minAreaRect(c_largest)
-                                box_pts = cv2.boxPoints(rect)
-                                box_pts[:, 0] += x1
-                                box_pts[:, 1] += y1
-                                oriented_box = [[int(pt[0]), int(pt[1])] for pt in box_pts]
-                    except Exception:
-                        pass
 
+                # 7.2. Verificación estilo OpenALPR: ¿la región contiene la fila de caracteres
+                # de una placa? El cuadrilátero se ajusta a esa fila y a su inclinación, en vez
+                # de al contorno más grande del recorte (que suele ser el parachoques).
+                verif = self._verificar_track(frame, trk.id, [x1, y1, x2, y2], is_moto)
+                oriented_box = [[x1, y1], [x2, y1], [x2, y2], [x1, y2]]
+                if verif["quad_rel"]:
+                    oriented_box = [
+                        [int(max(0, min(orig_w - 1, x1 + rx * pw))), int(max(0, min(orig_h - 1, y1 + ry * ph)))]
+                        for rx, ry in verif["quad_rel"]
+                    ]
+                plate_crop = frame[y1:y2, x1:x2]
                 sharpness = compute_crop_sharpness(plate_crop)
 
                 roi = TrackedPlateROI(
@@ -1152,6 +1292,22 @@ class DetectionPipeline:
                 )
                 tracked_rois.append(roi)
 
+                # 7.3. Solo se dibuja lo que se comprobó que es una placa: fila de caracteres
+                # válida o al menos dos lecturas OCR con formato ANT en cuadros distintos.
+                # El resto de candidatos del detector se sigue rastreando y leyendo, pero no se
+                # muestra (evita recuadros sobre rótulos, rejillas o faros).
+                lecturas = int(plate_info.get("lecturas", 0)) if plate_info else 0
+                if not (verif["es_placa"] or lecturas >= 2):
+                    continue
+                placa = plate_info.get("plate", "") if plate_info and lecturas >= 1 else ""
+                estado = plate_info.get("status", "") if plate_info else ""
+                if estado in _COLOR_ESTADO:
+                    box_color = _COLOR_ESTADO[estado]
+                    box_label = f"{placa_con_guion(placa)}  {_TEXTO_ESTADO[estado]}" if placa else _TEXTO_ESTADO[estado]
+                else:
+                    box_color = _COLOR_LEYENDO
+                    box_label = f"{placa_con_guion(placa)}  {int(plate_info.get('confidence', 0) * 100)}%" if placa else ""
+
                 new_overlays.append(VisualOverlayBox(
                     x1=x1,
                     y1=y1,
@@ -1163,6 +1319,8 @@ class DetectionPipeline:
                     trajectory=list(trk.trajectory),
                     in_sweet_spot=in_sweet_spot,
                     oriented_box=oriented_box,
+                    placa=placa,
+                    estado=estado,
                 ))
 
         with self._overlays_lock:
@@ -1218,6 +1376,18 @@ class DetectionPipeline:
                 cv2.LINE_AA,
             )
 
+        # Región de interés: contorno discontinuo (fuera de ella no se buscan placas)
+        roi_px = self._roi_px(w, h)
+        if roi_px is not None:
+            pts = roi_px.astype(np.int32)
+            for i in range(len(pts)):
+                a, b = pts[i], pts[(i + 1) % len(pts)]
+                largo = max(1, int(np.hypot(*(b - a))))
+                for t in range(0, largo, 18):
+                    p1 = a + (b - a) * (t / largo)
+                    p2 = a + (b - a) * (min(largo, t + 10) / largo)
+                    cv2.line(out_frame, tuple(int(v) for v in p1), tuple(int(v) for v in p2), (235, 206, 135), 2, cv2.LINE_AA)
+
         with self._overlays_lock:
             overlays = list(self._current_overlays)
 
@@ -1232,7 +1402,9 @@ class DetectionPipeline:
             else:
                 cv2.rectangle(out_frame, (x1, y1), (x2, y2), color, 2)
 
-            # 2. Insignia flotante oscura con borde del color del track
+            # 2. Insignia flotante oscura con borde del color del track (solo con texto)
+            if not ov.label:
+                continue
             badge_text = f" {ov.label} "
             (tw, th), baseline = cv2.getTextSize(badge_text, cv2.FONT_HERSHEY_SIMPLEX, 0.55, 2)
             badge_x = max(10, min(w - tw - 10, x1))

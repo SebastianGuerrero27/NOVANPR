@@ -79,6 +79,29 @@ Referencia: PP-OCRv6 medium en PaddleOCR nativo (sin OpenVINO) 98.7 % y ~3 000 m
 Requisito < 2 s cumplido con amplio margen. Claves para lograrlo: parámetros de detección de
 PaddleOCR (lado mínimo 64 px, no 736) y unir fragmentos de la misma fila sin mezclar la cabecera.
 
+### Rectificador de esquinas (`plate_rectifier_candidato.pt`, YOLO26n-pose)
+
+Entrenado 12 épocas (256 px, 50 % del dataset por época, 1.1 h en CPU) con 8 000 recortes
+sintéticos con esquinas exactas. Validación sintética: pose mAP50-95 **0.897**.
+
+| Prueba con placas REALES | Resultado |
+|---|---|
+| Recortes guardados sin margen (`media/placa_*`) | esquinas confiables en 20/108 |
+| Recortes con el margen del agente (18 % / 12 %) | esquinas confiables en 41/97; varias cortan caracteres |
+| Ablación `con_rectificador` (21 eventos) | 95.2 % = sistema completo (sin diferencia) |
+
+**No se activó en producción** (`models/plate_rectifier.pt` no existe; el agente usa la
+heurística). Brecha sintético→real: el modelo no vio manos/dedos sobre el borde ni placas
+reales. Siguiente paso: anotar esquinas reales (~200) para afinar y agregar oclusiones al
+generador; activar solo si la ablación mejora de forma significativa.
+
+### Atributos del vehículo (YOLO26n COCO + CLIP ViT-B/32 laion2b, zero-shot)
+
+Imagen real (Ambato, Haval H6 plateada): tipo SUV 0.91 ✔, color plateado ✔, marca Haval
+0.93 ✔, modelo "Jolion" 0.87 ✘. Latencia 0.5–1.3 s en CPU (una vez por vehículo, fase
+asíncrona). Por eso el segundo factor compara solo marca y color. Falta medir su exactitud
+con un conjunto etiquetado de vehículos ecuatorianos.
+
 ## Reglas para reemplazar este modelo
 
 1. Al menos 200 imágenes de entrenamiento (el script lo exige salvo `--force`).

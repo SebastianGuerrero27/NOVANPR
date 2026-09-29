@@ -338,6 +338,8 @@ class RTSPSource(VideoSource):
         return True
 
     def _open_capture(self) -> Optional[cv2.VideoCapture]:
+        if not self._url:
+            return None  # sin cámara asignada: el backend la asigna al arrancar
         try:
             cap = cv2.VideoCapture(self._url, cv2.CAP_FFMPEG)
             if cap.isOpened():
@@ -652,6 +654,9 @@ def create_video_source() -> VideoSource:
         logger.info("Fuente de video seleccionada: WEBCAM FÍSICA (índice=%d)", WEBCAM_INDEX)
         return WebcamSource(index=WEBCAM_INDEX)
 
-    url = RTSP_URL or "rtsp://localhost:8554/camara_raw"
-    logger.info("Fuente de video seleccionada: RTSP -> %s", url)
+    url = RTSP_URL or ""
+    if url:
+        logger.info("Fuente de video seleccionada: RTSP -> %s", RTSPSource._mask_credentials(url))
+    else:
+        logger.info("Sin fuente RTSP inicial: se espera la cámara que asigne el backend.")
     return RTSPSource(url=url)

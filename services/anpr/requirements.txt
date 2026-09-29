@@ -36,3 +36,6 @@ onnxruntime>=1.18.0
 
 # --- Monitoreo (Prometheus) ---
 prometheus-client>=0.20.0
+
+# Atributos del vehículo (marca, modelo, color) con CLIP zero-shot
+open_clip_torch>=3.0

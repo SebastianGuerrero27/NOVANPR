@@ -1,1079 +1,655 @@
 import { Router, Request, Response } from 'express';
 import sql from 'mssql';
 import { getDB } from '../config/db';
-import { authMiddleware } from '../middlewares/auth';
+import { authMiddleware, servicioMiddleware, soloAdmin } from '../middlewares/auth';
 import { emitEvent } from '../services/socket';
-import { findAuthorizedExact, findBlacklistMatch } from '../services/plateMatching';
+import { findAuthorizedExact, findBlacklistMatch, normalizePlate } from '../services/plateMatching';
+import { guardarMetadatosCaptura, registrarLecturaAutomatica } from '../services/evaluacion';
+import { compararVehiculo } from '../services/vehiculoAtributos';
+import { eliminarEvidencia, urlMedia } from '../services/media';
+import { config, evaluarAutorizacion, EvidenciaLectura } from '../services/configuracion';
+import { auditarOperacion } from '../services/seguridad';
 
+/**
+ * Detecciones vehiculares (cada paso por un acceso).
+ *
+ * Servicio ANPR (X-Servicio-Token)
+ *   POST /ingreso            fase 1: captura fotográfica, estado pendiente_ocr
+ *   POST /completar-ocr      fase 2: lectura OCR y cruce con listas
+ *   POST /descarte           auditoría de falsos positivos descartados
+ * Personal autenticado
+ *   GET  /                   historial paginado con filtros
+ *   GET  /recientes          últimos N pasos (monitoreo)
+ *   GET  /exportar           CSV con los mismos filtros del historial
+ *   GET  /buscar-placa/:placa situación de una placa en listas e historial
+ *   GET  /:id                detalle completo con lectura automática, metadatos y auditoría
+ *   POST /validar/:id        corrección / confirmación del operador
+ *   POST /registro-manual    paso registrado a mano (cámara sin lectura, visita, etc.)
+ *   DELETE /:id              solo Administrador, con motivo auditado (borra también la evidencia)
+ *   DELETE /                 eliminación masiva (todas o las filtradas), Administrador
+ *
+ * Eventos Socket.IO: deteccion:nueva, deteccion:actualizada, deteccion:alerta, deteccion:eliminada, deteccion:eliminadas
+ */
 const router = Router();
 
-// =============================================================================
-// FASE 1: Registro Inicial del Ingreso Vehicular con Anti-Duplicado Inteligente
-// Referencia: Kanhere & Birchfield (2008) — "Taxonomic Analysis of ALPR deduplication"
-// Logica: un tracking_id genera exactamente 1 registro por paso fisico (ventana de 30 segundos).
-// Si el mismo tracking_id ya tiene un registro activo, se reutiliza su ID (UPSERT pattern).
-// Una nueva visita del mismo vehiculo despues de 30 segundos crea un registro independiente.
-// =============================================================================
-router.post('/ingreso', async (req: Request, res: Response) => {
-  const {
-    tracking_id,
-    ruta_imagen_ingreso,
-    confianza_deteccion,
-    fuente = 'webcam',
-    camara_id = null,
-    placa = null
-  } = req.body;
+type EstadoValidacion = 'autorizado' | 'alerta' | 'no_reconocido' | 'pendiente_revision';
 
-  if (!ruta_imagen_ingreso) {
-    return res.status(400).json({ error: 'La ruta de la imagen de ingreso es obligatoria.' });
+const SELECT_DETECCION = `
+  SELECT d.*,
+         c.nombre AS camara_nombre, c.ubicacion AS camara_ubicacion,
+         l.motivo AS alerta_motivo, l.nivel_alerta,
+         v.propietario, v.departamento, v.tipo_vehiculo AS autorizado_tipo,
+         uv.nombre_completo AS validador_nombre, uv.email AS validador_email
+  FROM DeteccionVehiculo d
+  LEFT JOIN Camaras c ON c.id = d.camara_id
+  LEFT JOIN ListaNegra l ON l.id = d.alerta_id
+  LEFT JOIN VehiculosAutorizados v ON v.id = d.vehiculo_autorizado_id
+  LEFT JOIN Usuarios uv ON uv.id = d.usuario_validador_id`;
+
+function evidenciaDe(d: any): EvidenciaLectura | null {
+  if (!d.evidencia_lectura) return null;
+  try { return JSON.parse(d.evidencia_lectura); } catch { return null; }
+}
+
+/** Por qué un paso quedó pendiente de confirmación (lectura no confirmada, confianza o vehículo). */
+function motivoRevision(d: any): string | null {
+  if (d.estado_validacion !== 'pendiente_revision' || d.validado_manualmente || d.estado_procesamiento !== 'procesado') return null;
+  const enPadron = Boolean(d.vehiculo_autorizado_id);
+  const ev = evidenciaDe(d);
+  if (d.lectura_valida === false || d.lectura_valida === 0) {
+    const motivos = ev?.motivos?.length ? ev.motivos.join('; ') : 'evidencias insuficientes';
+    return `${enPadron ? 'La placa está en el padrón, pero la' : 'La'} lectura no está confirmada (${motivos}). Verifique la placa antes de decidir.`;
   }
+  if (!enPadron) return null;
+  if (d.verificacion_vehiculo === 'no_coincide') return `La placa está en el padrón, pero el vehículo observado no coincide (${d.verificacion_detalle}).`;
+  const c = evaluarAutorizacion(d.lectura_valida === null ? null : Boolean(d.lectura_valida), d.confianza_ocr, d.confianza_deteccion);
+  if (!c.confianzaOk) {
+    return `La placa está en el padrón, pero la confianza (${(c.confianza.evaluada * 100).toFixed(1)} %) es menor al ${(c.confianza.minimo * 100).toFixed(0)} % requerido para autorizar automáticamente. Confirme la placa.`;
+  }
+  return 'La placa está en el padrón; confirme el ingreso.';
+}
 
-  const tid = tracking_id ?? -1;
-  const cleanPlaca = typeof placa === 'string'
-    ? placa.toUpperCase().replace(/[^A-Z0-9]/g, '')
-    : '';
+/** Representación única de una detección para la API y los eventos en tiempo real. */
+export function mapearDeteccion(d: any, detalle = false) {
+  const base = {
+    id: d.id,
+    placa: d.placa_validada || d.placa_reconocida || null,
+    placa_reconocida: d.placa_reconocida ?? null,
+    placa_validada: d.placa_validada ?? null,
+    estado_validacion: d.estado_validacion as EstadoValidacion,
+    estado_procesamiento: d.estado_procesamiento,
+    confianza_deteccion: d.confianza_deteccion,
+    confianza_ocr: d.confianza_ocr,
+    fecha_hora_ingreso: d.fecha_hora_ingreso,
+    fecha_hora_procesamiento: d.fecha_hora_procesamiento,
+    fuente: d.fuente,
+    tracking_id: d.tracking_id,
+    imagen_vehiculo: urlMedia(d.ruta_imagen_ingreso),
+    imagen_placa: urlMedia(d.ruta_imagen_placa || d.ruta_imagen_ingreso),
+    camara: d.camara_id ? { id: d.camara_id, nombre: d.camara_nombre, ubicacion: d.camara_ubicacion } : null,
+    tipo_vehiculo: d.tipo_vehiculo || d.autorizado_tipo || d.vehiculo_tipo || null,
+    vehiculo: { tipo: d.vehiculo_tipo, marca: d.vehiculo_marca, modelo: d.vehiculo_modelo, color: d.vehiculo_color },
+    verificacion_vehiculo: d.verificacion_vehiculo ?? null,
+    verificacion_detalle: d.verificacion_detalle ?? null,
+    alerta: d.alerta_id ? { id: d.alerta_id, motivo: d.alerta_motivo, nivel: d.nivel_alerta } : null,
+    autorizado: d.vehiculo_autorizado_id
+      ? { id: d.vehiculo_autorizado_id, propietario: d.propietario, departamento: d.departamento } : null,
+    validado_manualmente: Boolean(d.validado_manualmente),
+    lectura_valida: d.lectura_valida === null || d.lectura_valida === undefined ? null : Boolean(d.lectura_valida),
+    motivo_revision: motivoRevision(d),
+    validacion: d.validado_manualmente
+      ? { usuario: d.validador_nombre ? { id: d.usuario_validador_id, nombre: d.validador_nombre, email: d.validador_email } : null, fecha: d.fecha_validacion }
+      : null,
+  };
+  if (!detalle) return base;
+  return {
+    ...base,
+    lectura_automatica: {
+      placa: d.placa_ocr_original, confianza: d.confianza_ocr_original, decision: d.decision_automatica,
+      verificador: d.lectura_verificador, latencia_ms: d.latencia_ms,
+      modelo_detector: d.modelo_detector, modelo_ocr: d.modelo_ocr,
+      valida: d.lectura_valida === null || d.lectura_valida === undefined ? null : Boolean(d.lectura_valida),
+      evidencia: evidenciaDe(d),
+    },
+    captura: {
+      luminancia_media: d.luminancia_media, distancia_estimada_m: d.distancia_estimada_m,
+      ancho_placa_px: d.ancho_placa_px, nitidez: d.nitidez, velocidad_px_s: d.velocidad_px_s,
+      condicion_clima: d.condicion_clima,
+    },
+  };
+}
+
+async function obtenerDeteccion(db: sql.ConnectionPool, id: number) {
+  const r = await db.request().input('id', sql.Int, id).query(`${SELECT_DETECCION} WHERE d.id = @id`);
+  return r.recordset[0] ?? null;
+}
+
+/** Lee la detección completa y la difunde a las sesiones conectadas. */
+async function difundir(db: sql.ConnectionPool, id: number, evento: 'deteccion:nueva' | 'deteccion:actualizada') {
+  const fila = await obtenerDeteccion(db, id);
+  if (!fila) return null;
+  const dto = mapearDeteccion(fila);
+  emitEvent(evento, dto);
+  if (dto.estado_validacion === 'alerta') emitEvent('deteccion:alerta', dto);
+  return dto;
+}
+
+/** Tipo de vehículo según el formato de placa ANT (motos: 2 letras + 3 dígitos + letra). */
+function tipoPorFormato(placa: string): string | null {
+  if (/^[A-Z]{2}\d{3}[A-Z]$/.test(placa)) return 'Motocicleta';
+  if (/^[A-Z]{3}\d{3,4}$/.test(placa)) return 'Automóvil';
+  return null;
+}
+
+/** Cruce de una placa con la lista de alertas (con tolerancia) y con los autorizados (exacto). */
+async function cruzarListas(db: sql.ConnectionPool, placa: string) {
+  const alerta = await findBlacklistMatch(db, placa);
+  if (alerta) return { estado: 'alerta' as EstadoValidacion, alerta: { ...alerta.row, coincidencia: alerta.coincidencia }, autorizado: null };
+  const autorizado = await findAuthorizedExact(db, placa);
+  if (autorizado) return { estado: 'autorizado' as EstadoValidacion, alerta: null, autorizado };
+  return { estado: 'no_reconocido' as EstadoValidacion, alerta: null, autorizado: null };
+}
+
+// =============================================================================
+// FASE 1 · Captura (servicio ANPR). Un paso físico = un registro: se reutiliza el ingreso
+// del mismo tracking_id o de la misma placa dentro de una ventana de 35 s.
+// =============================================================================
+router.post('/ingreso', servicioMiddleware, async (req: Request, res: Response) => {
+  const { tracking_id, ruta_imagen_ingreso, confianza_deteccion = null, fuente = 'webcam', camara_id = null, placa = null } = req.body;
+  if (!ruta_imagen_ingreso) return res.status(400).json({ error: 'La ruta de la imagen de ingreso es obligatoria.' });
+
+  const tid = Number.isInteger(tracking_id) ? tracking_id : -1;
+  const pista = typeof placa === 'string' ? normalizePlate(placa) : '';
 
   try {
     const db = getDB();
-
-    // --- Anti-Duplicado: Verificar si el tracking_id o la placa ya tiene un registro activo ---
-    // Ventana de consolidación: 35 segundos (un paso físico continuo del vehículo)
-    const dedupReq = db.request();
-    dedupReq.input('tracking_id_dedup', sql.Int, tid);
-    dedupReq.input('clean_placa', sql.VarChar, cleanPlaca);
-
-    const dedupResult = await dedupReq.query(`
-      SELECT TOP 1 id, fecha_hora_ingreso, placa, tracking_id
-      FROM DeteccionVehiculo
-      WHERE (
-        (tracking_id = @tracking_id_dedup AND @tracking_id_dedup > 0)
-        OR (
-          @clean_placa <> '' AND LEN(@clean_placa) >= 4
-          AND REPLACE(REPLACE(COALESCE(placa_reconocida, placa, ''), '-', ''), ' ', '') = @clean_placa
-        )
-      )
-        AND estado_procesamiento IN ('pendiente_ocr', 'procesado')
-        AND DATEDIFF(SECOND, fecha_hora_ingreso, GETDATE()) <= 35
-      ORDER BY fecha_hora_ingreso DESC;
-    `);
-
-    if (dedupResult.recordset.length > 0) {
-      const existente = dedupResult.recordset[0];
-      console.log(
-        `[ANTI-DUPLICADO] Track #${tid} / Placa '${cleanPlaca || 'N/A'}' coincide con Ingreso ID #${existente.id} activo (hace <= 35s). Reutilizando registro.`
-      );
-      return res.status(200).json({
-        message: 'Registro existente reutilizado (paso físico consolidado).',
-        ingreso_id: existente.id,
-        fecha_hora_ingreso: existente.fecha_hora_ingreso,
-        deduplicado: true
-      });
+    const dup = await db.request()
+      .input('tid', sql.Int, tid)
+      .input('placa', sql.VarChar(20), pista)
+      .query(`
+        SELECT TOP 1 id, fecha_hora_ingreso FROM DeteccionVehiculo
+        WHERE ((tracking_id = @tid AND @tid > 0)
+               OR (LEN(@placa) >= 4 AND REPLACE(REPLACE(COALESCE(placa_reconocida, ''), '-', ''), ' ', '') = @placa))
+          AND estado_procesamiento IN ('pendiente_ocr', 'procesado')
+          AND DATEDIFF(SECOND, fecha_hora_ingreso, GETDATE()) <= 35
+        ORDER BY fecha_hora_ingreso DESC`);
+    if (dup.recordset.length) {
+      const e = dup.recordset[0];
+      return res.json({ message: 'Registro existente reutilizado (mismo paso físico).', ingreso_id: e.id, fecha_hora_ingreso: e.fecha_hora_ingreso, deduplicado: true });
     }
 
-    // Sanitizar fuente para no exceder longitud de BD
-    const cleanFuente = typeof fuente === 'string' ? fuente.substring(0, 255) : 'webcam';
-
-    // Validar camara_id contra tabla Camaras para prevenir errores de Foreign Key
-    let validCamaraId: number | null = null;
-    if (camara_id && !isNaN(Number(camara_id))) {
-      const parsedCid = Number(camara_id);
-      const camCheck = await db.request().input('cid', sql.Int, parsedCid).query('SELECT TOP 1 id FROM Camaras WHERE id = @cid');
-      if (camCheck.recordset.length > 0) {
-        validCamaraId = parsedCid;
-      }
+    let camara: number | null = null;
+    if (camara_id !== null && Number.isInteger(Number(camara_id))) {
+      const c = await db.request().input('cid', sql.Int, Number(camara_id)).query('SELECT id FROM Camaras WHERE id = @cid');
+      if (c.recordset.length) camara = Number(camara_id);
     }
 
-    // --- Sin duplicado: Insertar nuevo registro de ingreso ---
-    const initialPlaca = cleanPlaca.length >= 4 ? String(placa).toUpperCase().trim() : 'PROCESANDO';
-    const request = db.request();
-    request.input('tracking_id', sql.Int, tid);
-    request.input('initial_placa', sql.VarChar, initialPlaca);
-    request.input('ruta_imagen_ingreso', sql.VarChar, ruta_imagen_ingreso);
-    request.input('confianza_deteccion', sql.Float, confianza_deteccion ?? 0.85);
-    request.input('fuente', sql.VarChar, cleanFuente);
-    request.input('camara_id', sql.Int, validCamaraId);
+    const ins = await db.request()
+      .input('tid', sql.Int, tid)
+      .input('pista', sql.VarChar(20), pista.length >= 4 ? pista : null)
+      .input('ruta', sql.VarChar(255), String(ruta_imagen_ingreso).substring(0, 255))
+      .input('conf', sql.Float, typeof confianza_deteccion === 'number' ? confianza_deteccion : null)
+      .input('fuente', sql.VarChar(255), String(fuente).substring(0, 255))
+      .input('camara', sql.Int, camara)
+      .query(`
+        INSERT INTO DeteccionVehiculo (tracking_id, placa_reconocida, ruta_imagen_ingreso, confianza_deteccion, fuente,
+                                       camara_id, estado_procesamiento, estado_validacion, fecha_hora_ingreso)
+        OUTPUT INSERTED.id, INSERTED.fecha_hora_ingreso
+        VALUES (@tid, @pista, @ruta, @conf, @fuente, @camara, 'pendiente_ocr', 'pendiente_revision', GETDATE())`);
+    const creado = ins.recordset[0];
+    await guardarMetadatosCaptura(db, creado.id, req.body.metadatos);
+    await difundir(db, creado.id, 'deteccion:nueva');
 
-    const insertQuery = `
-      INSERT INTO DeteccionVehiculo (
-        placa,
-        confianza_deteccion,
-        confianza_ocr,
-        imagen_vehiculo_path,
-        imagen_placa_path,
-        fecha_hora,
-        tracking_id,
-        fuente,
-        estado_validacion,
-        camara_id,
-        estado_procesamiento,
-        ruta_imagen_ingreso,
-        fecha_hora_ingreso
-      )
-      OUTPUT INSERTED.id, INSERTED.fecha_hora_ingreso
-      VALUES (
-        @initial_placa,
-        @confianza_deteccion,
-        0.0,
-        @ruta_imagen_ingreso,
-        @ruta_imagen_ingreso,
-        GETDATE(),
-        @tracking_id,
-        @fuente,
-        'pendiente_revision',
-        @camara_id,
-        'pendiente_ocr',
-        @ruta_imagen_ingreso,
-        GETDATE()
-      );
-    `;
-
-    const result = await request.query(insertQuery);
-    const ingresoCreado = result.recordset[0];
-
-    const eventoPendiente = {
-      id: ingresoCreado.id,
-      tracking_id: tid,
-      ruta_imagen_ingreso,
-      imagen_vehiculo_path: ruta_imagen_ingreso,
-      imagen_placa_path: ruta_imagen_ingreso,
-      fecha_hora_ingreso: ingresoCreado.fecha_hora_ingreso,
-      fecha_hora: ingresoCreado.fecha_hora_ingreso,
-      estado_procesamiento: 'pendiente_ocr',
-      estado_validacion: 'pendiente_revision',
-      placa: initialPlaca,
-      placa_reconocida: cleanPlaca.length >= 4 ? initialPlaca : null,
-      confianza_deteccion: confianza_deteccion ?? 0.85,
-      confianza_ocr: null,
-      fuente
-    };
-
-    emitEvent('nuevo_ingreso_pendiente', eventoPendiente);
-    emitEvent('nueva_deteccion', eventoPendiente);
-    emitEvent('nuevo_evento', eventoPendiente);
-
-    console.log(`[FASE 1 - CAPTURA] Ingreso ID #${ingresoCreado.id} registrado | Track #${tid} | Placa: ${initialPlaca} | Foto: ${ruta_imagen_ingreso}`);
-
-    return res.status(201).json({
-      message: 'Ingreso registrado en estado pendiente_ocr.',
-      ingreso_id: ingresoCreado.id,
-      fecha_hora_ingreso: ingresoCreado.fecha_hora_ingreso
-    });
-
-  } catch (error: any) {
-    console.error('[DETECCIONES] Error en Fase 1 (Ingreso):', error.message);
-    return res.status(500).json({ error: 'Error interno al registrar el ingreso fotografico.' });
+    return res.status(201).json({ message: 'Ingreso registrado (pendiente de OCR).', ingreso_id: creado.id, fecha_hora_ingreso: creado.fecha_hora_ingreso });
+  } catch (e: any) {
+    console.error('[DETECCIONES] fase 1:', e.message);
+    return res.status(500).json({ error: 'Error interno al registrar el ingreso.' });
   }
 });
 
-
 // =============================================================================
-// FASE 2: Completar Procesamiento OCR Asíncrono (Worker)
+// FASE 2 · Resultado OCR (servicio ANPR) y cruce con las listas
 // =============================================================================
-router.post('/completar-ocr', async (req: Request, res: Response) => {
-  const {
-    ingreso_id,
-    placa_reconocida,
-    confianza_ocr,
-    ruta_imagen_placa,
-    estado_procesamiento = 'procesado' // 'procesado', 'no_legible', 'error'
-  } = req.body;
-
-  if (!ingreso_id) {
-    return res.status(400).json({ error: 'El ID de ingreso es obligatorio.' });
-  }
+router.post('/completar-ocr', servicioMiddleware, async (req: Request, res: Response) => {
+  const { ingreso_id, placa_reconocida, confianza_ocr, ruta_imagen_placa, estado_procesamiento = 'procesado',
+    lectura_verificador = null, latencia_ms = null, lectura_valida = null, evidencia_lectura = null } = req.body;
+  // Veredicto del motor sobre la lectura (null si el motor no lo informa)
+  const validez: boolean | null = typeof lectura_valida === 'boolean' ? lectura_valida : null;
+  const evidencia = evidencia_lectura && typeof evidencia_lectura === 'object'
+    ? JSON.stringify(evidencia_lectura).substring(0, 1500) : null;
+  if (!Number.isInteger(ingreso_id)) return res.status(400).json({ error: 'El ID de ingreso es obligatorio.' });
 
   try {
     const db = getDB();
-    let cleanPlaca = (placa_reconocida || '').toUpperCase().trim().replace(/[^A-Z0-9-]/g, '');
+    let placa = normalizePlate(placa_reconocida);
+    const confianza = typeof confianza_ocr === 'number' ? confianza_ocr : null;
+    const lecturaAutomatica = (decision: string) => registrarLecturaAutomatica(db, ingreso_id, {
+      placaOriginal: placa, confianza, decision, lecturaVerificador: lectura_verificador, latenciaMs: latencia_ms,
+    });
 
-    let estadoValidacion: 'autorizado' | 'alerta' | 'no_reconocido' | 'pendiente_revision' = 'no_reconocido';
-    let alertaId: number | null = null;
-    let vehiculoAutorizadoId: number | null = null;
-    let alertaInfo: any = null;
-    let autorizadoInfo: any = null;
-
-    // Si no es legible o tiene menos de 4 caracteres, NO eliminar de la base de datos.
-    // Preservar la integridad referencial y registrar como 'pendiente_revision' para que el operador valide manualmente.
-    if (estado_procesamiento !== 'procesado' || cleanPlaca.length < 4 || cleanPlaca === 'NO_LEGIBLE' || cleanPlaca === 'SIN_RECONOCER') {
-      const fallbackReq = db.request();
-      fallbackReq.input('id', sql.Int, ingreso_id);
-      fallbackReq.input('ruta_imagen_placa', sql.VarChar, ruta_imagen_placa || null);
-
-      const fallbackQuery = `
-        UPDATE DeteccionVehiculo
-        SET
-          placa = 'SIN_RECONOCER',
-          placa_reconocida = 'SIN_RECONOCER',
-          confianza_ocr = 0.0,
-          ruta_imagen_placa = COALESCE(@ruta_imagen_placa, ruta_imagen_ingreso),
-          imagen_placa_path = COALESCE(@ruta_imagen_placa, ruta_imagen_ingreso),
-          fecha_hora_procesamiento = GETDATE(),
-          estado_procesamiento = 'no_legible',
-          estado_validacion = 'pendiente_revision',
-          tipo_vehiculo = 'Vehículo (Por Verificar)'
-        WHERE id = @id;
-
-        SELECT d.*,
-               c.nombre as camara_nombre, c.ubicacion as camara_ubicacion,
-               l.motivo as alerta_motivo, l.nivel_alerta,
-               v.propietario, v.departamento, v.tipo_vehiculo
-        FROM DeteccionVehiculo d
-        LEFT JOIN Camaras c ON d.camara_id = c.id
-        LEFT JOIN ListaNegra l ON d.alerta_id = l.id
-        LEFT JOIN VehiculosAutorizados v ON d.vehiculo_autorizado_id = v.id
-        WHERE d.id = @id;
-      `;
-
-      const fallbackRes = await fallbackReq.query(fallbackQuery);
-      const fallbackDet = fallbackRes.recordset[0];
-
-      const eventoNoReconocido = {
-        ...fallbackDet,
-        placa: 'SIN_RECONOCER',
-        placa_reconocida: 'SIN_RECONOCER',
-        imagen_vehiculo_path: fallbackDet?.ruta_imagen_ingreso,
-        imagen_placa_path: fallbackDet?.ruta_imagen_placa || fallbackDet?.ruta_imagen_ingreso,
-        fecha_hora: fallbackDet?.fecha_hora_ingreso,
-        alerta_detectada: false
-      };
-
-      emitEvent('ingreso_actualizado', eventoNoReconocido);
-      emitEvent('nueva_deteccion', eventoNoReconocido);
-
-      console.log(`[OCR NO LEGIBLE] Ingreso #${ingreso_id} guardado en BD con estado pendiente_revision para validación del operador.`);
-      return res.json({ message: 'Ingreso registrado como pendiente de validación manual.', deteccion: eventoNoReconocido });
+    // Sin lectura utilizable: queda para validación del operador (no se elimina la evidencia)
+    if (estado_procesamiento !== 'procesado' || placa.length < 4 || placa === 'NOLEGIBLE' || placa === 'SINRECONOCER') {
+      await db.request()
+        .input('id', sql.Int, ingreso_id)
+        .input('ruta', sql.VarChar(255), ruta_imagen_placa || null)
+        .query(`
+          UPDATE DeteccionVehiculo SET
+            placa_reconocida = NULL, confianza_ocr = NULL,
+            ruta_imagen_placa = COALESCE(@ruta, ruta_imagen_ingreso),
+            fecha_hora_procesamiento = GETDATE(),
+            estado_procesamiento = 'no_legible', estado_validacion = 'pendiente_revision'
+          WHERE id = @id`);
+      await lecturaAutomatica('pendiente_revision');
+      const dto = await difundir(db, ingreso_id, 'deteccion:actualizada');
+      return res.json({ message: 'Ingreso pendiente de validación manual.', deteccion: dto });
     }
 
-    const normalizedPlaca = cleanPlaca.replace('-', '');
-
-    // Anti-duplicado en Fase 2: si este ingreso es duplicado de otro reciente con la misma placa
-    const dedupDupReq = db.request();
-    dedupDupReq.input('current_id', sql.Int, ingreso_id);
-    dedupDupReq.input('norm_placa', sql.VarChar, normalizedPlaca);
-    const existingDup = await dedupDupReq.query(`
-      SELECT TOP 1 id, fecha_hora_ingreso
-      FROM DeteccionVehiculo
-      WHERE id <> @current_id
-        AND REPLACE(REPLACE(COALESCE(placa_reconocida, placa, ''), '-', ''), ' ', '') = @norm_placa
-        AND estado_procesamiento = 'procesado'
-        AND DATEDIFF(SECOND, fecha_hora_ingreso, GETDATE()) <= 35
-      ORDER BY fecha_hora_ingreso DESC;
-    `);
-
-    if (existingDup.recordset.length > 0) {
-      const prev = existingDup.recordset[0];
-      console.log(`[ANTI-DUPLICADO FASE 2] Ingreso ID #${ingreso_id} con placa ${cleanPlaca} coincide con ID #${prev.id} (hace <= 35s). Eliminando duplicado.`);
-      await db.request().input('id', sql.Int, ingreso_id).query(`
-        DELETE FROM DeteccionVehiculo WHERE id = @id AND estado_procesamiento = 'pendiente_ocr';
-      `);
-      return res.json({
-        message: 'Detección consolidada con evento previo.',
-        deduplicado: true,
-        ingreso_id: prev.id
-      });
+    // Mismo paso físico ya procesado con la misma placa: se consolida
+    const dup = await db.request()
+      .input('id', sql.Int, ingreso_id)
+      .input('placa', sql.VarChar(20), placa)
+      .query(`
+        SELECT TOP 1 id FROM DeteccionVehiculo
+        WHERE id <> @id AND estado_procesamiento = 'procesado'
+          AND REPLACE(REPLACE(COALESCE(placa_reconocida, ''), '-', ''), ' ', '') = @placa
+          AND DATEDIFF(SECOND, fecha_hora_ingreso, GETDATE()) <= 35
+        ORDER BY fecha_hora_ingreso DESC`);
+    if (dup.recordset.length) {
+      await db.request().input('id', sql.Int, ingreso_id)
+        .query(`DELETE FROM DeteccionVehiculo WHERE id = @id AND estado_procesamiento = 'pendiente_ocr'`);
+      emitEvent('deteccion:eliminada', { id: ingreso_id, consolidado_en: dup.recordset[0].id });
+      return res.json({ message: 'Detección consolidada con el paso previo.', deduplicado: true, ingreso_id: dup.recordset[0].id });
     }
 
-    // Inferencia de tipo de vehículo según normativa ANT Ecuador (ITS Priority: Automóvil por defecto)
-    let tipoVehiculoInferido = 'Automóvil';
-    if (/^[A-Z]{3}/.test(normalizedPlaca)) {
-      tipoVehiculoInferido = 'Automóvil';
-    } else if (/^[A-Z]{2}\d{3,4}[A-Z]?$/.test(normalizedPlaca) && normalizedPlaca.length <= 6) {
-      tipoVehiculoInferido = 'Motocicleta';
+    await db.request()
+      .input('id', sql.Int, ingreso_id)
+      .input('valida', sql.Bit, validez)
+      .input('evidencia', sql.NVarChar(1500), evidencia)
+      .query('UPDATE DeteccionVehiculo SET lectura_valida = @valida, evidencia_lectura = @evidencia WHERE id = @id');
+
+    const cruce = await cruzarListas(db, placa);
+    let estado = cruce.estado;
+    let tipo: string | null = tipoPorFormato(placa);
+    if (cruce.autorizado) {
+      placa = normalizePlate(cruce.autorizado.placa) || placa;
+      tipo = cruce.autorizado.tipo_vehiculo || tipo;
     }
 
-    // 1. Cruce con Lista Negra (Máxima Prioridad). Tolerante a errores de OCR:
-    // una coincidencia aproximada también alerta, marcada para confirmación del operador.
-    const blacklistMatch = await findBlacklistMatch(db, normalizedPlaca);
-
-    if (blacklistMatch) {
-      estadoValidacion = 'alerta';
-      alertaId = blacklistMatch.row.id;
-      alertaInfo = { ...blacklistMatch.row, coincidencia: blacklistMatch.coincidencia };
-    } else {
-      // 2. Cruce con Vehículos Autorizados: solo coincidencia exacta (un error de OCR no concede acceso)
-      const autorizado = await findAuthorizedExact(db, normalizedPlaca);
-
-      if (autorizado) {
-        estadoValidacion = 'autorizado';
-        vehiculoAutorizadoId = autorizado.id;
-        autorizadoInfo = autorizado;
-        if (autorizadoInfo.placa) {
-          cleanPlaca = autorizadoInfo.placa;
-        }
-        if (autorizadoInfo?.tipo_vehiculo) {
-          tipoVehiculoInferido = autorizadoInfo.tipo_vehiculo;
-        } else {
-          tipoVehiculoInferido = 'Automóvil';
-        }
+    // Autorización automática solo si la lectura cumple el criterio configurado (validez de la
+    // lectura y/o confianza mínima); si no, el personal confirma la placa. Una placa fuera del
+    // padrón con lectura no confirmada tampoco se da por "no registrada": podría ser un error
+    // de lectura de una placa autorizada, así que queda pendiente sin alarma.
+    // (Las alertas nunca se rebajan: ante la duda se avisa.)
+    if (estado === 'autorizado') {
+      const det = await db.request().input('id', sql.Int, ingreso_id).query('SELECT confianza_deteccion FROM DeteccionVehiculo WHERE id = @id');
+      const c = evaluarAutorizacion(validez, confianza, det.recordset[0]?.confianza_deteccion);
+      if (!c.cumple) {
+        estado = 'pendiente_revision';
+        console.log(`[AUTORIZACION] Ingreso #${ingreso_id} ${placa}: criterio ${c.criterio} no cumplido `
+          + `(lectura ${validez === null ? 'sin veredicto' : validez ? 'válida' : 'no válida'}, confianza ${(c.confianza.evaluada * 100).toFixed(1)} %) → confirmación manual`);
       } else {
-        estadoValidacion = 'no_reconocido';
+        console.log(`[AUTORIZACION] Ingreso #${ingreso_id} ${placa}: autorizado automáticamente (criterio ${c.criterio})`);
+      }
+    } else if (estado === 'no_reconocido' && validez === false) {
+      estado = 'pendiente_revision';
+    }
+
+    // Segundo factor: marca / color / tipo observados vs. registrados (posible placa clonada)
+    const registrado = cruce.alerta ?? cruce.autorizado;
+    if (registrado) {
+      try {
+        const obs = await db.request().input('id', sql.Int, ingreso_id).query(
+          'SELECT vehiculo_marca AS marca, vehiculo_color AS color, vehiculo_tipo AS tipo FROM DeteccionVehiculo WHERE id = @id');
+        const v = compararVehiculo(registrado, obs.recordset[0]);
+        if (v.resultado === 'no_coincide' && estado === 'autorizado' && config.booleano('verificar_vehiculo_autorizados')) {
+          estado = 'pendiente_revision';
+        }
+        if (v.resultado === 'no_coincide') console.warn(`[SEGUNDO FACTOR] Ingreso #${ingreso_id} ${placa}: ${v.detalle}`);
+        await db.request()
+          .input('id', sql.Int, ingreso_id)
+          .input('res', sql.VarChar(20), v.resultado)
+          .input('det', sql.VarChar(255), v.detalle.substring(0, 255))
+          .query('UPDATE DeteccionVehiculo SET verificacion_vehiculo = @res, verificacion_detalle = @det WHERE id = @id');
+      } catch (e: any) {
+        console.warn(`[SEGUNDO FACTOR] Ingreso #${ingreso_id}: ${e.message}`);
       }
     }
 
-    // Actualizar registro en base de datos
-    const updateReq = db.request();
-    updateReq.input('id', sql.Int, ingreso_id);
-    updateReq.input('placa_reconocida', sql.VarChar, cleanPlaca);
-    updateReq.input('confianza_ocr', sql.Float, confianza_ocr || 0.85);
-    updateReq.input('ruta_imagen_placa', sql.VarChar, ruta_imagen_placa || null);
-    updateReq.input('estado_procesamiento', sql.VarChar, 'procesado');
-    updateReq.input('estado_validacion', sql.VarChar, estadoValidacion);
-    updateReq.input('alerta_id', sql.Int, alertaId);
-    updateReq.input('vehiculo_autorizado_id', sql.Int, vehiculoAutorizadoId);
-    updateReq.input('tipo_vehiculo', sql.VarChar, tipoVehiculoInferido);
-
-    const updateQuery = `
-      UPDATE DeteccionVehiculo
-      SET
-        placa = @placa_reconocida,
-        placa_reconocida = @placa_reconocida,
-        confianza_ocr = @confianza_ocr,
-        ruta_imagen_placa = @ruta_imagen_placa,
-        imagen_placa_path = @ruta_imagen_placa,
-        fecha_hora_procesamiento = GETDATE(),
-        estado_procesamiento = 'procesado',
-        estado_validacion = @estado_validacion,
-        alerta_id = @alerta_id,
-        vehiculo_autorizado_id = @vehiculo_autorizado_id,
-        tipo_vehiculo = @tipo_vehiculo
-      WHERE id = @id;
-
-      SELECT d.*,
-             c.nombre as camara_nombre, c.ubicacion as camara_ubicacion,
-             l.motivo as alerta_motivo, l.nivel_alerta,
-             v.propietario, v.departamento, COALESCE(v.tipo_vehiculo, d.tipo_vehiculo, 'Automóvil') as tipo_vehiculo
-      FROM DeteccionVehiculo d
-      LEFT JOIN Camaras c ON d.camara_id = c.id
-      LEFT JOIN ListaNegra l ON d.alerta_id = l.id
-      LEFT JOIN VehiculosAutorizados v ON d.vehiculo_autorizado_id = v.id
-      WHERE d.id = @id;
-    `;
-
-    const updateRes = await updateReq.query(updateQuery);
-    const registroActualizado = updateRes.recordset[0];
-
-    const eventoCompleto = {
-      ...registroActualizado,
-      placa: cleanPlaca,
-      imagen_vehiculo_path: registroActualizado?.ruta_imagen_ingreso,
-      imagen_placa_path: registroActualizado?.ruta_imagen_placa || registroActualizado?.ruta_imagen_ingreso,
-      fecha_hora: registroActualizado?.fecha_hora_ingreso,
-      alerta_detectada: estadoValidacion === 'alerta'
-    };
-
-    // Emitir WebSocket de ingreso actualizado
-    emitEvent('ingreso_actualizado', eventoCompleto);
-    emitEvent('nueva_deteccion', eventoCompleto);
-
-    if (estadoValidacion === 'alerta') {
-      emitEvent('alerta_vehiculo', eventoCompleto);
-      console.warn(`[¡ALERTA CRÍTICA!] Placa: ${cleanPlaca} en Lista Negra! Motivo: ${alertaInfo?.motivo}`);
-    }
-
-    console.log(
-      `[FASE 2 - OCR WORKER] Ingreso ID #${ingreso_id} completado | Placa: ${cleanPlaca} | ` +
-      `Estado: ${estadoValidacion.toUpperCase()} | Confianza OCR: ${((confianza_ocr || 0) * 100).toFixed(1)}%`
-    );
-
-    return res.json({
-      message: 'OCR completado exitosamente.',
-      deteccion: eventoCompleto
-    });
-
-  } catch (error: any) {
-    console.error('[DETECCIONES] Error en Fase 2 (Completar OCR):', error.message);
+    await db.request()
+      .input('id', sql.Int, ingreso_id)
+      .input('placa', sql.VarChar(20), placa)
+      .input('conf', sql.Float, confianza)
+      .input('ruta', sql.VarChar(255), ruta_imagen_placa || null)
+      .input('estado', sql.VarChar(30), estado)
+      .input('alerta', sql.Int, cruce.alerta?.id ?? null)
+      .input('autorizado', sql.Int, cruce.autorizado?.id ?? null)
+      .input('tipo', sql.VarChar(50), tipo)
+      .query(`
+        UPDATE DeteccionVehiculo SET
+          placa_reconocida = @placa, confianza_ocr = @conf,
+          ruta_imagen_placa = COALESCE(@ruta, ruta_imagen_placa),
+          fecha_hora_procesamiento = GETDATE(), estado_procesamiento = 'procesado',
+          estado_validacion = @estado, alerta_id = @alerta, vehiculo_autorizado_id = @autorizado,
+          tipo_vehiculo = COALESCE(@tipo, tipo_vehiculo)
+        WHERE id = @id`);
+    await lecturaAutomatica(estado);
+    const dto = await difundir(db, ingreso_id, 'deteccion:actualizada');
+    if (estado === 'alerta') console.warn(`[ALERTA] Placa ${placa} en lista de alertas: ${cruce.alerta?.motivo}`);
+    return res.json({ message: 'OCR completado.', deteccion: dto });
+  } catch (e: any) {
+    console.error('[DETECCIONES] fase 2:', e.message);
     return res.status(500).json({ error: 'Error interno al completar el OCR.' });
   }
 });
 
-// =============================================================================
-// GET /api/detecciones/recientes — Tabla de Ingresos Recientes (Dashboard)
-// Retorna los N registros procesados mas recientes con los campos minimos para
-// la tabla institucional: lugar, camara, placa, vehiculo, confianza, fecha/hora.
-// =============================================================================
-router.get('/recientes', async (req: Request, res: Response) => {
-  const limite = Math.min(parseInt(String(req.query.limite || '20')), 50);
-
+router.post('/descarte', servicioMiddleware, async (req: Request, res: Response) => {
+  const { tracking_id, motivo, texto_candidato, confianza, fuente, camara_id } = req.body;
   try {
-    const db = getDB();
-    const request = db.request();
-    request.input('limite', sql.Int, limite);
-
-    const result = await request.query(`
-      SELECT TOP (@limite)
-        d.id,
-        COALESCE(d.placa_validada, d.placa_reconocida, d.placa, 'SIN_RECONOCER') AS placa,
-        d.confianza_ocr,
-        d.confianza_deteccion,
-        d.estado_validacion,
-        d.estado_procesamiento,
-        d.fecha_hora_ingreso,
-        d.tracking_id,
-        d.ruta_imagen_ingreso,
-        d.ruta_imagen_placa,
-        COALESCE(c.nombre, 'Cámara Principal') AS camara_nombre,
-        COALESCE(c.ubicacion, 'Acceso ECU 911') AS camara_ubicacion,
-        COALESCE(v.tipo_vehiculo, d.tipo_vehiculo, 'Automóvil') AS tipo_vehiculo,
-        COALESCE(v.propietario, '') AS propietario,
-        d.alerta_id,
-        d.validado_manualmente
-      FROM DeteccionVehiculo d
-      LEFT JOIN Camaras c ON d.camara_id = c.id
-      LEFT JOIN VehiculosAutorizados v ON d.vehiculo_autorizado_id = v.id
-      WHERE (d.estado_procesamiento IN ('procesado', 'no_legible', 'pendiente_ocr') OR d.validado_manualmente = 1)
-      ORDER BY d.fecha_hora_ingreso DESC;
-    `);
-
-    return res.json(result.recordset);
-  } catch (error: any) {
-    console.error('[DETECCIONES] Error en /recientes:', error.message);
-    return res.status(500).json({ error: 'Error al consultar ingresos recientes.' });
+    await getDB().request()
+      .input('tid', sql.Int, Number.isInteger(tracking_id) ? tracking_id : -1)
+      .input('motivo', sql.VarChar(100), String(motivo || 'falso_positivo_ocr').substring(0, 100))
+      .input('texto', sql.VarChar(50), texto_candidato ? String(texto_candidato).substring(0, 50) : null)
+      .input('conf', sql.Float, typeof confianza === 'number' ? confianza : null)
+      .input('fuente', sql.VarChar(255), fuente ? String(fuente).substring(0, 255) : null)
+      .input('camara', sql.Int, Number.isInteger(camara_id) ? camara_id : null)
+      .query(`INSERT INTO AuditoriaDescartes (tracking_id, motivo, texto_candidato, confianza, fuente, camara_id)
+              VALUES (@tid, @motivo, @texto, @conf, @fuente, @camara)`);
+    return res.status(201).json({ success: true });
+  } catch (e: any) {
+    console.error('[DETECCIONES] descarte:', e.message);
+    return res.status(500).json({ error: 'Error al registrar el descarte.' });
   }
 });
 
 // =============================================================================
-// GET /api/detecciones — Listar detecciones historicas y en vivo
+// Consultas del personal
 // =============================================================================
-router.get('/', async (req: Request, res: Response) => {
-  const { placa, fechaInicio, fechaFin, estado, estado_procesamiento, camaraId } = req.query;
 
+/** Filtros comunes del historial y la exportación. */
+function aplicarFiltros(req: Request, request: sql.Request): string[] {
+  const q = req.query;
+  const f: string[] = [`d.estado_procesamiento IN ('procesado', 'no_legible', 'pendiente_ocr')`];
+  const placa = normalizePlate(String(q.placa ?? ''));
+  if (placa) {
+    request.input('placa', sql.VarChar(22), `%${placa}%`);
+    f.push(`REPLACE(COALESCE(d.placa_validada, d.placa_reconocida, ''), '-', '') LIKE @placa`);
+  }
+  const estados = String(q.estado ?? '').split(',').filter(e => ['autorizado', 'alerta', 'no_reconocido', 'pendiente_revision'].includes(e));
+  if (estados.length) {
+    estados.forEach((e, i) => request.input(`est${i}`, sql.VarChar(30), e));
+    f.push(`d.estado_validacion IN (${estados.map((_, i) => `@est${i}`).join(',')})`);
+  }
+  if (q.camara && Number.isInteger(Number(q.camara))) {
+    request.input('camara', sql.Int, Number(q.camara));
+    f.push('d.camara_id = @camara');
+  }
+  if (q.validado === 'si' || q.validado === 'no') f.push(`d.validado_manualmente = ${q.validado === 'si' ? 1 : 0}`);
+  if (q.desde && !Number.isNaN(Date.parse(String(q.desde)))) {
+    request.input('desde', sql.DateTime, new Date(String(q.desde)));
+    f.push('d.fecha_hora_ingreso >= @desde');
+  }
+  if (q.hasta && !Number.isNaN(Date.parse(String(q.hasta)))) {
+    request.input('hasta', sql.DateTime, new Date(String(q.hasta)));
+    f.push('d.fecha_hora_ingreso <= @hasta');
+  }
+  return f;
+}
+
+router.get('/', authMiddleware, async (req: Request, res: Response) => {
+  const tamano = Math.min(100, Math.max(5, Number(req.query.tamano) || 25));
+  const pagina = Math.max(1, Number(req.query.pagina) || 1);
   try {
     const db = getDB();
-    let queryStr = `
-      SELECT d.*,
-             c.nombre as camara_nombre, c.ubicacion as camara_ubicacion,
-             l.motivo as alerta_motivo, l.nivel_alerta,
-             v.propietario, v.departamento, COALESCE(v.tipo_vehiculo, d.tipo_vehiculo, 'Automóvil') as tipo_vehiculo
-      FROM DeteccionVehiculo d
-      LEFT JOIN Camaras c ON d.camara_id = c.id
-      LEFT JOIN ListaNegra l ON d.alerta_id = l.id
-      LEFT JOIN VehiculosAutorizados v ON d.vehiculo_autorizado_id = v.id
-      WHERE (d.estado_procesamiento IN ('procesado', 'no_legible', 'pendiente_ocr') OR d.validado_manualmente = 1)
-    `;
+    const conteo = db.request();
+    const filtrosConteo = aplicarFiltros(req, conteo);
+    const total = (await conteo.query(`SELECT COUNT(*) AS n FROM DeteccionVehiculo d WHERE ${filtrosConteo.join(' AND ')}`)).recordset[0].n;
 
-    const request = db.request();
-
-    if (placa && String(placa).trim()) {
-      const cleanPlaca = String(placa).trim().replace(/[^a-zA-Z0-9]/g, '');
-      request.input('placa', sql.VarChar, `%${cleanPlaca}%`);
-      request.input('placaRaw', sql.VarChar, `%${String(placa).trim()}%`);
-      queryStr += ` AND (REPLACE(COALESCE(d.placa_validada, d.placa_reconocida, d.placa), '-', '') LIKE @placa OR d.placa_reconocida LIKE @placaRaw OR d.placa LIKE @placaRaw)`;
-    }
-
-    if (estado && estado !== 'todos') {
-      request.input('estado', sql.VarChar, estado);
-      queryStr += ` AND d.estado_validacion = @estado`;
-    }
-
-    if (estado_procesamiento) {
-      request.input('estado_proc', sql.VarChar, estado_procesamiento);
-      queryStr += ` AND d.estado_procesamiento = @estado_proc`;
-    }
-
-    if (camaraId && String(camaraId).trim()) {
-      request.input('camaraId', sql.Int, parseInt(String(camaraId)));
-      queryStr += ` AND d.camara_id = @camaraId`;
-    }
-
-    if (fechaInicio && String(fechaInicio).trim()) {
-      request.input('fechaInicio', sql.DateTime2, new Date(String(fechaInicio)));
-      queryStr += ` AND d.fecha_hora_ingreso >= @fechaInicio`;
-    }
-
-    if (fechaFin && String(fechaFin).trim()) {
-      request.input('fechaFin', sql.DateTime2, new Date(String(fechaFin)));
-      queryStr += ` AND d.fecha_hora_ingreso <= @fechaFin`;
-    }
-
-    queryStr += ` ORDER BY d.fecha_hora_ingreso DESC`;
-
-    const result = await request.query(queryStr);
-
-    const normalizados = result.recordset.map((item: any) => ({
-      ...item,
-      placa: item.validado_manualmente ? item.placa_validada : (item.placa_reconocida || item.placa || 'SIN_RECONOCER'),
-      tipo_vehiculo: item.tipo_vehiculo || 'Automóvil',
-      imagen_vehiculo_path: item.ruta_imagen_ingreso,
-      imagen_placa_path: item.ruta_imagen_placa || item.ruta_imagen_ingreso,
-      fecha_hora: item.fecha_hora_ingreso
-    }));
-
-    return res.json(normalizados);
-  } catch (error: any) {
-    console.error('[DETECCIONES] Error al listar detecciones:', error.message);
-    return res.status(500).json({ error: 'Error al consultar detecciones.' });
+    const consulta = db.request();
+    const filtros = aplicarFiltros(req, consulta);
+    consulta.input('offset', sql.Int, (pagina - 1) * tamano).input('tamano', sql.Int, tamano);
+    const r = await consulta.query(`${SELECT_DETECCION} WHERE ${filtros.join(' AND ')}
+      ORDER BY d.fecha_hora_ingreso DESC OFFSET @offset ROWS FETCH NEXT @tamano ROWS ONLY`);
+    return res.json({ items: r.recordset.map(d => mapearDeteccion(d)), total, pagina, tamano });
+  } catch (e: any) {
+    console.error('[DETECCIONES] listar:', e.message);
+    return res.status(500).json({ error: 'Error al consultar las detecciones.' });
   }
 });
 
-// =============================================================================
-// GET /api/detecciones/exportar — Exportar historial a CSV
-// =============================================================================
-router.get('/exportar', async (req: Request, res: Response) => {
-  const { placa, fechaInicio, fechaFin, estado, camaraId } = req.query;
-
+router.get('/recientes', authMiddleware, async (req: Request, res: Response) => {
+  const limite = Math.min(50, Math.max(1, Number(req.query.limite) || 20));
   try {
-    const db = getDB();
-    let queryStr = `
-      SELECT d.*,
-             c.nombre as camara_nombre, c.ubicacion as camara_ubicacion,
-             l.motivo as alerta_motivo, l.nivel_alerta,
-             v.propietario, v.departamento, v.tipo_vehiculo
-      FROM DeteccionVehiculo d
-      LEFT JOIN Camaras c ON d.camara_id = c.id
-      LEFT JOIN ListaNegra l ON d.alerta_id = l.id
-      LEFT JOIN VehiculosAutorizados v ON d.vehiculo_autorizado_id = v.id
-      WHERE d.placa IS NOT NULL 
-        AND d.placa != 'NO_LEGIBLE' 
-        AND d.placa != 'PROCESANDO...' 
-        AND d.placa != 'PROCESANDO'
-        AND LEN(REPLACE(d.placa, '-', '')) >= 5
-    `;
+    const r = await getDB().request().input('n', sql.Int, limite).query(`
+      ${SELECT_DETECCION}
+      WHERE d.estado_procesamiento IN ('procesado', 'no_legible', 'pendiente_ocr')
+      ORDER BY d.fecha_hora_ingreso DESC OFFSET 0 ROWS FETCH NEXT @n ROWS ONLY`);
+    return res.json(r.recordset.map(d => mapearDeteccion(d)));
+  } catch (e: any) {
+    console.error('[DETECCIONES] recientes:', e.message);
+    return res.status(500).json({ error: 'Error al consultar los ingresos recientes.' });
+  }
+});
 
-    const request = db.request();
+const ETIQUETA_ESTADO: Record<string, string> = {
+  autorizado: 'Autorizado', alerta: 'Alerta', no_reconocido: 'No registrado', pendiente_revision: 'Pendiente de revisión',
+};
 
-    if (placa && String(placa).trim()) {
-      const cleanPlaca = String(placa).trim().replace(/[^a-zA-Z0-9]/g, '');
-      request.input('placa', sql.VarChar, `%${cleanPlaca}%`);
-      queryStr += ` AND (REPLACE(d.placa_reconocida, '-', '') LIKE @placa OR d.placa_reconocida LIKE @placa)`;
-    }
-
-    if (estado && estado !== 'todos') {
-      request.input('estado', sql.VarChar, estado);
-      queryStr += ` AND d.estado_validacion = @estado`;
-    }
-
-    if (camaraId && String(camaraId).trim()) {
-      request.input('camaraId', sql.Int, parseInt(String(camaraId)));
-      queryStr += ` AND d.camara_id = @camaraId`;
-    }
-
-    if (fechaInicio && String(fechaInicio).trim()) {
-      request.input('fechaInicio', sql.DateTime2, new Date(String(fechaInicio)));
-      queryStr += ` AND d.fecha_hora_ingreso >= @fechaInicio`;
-    }
-
-    if (fechaFin && String(fechaFin).trim()) {
-      request.input('fechaFin', sql.DateTime2, new Date(String(fechaFin)));
-      queryStr += ` AND d.fecha_hora_ingreso <= @fechaFin`;
-    }
-
-    queryStr += ` ORDER BY d.fecha_hora_ingreso DESC`;
-
-    const result = await request.query(queryStr);
-    const rows = result.recordset;
-
-    // Generar CSV
-    const headers = [
-      'ID',
-      'Placa Reconocida',
-      'Fecha y Hora',
-      'Estado Validacion',
-      'Propietario',
-      'Departamento',
-      'Tipo Vehiculo',
-      'Alerta Lista Negra',
-      'Motivo Alerta',
-      'Nivel Alerta',
-      'Camara',
-      'Ubicacion',
-      'Confianza YOLO (%)',
-      'Confianza OCR (%)',
-      'Validado Manualmente'
-    ];
-
-    const escapeCsv = (val: any) => {
-      if (val === null || val === undefined) return '""';
-      const str = String(val).replace(/"/g, '""');
-      return `"${str}"`;
-    };
-
-    let csvContent = '\uFEFF' + headers.join(',') + '\n';
-
-    for (const r of rows) {
-      const row = [
-        r.id,
-        escapeCsv(r.validado_manualmente ? r.placa_validada : (r.placa_reconocida || r.placa)),
-        escapeCsv(r.fecha_hora_ingreso ? new Date(r.fecha_hora_ingreso).toLocaleString('es-EC') : ''),
-        escapeCsv(r.estado_validacion),
-        escapeCsv(r.propietario || 'N/A'),
-        escapeCsv(r.departamento || 'N/A'),
-        escapeCsv(r.tipo_vehiculo || 'N/A'),
-        escapeCsv(r.alerta_id ? 'SI' : 'NO'),
-        escapeCsv(r.alerta_motivo || 'N/A'),
-        escapeCsv(r.nivel_alerta || 'N/A'),
-        escapeCsv(r.camara_nombre || 'Acceso Principal'),
-        escapeCsv(r.camara_ubicacion || 'Garita'),
-        escapeCsv(r.confianza_deteccion ? `${(r.confianza_deteccion * 100).toFixed(1)}%` : '0%'),
-        escapeCsv(r.confianza_ocr ? `${(r.confianza_ocr * 100).toFixed(1)}%` : '0%'),
-        escapeCsv(r.validado_manualmente ? 'SI' : 'NO')
-      ];
-      csvContent += row.join(',') + '\n';
-    }
-
-    const filename = `reporte_ingresos_anpr_${new Date().toISOString().slice(0, 10)}.csv`;
+router.get('/exportar', authMiddleware, async (req: Request, res: Response) => {
+  try {
+    const request = getDB().request();
+    const filtros = aplicarFiltros(req, request);
+    const r = await request.query(`${SELECT_DETECCION} WHERE ${filtros.join(' AND ')} ORDER BY d.fecha_hora_ingreso DESC`);
+    const csv = (v: unknown) => `"${String(v ?? '').replace(/"/g, '""')}"`;
+    const pct = (v: number | null) => (typeof v === 'number' ? (v * 100).toFixed(1) : '');
+    const cab = ['ID', 'Fecha y hora', 'Placa', 'Lectura OCR', 'Estado', 'Validado por operador', 'Validador', 'Cámara', 'Ubicación',
+      'Tipo de vehículo', 'Marca observada', 'Color observado', 'Verificación del vehículo', 'Propietario (padrón)', 'Departamento',
+      'Motivo de alerta', 'Nivel de alerta', 'Confianza detección (%)', 'Confianza OCR (%)'];
+    const filas = r.recordset.map(d => [
+      d.id, new Date(d.fecha_hora_ingreso).toLocaleString('es-EC', { timeZone: 'America/Guayaquil' }),
+      d.placa_validada || d.placa_reconocida || '', d.placa_ocr_original || d.placa_reconocida || '',
+      ETIQUETA_ESTADO[d.estado_validacion] ?? d.estado_validacion, d.validado_manualmente ? 'Sí' : 'No', d.validador_email || '',
+      d.camara_nombre || '', d.camara_ubicacion || '', d.tipo_vehiculo || d.vehiculo_tipo || '', d.vehiculo_marca || '',
+      d.vehiculo_color || '', d.verificacion_vehiculo || '', d.propietario || '', d.departamento || '',
+      d.alerta_motivo || '', d.nivel_alerta || '', pct(d.confianza_deteccion), pct(d.confianza_ocr),
+    ].map(csv).join(','));
+    const nombre = `ingresos_anpr_${new Date().toISOString().slice(0, 10)}.csv`;
     res.setHeader('Content-Type', 'text/csv; charset=utf-8');
-    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
-    return res.send(csvContent);
+    res.setHeader('Content-Disposition', `attachment; filename="${nombre}"`);
+    await auditarOperacion(getDB(), req, 'EXPORTACION', 'deteccion', null, `${r.recordset.length} registros · ${JSON.stringify(req.query).substring(0, 300)}`);
+    return res.send('﻿' + [cab.map(csv).join(','), ...filas].join('\n'));
+  } catch (e: any) {
+    console.error('[DETECCIONES] exportar:', e.message);
+    return res.status(500).json({ error: 'Error al exportar.' });
+  }
+});
 
-  } catch (error: any) {
-    console.error('[DETECCIONES] Error al exportar CSV:', error.message);
-    return res.status(500).json({ error: 'Error al exportar datos.' });
+router.get('/buscar-placa/:placa', authMiddleware, async (req: Request, res: Response) => {
+  const placa = normalizePlate(req.params.placa);
+  if (placa.length < 3) return res.status(400).json({ error: 'Ingrese al menos 3 caracteres de la placa.' });
+  try {
+    const db = getDB();
+    const cruce = await cruzarListas(db, placa);
+    const hist = await db.request().input('placa', sql.VarChar(20), placa).query(`
+      ${SELECT_DETECCION}
+      WHERE REPLACE(COALESCE(d.placa_validada, d.placa_reconocida, ''), '-', '') = @placa
+      ORDER BY d.fecha_hora_ingreso DESC OFFSET 0 ROWS FETCH NEXT 10 ROWS ONLY`);
+    return res.json({
+      placa,
+      estado: cruce.estado === 'no_reconocido' ? 'no_registrado' : cruce.estado,
+      alerta: cruce.alerta, autorizado: cruce.autorizado,
+      ultimos_ingresos: hist.recordset.map(d => mapearDeteccion(d)),
+    });
+  } catch (e: any) {
+    console.error('[DETECCIONES] buscar placa:', e.message);
+    return res.status(500).json({ error: 'Error al buscar la placa.' });
+  }
+});
+
+router.get('/:id(\\d+)', authMiddleware, async (req: Request, res: Response) => {
+  const id = Number(req.params.id);
+  try {
+    const db = getDB();
+    const d = await obtenerDeteccion(db, id);
+    if (!d) return res.status(404).json({ error: 'Detección no encontrada.' });
+    const dto = mapearDeteccion(d, true);
+    const [auditoria, anteriores] = await Promise.all([
+      db.request().input('id', sql.Int, id).query(`
+        SELECT fecha, accion, usuario_email, detalle FROM AuditoriaOperaciones
+        WHERE entidad = 'deteccion' AND entidad_id = @id ORDER BY fecha DESC`),
+      dto.placa
+        ? db.request().input('id', sql.Int, id).input('placa', sql.VarChar(20), normalizePlate(dto.placa)).query(`
+            ${SELECT_DETECCION}
+            WHERE d.id <> @id AND REPLACE(COALESCE(d.placa_validada, d.placa_reconocida, ''), '-', '') = @placa
+            ORDER BY d.fecha_hora_ingreso DESC OFFSET 0 ROWS FETCH NEXT 10 ROWS ONLY`)
+        : Promise.resolve({ recordset: [] as any[] }),
+    ]);
+    return res.json({ ...dto, auditoria: auditoria.recordset, pasos_anteriores: anteriores.recordset.map(x => mapearDeteccion(x)) });
+  } catch (e: any) {
+    console.error('[DETECCIONES] detalle:', e.message);
+    return res.status(500).json({ error: 'Error al consultar la detección.' });
   }
 });
 
 // =============================================================================
-// GET /api/detecciones/stats — Estadísticas del día
+// Acciones del personal
 // =============================================================================
-router.get('/stats', async (req: Request, res: Response) => {
+
+router.post('/validar/:id(\\d+)', authMiddleware, async (req: Request, res: Response) => {
+  const id = Number(req.params.id);
+  const placa = normalizePlate(req.body?.placa_validada);
+  const tipoVehiculo = req.body?.tipo_vehiculo ? String(req.body.tipo_vehiculo).substring(0, 50) : null;
+  const observacion = req.body?.observacion ? String(req.body.observacion).substring(0, 300) : null;
+  if (placa.length < 4 || placa.length > 10) return res.status(400).json({ error: 'Ingrese una placa válida (4 a 10 caracteres).' });
+
   try {
     const db = getDB();
-    const result = await db.request().query(`
-      SELECT
-        COUNT(*) as total_hoy,
-        ISNULL(SUM(CASE WHEN estado_validacion = 'autorizado' THEN 1 ELSE 0 END), 0) as autorizados_hoy,
-        ISNULL(SUM(CASE WHEN estado_validacion = 'alerta' THEN 1 ELSE 0 END), 0) as alertas_hoy,
-        ISNULL(SUM(CASE WHEN estado_validacion = 'no_reconocido' THEN 1 ELSE 0 END), 0) as no_reconocidos_hoy,
-        ISNULL(SUM(CASE WHEN estado_procesamiento = 'pendiente_ocr' OR estado_validacion = 'pendiente_revision' THEN 1 ELSE 0 END), 0) as pendientes_hoy
-      FROM DeteccionVehiculo
-      WHERE CAST(fecha_hora_ingreso AS DATE) = CAST(GETDATE() AS DATE)
-    `);
+    const actual = await obtenerDeteccion(db, id);
+    if (!actual) return res.status(404).json({ error: 'Detección no encontrada.' });
 
-    return res.json(result.recordset[0]);
-  } catch (error: any) {
-    console.error('[DETECCIONES] Error al obtener estadísticas:', error.message);
-    return res.status(500).json({ error: 'Error al obtener estadísticas.' });
-  }
-});
-
-// =============================================================================
-// DELETE /api/detecciones/limpiar — Purgar detecciones
-// =============================================================================
-router.delete('/limpiar', async (req: Request, res: Response) => {
-  try {
-    const db = getDB();
-    await db.request().query(`
-      DELETE FROM DeteccionVehiculo;
-      DELETE FROM EventosIngreso;
-    `);
-    console.log('[DETECCIONES] Historial de detecciones purgado.');
-    return res.json({ message: 'Historial de detecciones limpiado exitosamente.' });
-  } catch (error: any) {
-    console.error('[DETECCIONES] Error al limpiar detecciones:', error.message);
-    return res.status(500).json({ error: 'Error al limpiar detecciones.' });
-  }
-});
-
-// =============================================================================
-// DELETE /api/detecciones/:id — Eliminar detección individual
-// =============================================================================
-router.delete('/:id', async (req: Request, res: Response) => {
-  const { id } = req.params;
-  try {
-    const db = getDB();
+    const cruce = await cruzarListas(db, placa);
+    const final = cruce.autorizado ? normalizePlate(cruce.autorizado.placa) || placa : placa;
     await db.request()
-      .input('id', sql.Int, parseInt(id))
+      .input('id', sql.Int, id)
+      .input('placa', sql.VarChar(20), final)
+      .input('estado', sql.VarChar(30), cruce.estado)
+      .input('alerta', sql.Int, cruce.alerta?.id ?? null)
+      .input('autorizado', sql.Int, cruce.autorizado?.id ?? null)
+      .input('tipo', sql.VarChar(50), tipoVehiculo || cruce.autorizado?.tipo_vehiculo || tipoPorFormato(final))
+      .input('usuario', sql.Int, req.user!.id)
       .query(`
-        DELETE FROM DeteccionVehiculo WHERE id = @id;
-        DELETE FROM EventosIngreso WHERE id = @id;
-      `);
-    console.log(`[DETECCIONES] Detección #${id} eliminada individualmente.`);
-    return res.json({ message: 'Detección eliminada exitosamente.', id: parseInt(id) });
-  } catch (error: any) {
-    console.error('[DETECCIONES] Error al eliminar detección individual:', error.message);
+        UPDATE DeteccionVehiculo SET
+          -- Conserva la lectura y decisión automáticas (métricas de evaluación)
+          placa_ocr_original = COALESCE(placa_ocr_original, placa_reconocida),
+          decision_automatica = COALESCE(decision_automatica, estado_validacion),
+          validado_manualmente = 1, placa_validada = @placa, usuario_validador_id = @usuario, fecha_validacion = GETDATE(),
+          estado_procesamiento = 'procesado', estado_validacion = @estado,
+          alerta_id = @alerta, vehiculo_autorizado_id = @autorizado, tipo_vehiculo = COALESCE(@tipo, tipo_vehiculo)
+        WHERE id = @id`);
+
+    const antes = actual.placa_validada || actual.placa_reconocida || 'sin lectura';
+    await auditarOperacion(db, req, 'VALIDACION', 'deteccion', id,
+      `${antes} → ${final} (${ETIQUETA_ESTADO[cruce.estado]})${observacion ? ` · ${observacion}` : ''}`);
+    const dto = await difundir(db, id, 'deteccion:actualizada');
+    return res.json({ message: 'Validación registrada.', deteccion: dto });
+  } catch (e: any) {
+    console.error('[DETECCIONES] validar:', e.message);
+    return res.status(500).json({ error: 'Error al registrar la validación.' });
+  }
+});
+
+/**
+ * Paso registrado a mano por el personal (cámara fuera de servicio, vehículo sin placa
+ * legible, etc.). Se cruza con las listas igual que una lectura automática y NO modifica
+ * el padrón de autorizados: para autorizar un vehículo se usa la pantalla de listas.
+ */
+router.post('/registro-manual', authMiddleware, async (req: Request, res: Response) => {
+  const placa = normalizePlate(req.body?.placa);
+  const motivo = String(req.body?.motivo ?? '').trim();
+  const camaraId = Number.isInteger(Number(req.body?.camara_id)) ? Number(req.body.camara_id) : null;
+  const tipo = req.body?.tipo_vehiculo ? String(req.body.tipo_vehiculo).substring(0, 50) : null;
+  if (placa.length < 4 || placa.length > 10) return res.status(400).json({ error: 'Ingrese una placa válida (4 a 10 caracteres).' });
+  if (motivo.length < 5) return res.status(400).json({ error: 'Indique el motivo del registro manual (mínimo 5 caracteres).' });
+
+  try {
+    const db = getDB();
+    const cruce = await cruzarListas(db, placa);
+    const ins = await db.request()
+      .input('placa', sql.VarChar(20), placa)
+      .input('estado', sql.VarChar(30), cruce.estado)
+      .input('alerta', sql.Int, cruce.alerta?.id ?? null)
+      .input('autorizado', sql.Int, cruce.autorizado?.id ?? null)
+      .input('camara', sql.Int, camaraId)
+      .input('tipo', sql.VarChar(50), tipo || cruce.autorizado?.tipo_vehiculo || tipoPorFormato(placa))
+      .input('usuario', sql.Int, req.user!.id)
+      .query(`
+        INSERT INTO DeteccionVehiculo (placa_reconocida, placa_validada, fuente, camara_id, estado_procesamiento, estado_validacion,
+                                       alerta_id, vehiculo_autorizado_id, tipo_vehiculo, validado_manualmente, usuario_validador_id,
+                                       fecha_validacion, fecha_hora_ingreso, fecha_hora_procesamiento, decision_automatica)
+        OUTPUT INSERTED.id
+        VALUES (NULL, @placa, 'manual', @camara, 'procesado', @estado, @alerta, @autorizado, @tipo, 1, @usuario,
+                GETDATE(), GETDATE(), GETDATE(), 'manual')`);
+    const id = ins.recordset[0].id;
+    await auditarOperacion(db, req, 'REGISTRO_MANUAL', 'deteccion', id, `${placa} (${ETIQUETA_ESTADO[cruce.estado]}) · ${motivo}`);
+    const dto = await difundir(db, id, 'deteccion:nueva');
+    return res.status(201).json({ message: 'Ingreso registrado manualmente.', deteccion: dto });
+  } catch (e: any) {
+    console.error('[DETECCIONES] registro manual:', e.message);
+    return res.status(500).json({ error: 'Error al registrar el ingreso manual.' });
+  }
+});
+
+const fechaLocal = (f: Date) => new Date(f).toLocaleString('es-EC', { timeZone: 'America/Guayaquil' });
+
+/** Elimina una detección y su evidencia fotográfica (solo Administrador, con motivo auditado). */
+router.delete('/:id(\\d+)', authMiddleware, soloAdmin, async (req: Request, res: Response) => {
+  const id = Number(req.params.id);
+  const motivo = String(req.body?.motivo ?? '').trim();
+  if (motivo.length < 3) return res.status(400).json({ error: 'Indique el motivo de la eliminación.' });
+  try {
+    const db = getDB();
+    const d = await obtenerDeteccion(db, id);
+    if (!d) return res.status(404).json({ error: 'Detección no encontrada.' });
+    await db.request().input('id', sql.Int, id).query('DELETE FROM DeteccionVehiculo WHERE id = @id');
+    const archivos = await eliminarEvidencia([d.ruta_imagen_ingreso, d.ruta_imagen_placa]);
+    await auditarOperacion(db, req, 'DETECCION_ELIMINADA', 'deteccion', id,
+      `${d.placa_validada || d.placa_reconocida || 'sin lectura'} del ${fechaLocal(d.fecha_hora_ingreso)} · ${archivos} imágenes · ${motivo}`);
+    emitEvent('deteccion:eliminada', { id });
+    return res.json({ message: 'Detección eliminada.', id });
+  } catch (e: any) {
+    console.error('[DETECCIONES] eliminar:', e.message);
     return res.status(500).json({ error: 'Error al eliminar la detección.' });
   }
 });
 
-// =============================================================================
-// POST /api/detecciones/validar/:id — Validación manual de placa por operador
-// =============================================================================
-router.post('/validar/:id', async (req: Request, res: Response) => {
-  const { id } = req.params;
-  const { placa_validada, tipo_vehiculo } = req.body;
-
-  if (!placa_validada) {
-    return res.status(400).json({ error: 'Debe ingresar la placa validada manualmente.' });
-  }
-
+/**
+ * Eliminación masiva (solo Administrador): todas las detecciones o las que cumplen los mismos
+ * filtros del historial (?placa, estado, camara, validado, desde, hasta). Exige escribir
+ * ELIMINAR como confirmación y un motivo; borra también la evidencia fotográfica y queda en
+ * la auditoría con la cantidad y los filtros usados.
+ */
+router.delete('/', authMiddleware, soloAdmin, async (req: Request, res: Response) => {
+  const motivo = String(req.body?.motivo ?? '').trim();
+  if (req.body?.confirmacion !== 'ELIMINAR') return res.status(400).json({ error: 'Escriba ELIMINAR para confirmar.' });
+  if (motivo.length < 5) return res.status(400).json({ error: 'Indique el motivo de la eliminación (mínimo 5 caracteres).' });
   try {
     const db = getDB();
-    let cleanPlaca = String(placa_validada).toUpperCase().trim().replace(/[^A-Z0-9-]/g, '');
-    const normalizedPlaca = cleanPlaca.replace('-', '');
-
-    let estadoValidacion: 'autorizado' | 'alerta' | 'no_reconocido' | 'pendiente_revision' = 'no_reconocido';
-    let alertaId: number | null = null;
-    let vehiculoAutorizadoId: number | null = null;
-    let alertaInfo: any = null;
-    let finalTipoVehiculo = tipo_vehiculo || '';
-
-    // 1. Cruce con Lista Negra
-    const blacklistReq = db.request();
-    blacklistReq.input('placaRaw', sql.VarChar, cleanPlaca);
-    blacklistReq.input('placaClean', sql.VarChar, normalizedPlaca);
-    const blacklistRes = await blacklistReq.query(`
-      SELECT TOP 1 id, motivo, nivel_alerta FROM ListaNegra WHERE activo = 1 AND (REPLACE(placa, '-', '') = @placaClean OR placa = @placaRaw)
-    `);
-
-    if (blacklistRes.recordset.length > 0) {
-      estadoValidacion = 'alerta';
-      alertaId = blacklistRes.recordset[0].id;
-      alertaInfo = blacklistRes.recordset[0];
-    } else {
-      // 2. Cruce con Vehículos Autorizados (coincidencia exacta)
-      const whitelistReq = db.request();
-      whitelistReq.input('placaRaw', sql.VarChar, cleanPlaca);
-      whitelistReq.input('placaClean', sql.VarChar, normalizedPlaca);
-      const whitelistRes = await whitelistReq.query(`
-        SELECT TOP 1 id, placa, propietario, departamento, tipo_vehiculo
-        FROM VehiculosAutorizados
-        WHERE activo = 1 AND (REPLACE(placa, '-', '') = @placaClean OR placa = @placaRaw)
-      `);
-
-      if (whitelistRes.recordset.length > 0) {
-        estadoValidacion = 'autorizado';
-        vehiculoAutorizadoId = whitelistRes.recordset[0].id;
-        if (whitelistRes.recordset[0].placa) {
-          cleanPlaca = whitelistRes.recordset[0].placa;
-        }
-        if (!finalTipoVehiculo && whitelistRes.recordset[0].tipo_vehiculo) {
-          finalTipoVehiculo = whitelistRes.recordset[0].tipo_vehiculo;
-        }
-      }
-    }
-
-    // Inferencia de tipo de vehículo si el operador no lo especificó manualmente
-    if (!finalTipoVehiculo) {
-      if (/^[A-Z]{3}/.test(normalizedPlaca)) {
-        finalTipoVehiculo = 'Automóvil';
-      } else if (/^[A-Z]{2}\d{3,4}[A-Z]?$/.test(normalizedPlaca) && normalizedPlaca.length <= 6) {
-        finalTipoVehiculo = 'Motocicleta';
-      } else {
-        finalTipoVehiculo = 'Automóvil';
-      }
-    }
-
-    // 3. Actualizar registro en DeteccionVehiculo
-    const updateReq = db.request();
-    updateReq.input('id', sql.Int, parseInt(id));
-    updateReq.input('placaValidada', sql.VarChar, cleanPlaca);
-    updateReq.input('estadoValidacion', sql.VarChar, estadoValidacion);
-    updateReq.input('alertaId', sql.Int, alertaId);
-    updateReq.input('vehiculoAutorizadoId', sql.Int, vehiculoAutorizadoId);
-    updateReq.input('tipoVehiculo', sql.VarChar, finalTipoVehiculo);
-
-    const updateQuery = `
-      UPDATE DeteccionVehiculo
-      SET
-        validado_manualmente = 1,
-        placa_validada = @placaValidada,
-        placa_reconocida = @placaValidada,
-        placa = @placaValidada,
-        tipo_vehiculo = @tipoVehiculo,
-        estado_procesamiento = 'procesado',
-        estado_validacion = @estadoValidacion,
-        alerta_id = @alertaId,
-        vehiculo_autorizado_id = @vehiculoAutorizadoId
-      WHERE id = @id;
-
-      UPDATE EventosIngreso
-      SET
-        validado_manualmente = 1,
-        placa_validada = @placaValidada,
-        placa = @placaValidada
-      WHERE id = @id;
-
-      SELECT d.*,
-             c.nombre as camara_nombre, c.ubicacion as camara_ubicacion,
-             l.motivo as alerta_motivo, l.nivel_alerta,
-             v.propietario, v.departamento, COALESCE(v.tipo_vehiculo, d.tipo_vehiculo, 'Automóvil') as tipo_vehiculo
-      FROM DeteccionVehiculo d
-      LEFT JOIN Camaras c ON d.camara_id = c.id
-      LEFT JOIN ListaNegra l ON d.alerta_id = l.id
-      LEFT JOIN VehiculosAutorizados v ON d.vehiculo_autorizado_id = v.id
-      WHERE d.id = @id;
-    `;
-
-    const updateResult = await updateReq.query(updateQuery);
-
-    if (updateResult.recordset.length === 0) {
-      return res.status(404).json({ error: 'Detección no encontrada.' });
-    }
-
-    const actualizado = {
-      ...updateResult.recordset[0],
-      placa: cleanPlaca,
-      imagen_vehiculo_path: updateResult.recordset[0].ruta_imagen_ingreso,
-      imagen_placa_path: updateResult.recordset[0].ruta_imagen_placa || updateResult.recordset[0].ruta_imagen_ingreso,
-      alerta_detectada: estadoValidacion === 'alerta'
-    };
-
-    // Emitir WebSocket en tiempo real
-    emitEvent('ingreso_actualizado', actualizado);
-    emitEvent('nueva_deteccion', actualizado);
-
-    if (estadoValidacion === 'alerta') {
-      emitEvent('alerta_vehiculo', actualizado);
-    }
-
-    console.log(`[VALIDACION MANUAL] Detección #${id} validada como: ${cleanPlaca} | Estado: ${estadoValidacion.toUpperCase()}`);
-
-    return res.json({
-      message: 'Detección validada manualmente con éxito.',
-      deteccion: actualizado
-    });
-  } catch (error: any) {
-    console.error('[DETECCIONES] Error en validación manual:', error.message);
-    return res.status(500).json({ error: 'Error al registrar la validación manual.' });
-  }
-});
-
-// =============================================================================
-// GET /api/detecciones/buscar-placa/:placa — Consulta unificada de placa
-// =============================================================================
-router.get('/buscar-placa/:placa', async (req: Request, res: Response) => {
-  const { placa } = req.params;
-  if (!placa || !placa.trim()) {
-    return res.status(400).json({ error: 'Debe especificar una placa para buscar.' });
-  }
-
-  try {
-    const db = getDB();
-    const cleanPlaca = String(placa).toUpperCase().trim().replace(/[^A-Z0-9-]/g, '');
-    const normalizedPlaca = cleanPlaca.replace(/-/g, '');
-
-    // 1. Consultar en Lista Negra
-    const blReq = db.request();
-    blReq.input('placaRaw', sql.VarChar, cleanPlaca);
-    blReq.input('placaClean', sql.VarChar, normalizedPlaca);
-    const blRes = await blReq.query(`
-      SELECT TOP 1 * FROM ListaNegra 
-      WHERE activo = 1 AND (REPLACE(placa, '-', '') = @placaClean OR placa = @placaRaw)
-    `);
-
-    // 2. Consultar en Vehículos Autorizados
-    const wlReq = db.request();
-    wlReq.input('placaRaw', sql.VarChar, cleanPlaca);
-    wlReq.input('placaClean', sql.VarChar, normalizedPlaca);
-    const wlRes = await wlReq.query(`
-      SELECT TOP 1 * FROM VehiculosAutorizados 
-      WHERE activo = 1 AND (REPLACE(placa, '-', '') = @placaClean OR placa = @placaRaw)
-    `);
-
-    // 3. Consultar últimos ingresos en DeteccionVehiculo
-    const histReq = db.request();
-    histReq.input('placaRaw', sql.VarChar, `%${cleanPlaca}%`);
-    histReq.input('placaClean', sql.VarChar, `%${normalizedPlaca}%`);
-    const histRes = await histReq.query(`
-      SELECT TOP 5 d.*, c.nombre as camara_nombre, c.ubicacion as camara_ubicacion
-      FROM DeteccionVehiculo d
-      LEFT JOIN Camaras c ON d.camara_id = c.id
-      WHERE (REPLACE(d.placa_reconocida, '-', '') LIKE @placaClean OR d.placa_reconocida LIKE @placaRaw OR d.placa LIKE @placaRaw)
-      ORDER BY d.fecha_hora_ingreso DESC
-    `);
-
-    let estado: 'alerta' | 'autorizado' | 'no_registrado' = 'no_registrado';
-    let alertaInfo = null;
-    let autorizadoInfo = null;
-
-    if (blRes.recordset.length > 0) {
-      estado = 'alerta';
-      alertaInfo = blRes.recordset[0];
-    } else if (wlRes.recordset.length > 0) {
-      estado = 'autorizado';
-      autorizadoInfo = wlRes.recordset[0];
-    }
-
-    return res.json({
-      placa: cleanPlaca,
-      estado,
-      alerta: alertaInfo,
-      autorizado: autorizadoInfo,
-      ultimos_ingresos: histRes.recordset.map((item: any) => ({
-        ...item,
-        placa: item.placa_reconocida || item.placa,
-        imagen_vehiculo_path: item.ruta_imagen_ingreso,
-        imagen_placa_path: item.ruta_imagen_placa || item.ruta_imagen_ingreso,
-        fecha_hora: item.fecha_hora_ingreso
-      }))
-    });
-  } catch (error: any) {
-    console.error('[DETECCIONES] Error al buscar placa:', error.message);
-    return res.status(500).json({ error: 'Error al buscar la placa en el sistema.' });
-  }
-});
-
-// =============================================================================
-// POST /api/detecciones/registro-manual — Registro manual desde la tarjeta Home
-// =============================================================================
-router.post('/registro-manual', async (req: Request, res: Response) => {
-  const { nombres, cedula, placa, departamento, tipo_vehiculo = 'Particular' } = req.body;
-
-  if (!nombres || !placa) {
-    return res.status(400).json({ error: 'Nombres y Placa son campos obligatorios.' });
-  }
-
-  try {
-    const db = getDB();
-    const cleanPlaca = String(placa).toUpperCase().trim().replace(/[^A-Z0-9-]/g, '');
-    const normalizedPlaca = cleanPlaca.replace(/-/g, '');
-    const propietario = `${nombres.trim()}${cedula ? ` (CI: ${cedula.trim()})` : ''}`;
-
-    // 1. Revisar si está en Lista Negra
-    const blReq = db.request();
-    blReq.input('placaRaw', sql.VarChar, cleanPlaca);
-    blReq.input('placaClean', sql.VarChar, normalizedPlaca);
-    const blRes = await blReq.query(`
-      SELECT TOP 1 * FROM ListaNegra 
-      WHERE activo = 1 AND (REPLACE(placa, '-', '') = @placaClean OR placa = @placaRaw)
-    `);
-
-    let estadoValidacion: 'autorizado' | 'alerta' | 'no_reconocido' = 'autorizado';
-    let alertaId: number | null = null;
-    let vehiculoAutorizadoId: number | null = null;
-    let alertaMotivo: string | null = null;
-    let nivelAlerta: string | null = null;
-
-    if (blRes.recordset.length > 0) {
-      estadoValidacion = 'alerta';
-      alertaId = blRes.recordset[0].id;
-      alertaMotivo = blRes.recordset[0].motivo;
-      nivelAlerta = blRes.recordset[0].nivel_alerta;
-    } else {
-      // 2. Insertar o actualizar en VehiculosAutorizados
-      const wlReq = db.request();
-      wlReq.input('placa', sql.VarChar, normalizedPlaca);
-      wlReq.input('propietario', sql.VarChar, propietario);
-      wlReq.input('departamento', sql.VarChar, departamento || 'Registro Manual');
-      wlReq.input('tipo', sql.VarChar, tipo_vehiculo);
-
-      const wlRes = await wlReq.query(`
-        IF EXISTS (SELECT 1 FROM VehiculosAutorizados WHERE placa = @placa)
-        BEGIN
-          UPDATE VehiculosAutorizados 
-          SET propietario = @propietario, departamento = @departamento, activo = 1, fecha_registro = GETDATE()
-          OUTPUT inserted.id
-          WHERE placa = @placa;
-        END
-        ELSE
-        BEGIN
-          INSERT INTO VehiculosAutorizados (placa, propietario, departamento, tipo_vehiculo, activo, fecha_registro)
-          OUTPUT inserted.id
-          VALUES (@placa, @propietario, @departamento, @tipo, 1, GETDATE());
-        END
-      `);
-      if (wlRes.recordset.length > 0) {
-        vehiculoAutorizadoId = wlRes.recordset[0].id;
-      }
-    }
-
-    // 3. Crear registro de ingreso en DeteccionVehiculo
-    const insertReq = db.request();
-    insertReq.input('placa', sql.VarChar, cleanPlaca);
-    insertReq.input('estadoValidacion', sql.VarChar, estadoValidacion);
-    insertReq.input('alertaId', sql.Int, alertaId);
-    insertReq.input('vehiculoAutorizadoId', sql.Int, vehiculoAutorizadoId);
-
-    const insertRes = await insertReq.query(`
-      INSERT INTO DeteccionVehiculo (
-        placa,
-        placa_reconocida,
-        confianza_deteccion,
-        confianza_ocr,
-        imagen_vehiculo_path,
-        imagen_placa_path,
-        fecha_hora,
-        fuente,
-        estado_validacion,
-        estado_procesamiento,
-        ruta_imagen_ingreso,
-        ruta_imagen_placa,
-        fecha_hora_ingreso,
-        validado_manualmente,
-        placa_validada,
-        alerta_id,
-        vehiculo_autorizado_id
-      )
-      OUTPUT inserted.*
-      VALUES (
-        @placa,
-        @placa,
-        1.0,
-        1.0,
-        '',
-        '',
-        GETDATE(),
-        'manual',
-        @estadoValidacion,
-        'procesado',
-        '',
-        '',
-        GETDATE(),
-        1,
-        @placa,
-        @alertaId,
-        @vehiculoAutorizadoId
-      )
-    `);
-
-    const nuevoIngreso = {
-      ...insertRes.recordset[0],
-      propietario,
-      departamento: departamento || 'Registro Manual',
-      tipo_vehiculo,
-      camara_nombre: 'Ingreso Manual Garita',
-      camara_ubicacion: 'Centro de Control ECU 911',
-      alerta_motivo: alertaMotivo,
-      nivel_alerta: nivelAlerta,
-      alerta_detectada: estadoValidacion === 'alerta'
-    };
-
-    // Emitir WebSocket
-    emitEvent('nuevo_ingreso_pendiente', nuevoIngreso);
-    emitEvent('ingreso_actualizado', nuevoIngreso);
-    emitEvent('nueva_deteccion', nuevoIngreso);
-    emitEvent('nuevo_evento', nuevoIngreso);
-
-    if (estadoValidacion === 'alerta') {
-      emitEvent('alerta_vehiculo', nuevoIngreso);
-    }
-
-    console.log(`[REGISTRO MANUAL] Placa: ${cleanPlaca} | Propietario: ${propietario} | Estado: ${estadoValidacion}`);
-
-    return res.status(201).json({
-      message: 'Vehículo registrado manualmente exitosamente.',
-      ingreso: nuevoIngreso
-    });
-
-  } catch (error: any) {
-    console.error('[REGISTRO MANUAL] Error:', error.message);
-    return res.status(500).json({ error: 'Error interno al realizar el registro manual.' });
-  }
-});
-
-// =============================================================================
-// POST /api/detecciones/descarte — Auditoría de Falsos Positivos / Descartes
-// =============================================================================
-router.post('/descarte', async (req: Request, res: Response) => {
-  const { tracking_id, motivo, texto_candidato, confianza, fuente, camara_id } = req.body;
-  try {
-    const db = getDB();
-    const request = db.request();
-    request.input('tracking_id', sql.Int, tracking_id || -1);
-    request.input('motivo', sql.VarChar, motivo || 'falso_positivo_ocr');
-    request.input('texto_candidato', sql.VarChar, texto_candidato || null);
-    request.input('confianza', sql.Float, confianza || 0.0);
-    request.input('fuente', sql.VarChar, fuente || 'webcam');
-    request.input('camara_id', sql.Int, camara_id || null);
-
-    await request.query(`
-      INSERT INTO AuditoriaDescartes (tracking_id, motivo, texto_candidato, confianza, fuente, camara_id)
-      VALUES (@tracking_id, @motivo, @texto_candidato, @confianza, @fuente, @camara_id);
-    `);
-
-    return res.status(201).json({ success: true, message: 'Descarte auditado exitosamente.' });
-  } catch (err: any) {
-    console.error('[DESCARTE AUDIT] Error al registrar descarte:', err.message);
-    return res.status(500).json({ error: 'Error al registrar descarte.' });
+    const consulta = db.request();
+    const filtros = aplicarFiltros(req, consulta);
+    // Sin filtros se eliminan todas, en cualquier estado de procesamiento
+    const conFiltros = ['placa', 'estado', 'camara', 'validado', 'desde', 'hasta'].some(k => req.query[k]);
+    const r = await consulta.query(`
+      DELETE d OUTPUT DELETED.id, DELETED.ruta_imagen_ingreso, DELETED.ruta_imagen_placa
+      FROM DeteccionVehiculo d WHERE ${conFiltros ? filtros.join(' AND ') : '1 = 1'}`);
+    const filas = r.recordset;
+    const archivos = await eliminarEvidencia(filas.flatMap(f => [f.ruta_imagen_ingreso, f.ruta_imagen_placa]));
+    const alcance = conFiltros ? `filtros ${JSON.stringify(req.query).substring(0, 200)}` : 'todas las detecciones';
+    await auditarOperacion(db, req, 'DETECCIONES_ELIMINADAS', 'deteccion', null,
+      `${filas.length} registros y ${archivos} imágenes · ${alcance} · ${motivo}`);
+    emitEvent('deteccion:eliminadas', { total: filas.length });
+    return res.json({ message: `${filas.length} ${filas.length === 1 ? 'registro eliminado' : 'registros eliminados'}.`, total: filas.length });
+  } catch (e: any) {
+    console.error('[DETECCIONES] eliminación masiva:', e.message);
+    return res.status(500).json({ error: 'Error al eliminar las detecciones.' });
   }
 });
 

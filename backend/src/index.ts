@@ -6,16 +6,26 @@ import cors from 'cors';
 import { createServer } from 'http';
 import { connectDB } from './config/db';
 import { initSocket } from './services/socket';
+import { origenesPermitidos } from './services/origenes';
+import { archivoDe, DIRECTORIOS_MEDIA, firmaValida } from './services/media';
 import { metricsMiddleware, getMetrics, register } from './services/metrics';
 import authRoutes from './routes/auth';
-import eventosRoutes from './routes/eventos';
-import blacklistRoutes from './routes/blacklist';
 import usuariosRoutes from './routes/usuarios';
 import camarasRoutes from './routes/camaras';
-import camarasMultiRoutes from './routes/camaras-multi';
 import deteccionesRoutes from './routes/detecciones';
-import vehiculosAutorizadosRoutes from './routes/vehiculos-autorizados';
+import { alertasRouter, autorizadosRouter } from './routes/listas';
+import panelRoutes from './routes/panel';
+import monitoreoRoutes from './routes/monitoreo';
+import reportesRoutes from './routes/reportes';
+import configuracionRoutes from './routes/configuracion';
+import auditoriaRoutes from './routes/auditoria';
+import mediosRoutes from './routes/medios';
+import { iniciarSincronizacionMedios } from './services/medios';
+import { iniciarMonitorCamaras } from './services/conectividadCamaras';
+import { iniciarSincronizacionMotor } from './services/camaraMotor';
 import cacheRoutes from './routes/cache';
+import evaluacionRoutes from './routes/evaluacion';
+import propietarioRoutes from './routes/propietario';
 import path from 'path';
 import fs from 'fs';
 
@@ -25,9 +35,10 @@ const PORT = process.env.PORT || 5000;
 
 // Configuración de CORS
 app.use(cors({
-  origin: '*', // Permitir cualquier origen en entorno local/pruebas
-  methods: ['GET', 'POST', 'PUT', 'DELETE'],
-  allowedHeaders: ['Content-Type', 'Authorization']
+  origin: origenesPermitidos(),
+  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+  exposedHeaders: ['Content-Disposition'],
 }));
 
 app.use(express.json());
@@ -35,56 +46,38 @@ app.use(express.json());
 // Middleware de métricas Prometheus
 app.use(metricsMiddleware);
 
-// Exponer las carpetas de imágenes multimedia para que el frontend pueda visualizarlas
-app.use('/media', (req, res, next) => {
-  const filename = path.basename(req.path);
-  if (!filename || filename === '.' || filename === '/') {
-    return next();
-  }
-
-  const possiblePaths = [
-    path.resolve(process.cwd(), '../services/anpr/media', filename),
-    path.resolve(process.cwd(), 'services/anpr/media', filename),
-    path.resolve(__dirname, '../../services/anpr/media', filename),
-    path.resolve(__dirname, '../services/anpr/media', filename),
-    path.resolve(__dirname, '../media', filename),
-    path.resolve(__dirname, '../../media', filename),
-    path.resolve(process.cwd(), 'media', filename),
-    path.resolve('/app/media', filename),
-    path.resolve('/app/services/anpr/media', filename),
-  ];
-
-  for (const filePath of possiblePaths) {
-    if (fs.existsSync(filePath)) {
+// Evidencia fotográfica: solo con enlace firmado (ver services/media.ts)
+app.get('/media/:archivo', (req, res) => {
+  const archivo = archivoDe(req.params.archivo);
+  if (!archivo || archivo !== req.params.archivo) return res.status(404).end();
+  if (!firmaValida(archivo, req.query.exp, req.query.firma)) return res.status(403).end();
+  for (const dir of DIRECTORIOS_MEDIA) {
+    const ruta = path.join(dir, archivo);
+    if (fs.existsSync(ruta)) {
       res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
-      res.setHeader('Access-Control-Allow-Origin', '*');
-      res.setHeader('Cache-Control', 'public, max-age=86400');
-      return res.sendFile(filePath);
+      res.setHeader('Cache-Control', 'private, max-age=21600');
+      return res.sendFile(ruta);
     }
   }
-
-  return res.status(404).send('Media not found');
+  return res.status(404).end();
 });
 
 // Rutas de la API
 app.use('/api/auth', authRoutes);
-app.use('/api/eventos', eventosRoutes);
-app.use('/api/blacklist', blacklistRoutes);
+app.use('/api/blacklist', alertasRouter);
 app.use('/api/usuarios', usuariosRoutes);
 app.use('/api/camaras', camarasRoutes);
-app.use('/api/camaras', camarasMultiRoutes);
 app.use('/api/detecciones', deteccionesRoutes);
-app.use('/api/vehiculos-autorizados', vehiculosAutorizadosRoutes);
+app.use('/api/vehiculos-autorizados', autorizadosRouter);
+app.use('/api/panel', panelRoutes);
+app.use('/api/monitoreo', monitoreoRoutes);
+app.use('/api/reportes', reportesRoutes);
+app.use('/api/configuracion', configuracionRoutes);
+app.use('/api/auditoria', auditoriaRoutes);
+app.use('/api/medios', mediosRoutes);
 app.use('/api/cache', cacheRoutes);
-
-// Endpoint simple de estado de la cámara
-app.get('/api/camera/stream-url', (req, res) => {
-  // Retorna la url HLS del MediaMTX expuesta para el cliente
-  // En Docker, el cliente (navegador) accederá al puerto 8888 de localhost/host
-  return res.json({ 
-    streamUrl: `http://${req.hostname}:8888/camera/index.m3u8`
-  });
-});
+app.use('/api/evaluacion', evaluacionRoutes);
+app.use('/api/propietario', propietarioRoutes);
 
 // Ruta base/Healthcheck
 app.get('/health', (req, res) => {
@@ -109,12 +102,14 @@ async function startServer() {
 
     // Inicializar WebSockets
     initSocket(server);
+    iniciarMonitorCamaras();
+    iniciarSincronizacionMedios();
+    iniciarSincronizacionMotor();
 
     server.listen(PORT, () => {
       console.log(`===================================================`);
       console.log(`  ECU 911 ANPR Backend iniciado en puerto ${PORT}`);
       console.log(`  Entorno: ${process.env.NODE_ENV || 'development'}`);
-      console.log(`  Media Estática expuesta en: http://localhost:${PORT}/media`);
       console.log(`===================================================`);
     });
   } catch (error: any) {

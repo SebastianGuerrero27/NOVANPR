@@ -69,6 +69,97 @@ PP-OCRv6 (RapidOCR + OpenVINO). Su lectura se suma al consenso temporal con peso
 `OCR_VERIFIER_VOTE_WEIGHT` y se descarta si supera `OCR_VERIFIER_MAX_MS` (2000 ms).
 Variables: `OCR_VERIFIER_ENABLED`, `OCR_VERIFIER_MODEL` (tiny/small/medium), `OCR_VERIFIER_ENGINE`.
 
+## 5. Evaluación con datos de operación (ECU 911)
+
+El sistema guarda por cada paso vehicular la **lectura original del OCR**, la **decisión
+automática** (antes de cualquier corrección del operador) y metadatos de la captura: luminancia,
+distancia estimada, ancho de la placa en píxeles, nitidez, velocidad, latencia de principio a fin,
+lectura del verificador y versión de los modelos (`db/migration_evaluacion.sql`).
+
+**Protocolo:** durante el periodo de evaluación el operador valida **todos** los registros
+(también los correctos, confirmando la misma placa). Si valida solo los dudosos, las métricas
+quedan sesgadas; `cobertura_validacion` debe ser ≥ 95 %. El clima se anota en `condicion_clima`.
+
+```
+GET /api/evaluacion/resumen?desde=2026-10-01&hasta=2026-10-31   (JSON, requiere sesión)
+GET /api/evaluacion/export.csv?desde=...&hasta=...               (una fila por paso vehicular)
+```
+
+Métricas: exactitud por placa, CER, tasa de no legibles, **falsa aceptación** (se autorizó un
+vehículo no autorizado), **falso rechazo**, **lista negra no detectada**, falsas alertas y
+latencia p50/p95, en total y por luz, distancia, tipo de placa, formato y clima.
+
+## 6. Estadística
+
+```
+.venv/Scripts/python scripts/estadistica.py operacion --csv evaluacion_anpr.csv --out resultados.json
+.venv/Scripts/python scripts/estadistica.py comparar --a preds_A.csv --b preds_B.csv
+.venv/Scripts/python scripts/estadistica.py semillas --valores 0.91 0.93 0.92
+```
+
+- IC 95 % por bootstrap (10 000 remuestreos, semilla fija).
+- Comparación de dos sistemas sobre las mismas muestras con **McNemar exacto**; la diferencia
+  solo se reporta como mejora si p < 0.05. Con menos de 10 casos discordantes la prueba avisa
+  que falta potencia.
+- Entrenamientos repetidos con `--seed 1 2 3` y reportados como media ± DE con IC t de Student.
+- `benchmark_ocr.py`, `evaluate_detectors.py` y `run_ablations.py` aceptan `--save-preds`.
+
+## 7. Ablaciones
+
+```
+.venv/Scripts/python scripts/run_ablations.py --save-preds ../../dataset/preds
+.venv/Scripts/python scripts/run_ablations.py --plan-entrenamiento
+```
+
+Sin reentrenar (unidad = evento vehicular, comparadas contra el sistema completo con McNemar):
+sin verificador, sin consenso entre frames, con preprocesado, sin reglas ANT y solo verificador.
+Con reentrenamiento: sin datos sintéticos (`train_ocr.py --synth-max 0`), etiquetado circular
+frente a anclado en texto (`annotate_plates.py --circular-model`) y arquitectura del detector.
+
+## 8. Rectificación aprendida (YOLO26n-pose, 4 esquinas)
+
+```
+.venv/Scripts/python scripts/generate_synthetic_plates.py --n 8000 --pose-out ../../dataset/pose
+.venv/Scripts/python scripts/train_plate_rectifier.py --epochs 12 --fraction 0.5
+.venv/Scripts/python scripts/run_ablations.py --rectifier models/plate_rectifier_candidato.pt
+```
+
+El generador sintético conoce la perspectiva exacta de cada placa, así que las 4 esquinas
+(sup-izq, sup-der, inf-der, inf-izq) son etiquetas perfectas sin anotación manual. En el
+servicio (`app/core/plate_rectifier.py`) el modelo recibe el recorte del detector, predice
+las esquinas y una homografía deja la placa frontal con la proporción ANT (404 × 154 mm).
+Si las esquinas no son confiables (`PLATE_RECTIFIER_MIN_KPT_CONF`) se usa la heurística por
+contornos. Se activa copiando el candidato a `models/plate_rectifier.pt` (o `PLATE_RECTIFIER_PATH`)
+solo si la ablación `con_rectificador` mejora frente a `completo`.
+
+## 9. Atributos del vehículo como segundo factor
+
+`app/core/vehicle_attributes.py`: YOLO26n (COCO) ubica el vehículo que contiene la placa y
+CLIP ViT-B/32 (zero-shot) estima tipo, color, marca y modelo contra el catálogo editable
+`app/data/catalogo_vehiculos_ecuador.json`. Por debajo de `VEHICLE_ATTR_MIN_CONF` el atributo
+queda como desconocido. En la lista negra y en autorizados se pueden registrar marca, modelo y
+color; el backend (`services/vehiculoAtributos.ts`) compara **marca y color** (no el modelo, cuyo
+reconocimiento zero-shot es poco fiable):
+
+- Lista negra + vehículo que no coincide → se mantiene la alerta con la marca
+  "posible placa clonada o error de lectura".
+- Autorizado + vehículo que no coincide → pasa a revisión del operador en lugar de autorizarse
+  (desactivable con `VERIFICAR_VEHICULO_AUTORIZADOS=false`).
+
+Prueba en una imagen real de Ambato (Haval H6 plateada): tipo SUV (0.91), color plateado,
+marca Haval (0.93) correctos; modelo "Jolion" (0.87) incorrecto. Para el artículo, medir la
+exactitud de marca y color con un conjunto etiquetado de vehículos ecuatorianos.
+
+## 10. Datos del propietario (solo mediante convenio)
+
+No existe una API pública que se pueda usar legalmente para obtener el propietario a partir
+de la placa: los portales del SRI y la ANT están hechos para consultas individuales (con
+CAPTCHA) y su extracción automatizada no está permitida; además son datos personales (LOPDP).
+El canal legítimo es un convenio del ECU 911 con DINARDAP / ANT. El sistema deja listo el punto
+de integración (`services/consultaPropietario.ts`, `POST /api/propietario/consulta`): solo
+Admin, motivo obligatorio, límite por hora y auditoría de cada consulta
+(`AuditoriaConsultaPropietario`). Está deshabilitado hasta implementar el adaptador oficial.
+
 ## Resultados
 
 Ver `services/anpr/models/MODEL_CARD.md` (se actualiza con cada modelo promovido).

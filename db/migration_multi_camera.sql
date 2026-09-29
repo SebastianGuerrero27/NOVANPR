@@ -79,17 +79,7 @@ BEGIN
 END
 GO
 
--- 5. Actualizar datos de ejemplo para múltiples cámaras
--- Insertar cámaras de ejemplo si no existen
-IF NOT EXISTS (SELECT * FROM Camaras WHERE nombre = 'Entrada Principal')
-BEGIN
-    INSERT INTO Camaras (nombre, ip, rtsp_url, ubicacion, priority, is_active, region)
-    VALUES 
-        ('Entrada Principal', '10.126.9.104', 'rtsp://admin:password@10.126.9.104:554/Streaming/Channels/101', 'Acceso Principal - Zona 3', 1, 1, 'Ambato'),
-        ('Entrada Secundaria', '10.126.9.105', 'rtsp://admin:password@10.126.9.105:554/Streaming/Channels/101', 'Acceso Secundario - Zona 3', 2, 1, 'Ambato'),
-        ('Salida Personal', '10.126.9.106', 'rtsp://admin:password@10.126.9.106:554/Streaming/Channels/101', 'Salida Personal - Zona 3', 3, 0, 'Ambato');
-END
-GO
+-- 5. Las cámaras se registran desde la aplicación (sin cámaras de ejemplo).
 
 -- 6. Crear streams para las cámaras
 DECLARE @camera_id INT;

@@ -1,4 +1,5 @@
 import sql from 'mssql';
+import { hoyLocalSql } from './tiempo';
 
 /**
  * Cruce de placas leídas por OCR contra Lista Negra y Vehículos Autorizados.
@@ -66,13 +67,13 @@ export interface BlacklistMatch {
   coincidencia: TipoCoincidencia;
 }
 
-/** Busca la placa en la Lista Negra activa priorizando coincidencias exactas. */
+/** Busca la placa en la lista de alertas vigente priorizando coincidencias exactas. */
 export async function findBlacklistMatch(db: sql.ConnectionPool, placa: string): Promise<BlacklistMatch | null> {
   if (!normalizePlate(placa)) return null;
   const result = await db.request().query(`
-    SELECT id, placa, motivo, nivel_alerta, fecha_registro
+    SELECT id, placa, motivo, nivel_alerta, fecha_registro, marca, modelo, color
     FROM ListaNegra
-    WHERE activo = 1
+    WHERE activo = 1 AND (fecha_vencimiento IS NULL OR fecha_vencimiento >= ${hoyLocalSql()})
   `);
 
   let aproximada: BlacklistMatch | null = null;
@@ -91,9 +92,10 @@ export async function findAuthorizedExact(db: sql.ConnectionPool, placa: string)
   const result = await db.request()
     .input('placa', sql.VarChar(20), clean)
     .query(`
-      SELECT TOP 1 id, placa, propietario, departamento, tipo_vehiculo
+      SELECT TOP 1 id, placa, propietario, departamento, tipo_vehiculo, marca, modelo, color
       FROM VehiculosAutorizados
       WHERE activo = 1 AND REPLACE(REPLACE(placa, '-', ''), ' ', '') = @placa
+        AND (fecha_vencimiento IS NULL OR fecha_vencimiento >= ${hoyLocalSql()})
     `);
   return result.recordset[0] ?? null;
 }

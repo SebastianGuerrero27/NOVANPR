@@ -61,6 +61,7 @@ scratch/
 # Models & Weights
 yolo11n.pt
 yolo26n.pt
+yolo26n-pose.pt
 *.weights
 
 # Environment Variables
@@ -89,7 +90,12 @@ dataset/detector/
 dataset/detector_coco/
 dataset/runs/
 dataset/preview_annotate/
+dataset/pose/
 services/anpr/models/ocr/pretrained/
 
 # Exportaciones OpenVINO de los detectores (se regeneran con model.export)
 services/anpr/models/*_openvino_model/
+dataset/preds/
+
+# Respaldos de la base de datos (datos operativos, no versionar)
+backups/

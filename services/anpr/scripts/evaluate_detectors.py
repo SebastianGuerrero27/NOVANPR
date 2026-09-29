@@ -108,6 +108,7 @@ def main() -> None:
     ap.add_argument("--imgsz", type=int, default=640)
     ap.add_argument("--ocr-model", default="cct-s-v2-global-model")
     ap.add_argument("--out", default=str(BASE_DIR / "dataset" / "resultados_detectores.json"))
+    ap.add_argument("--save-preds", default="", help="Carpeta para predicciones detector+OCR por imagen (para McNemar)")
     args = ap.parse_args()
 
     from fast_plate_ocr import LicensePlateRecognizer
@@ -124,6 +125,7 @@ def main() -> None:
         run = make_predictor(path, args.conf, args.imgsz)
         run(items[0][1])  # calentamiento
         scored, tp, fp, ious, ocr_ok, t_total = [], 0, 0, [], 0, 0.0
+        per_image = []
         for stem, img, gts in items:
             t0 = time.perf_counter()
             preds = run(img)
@@ -147,12 +149,15 @@ def main() -> None:
             # Detector + OCR: recorte de la detección más confiable y lectura exacta
             if stem in texts:
                 confident = [p for p in preds if p[1] >= args.conf]
+                read = ""
                 if confident:
                     (x1, y1, x2, y2), _ = max(confident, key=lambda p: p[1])
                     crop = img[max(0, int(y1)):int(y2), max(0, int(x1)):int(x2)]
                     if crop.size:
                         pred = ocr.run(cv2.cvtColor(crop, cv2.COLOR_BGR2RGB))[0].plate
-                        ocr_ok += re.sub(r"[^A-Z0-9]", "", pred.upper()) == texts[stem]
+                        read = re.sub(r"[^A-Z0-9]", "", pred.upper())
+                        ocr_ok += read == texts[stem]
+                per_image.append((stem, texts[stem], read))
         prec = tp / max(1, tp + fp)
         rec = tp / max(1, n_gt)
         f1 = 2 * prec * rec / max(1e-9, prec + rec)
@@ -164,6 +169,12 @@ def main() -> None:
             "ms_por_imagen": t_total / len(items) * 1000, "ruta": path,
         }
         results[name] = r
+        if args.save_preds:
+            Path(args.save_preds).mkdir(parents=True, exist_ok=True)
+            with open(Path(args.save_preds) / f"preds_det_{name}.csv", "w", newline="", encoding="utf-8") as f:
+                w = csv.writer(f)
+                w.writerow(["id", "gt", "pred"])
+                w.writerows(per_image)
         print(f"{name:22s} {prec:6.1%} {rec:7.1%} {f1:6.3f} {ap50:6.3f} {r['iou_medio']:5.2f} "
               f"{r['detector_ocr_exacto']:8.1%} {r['ms_por_imagen']:6.0f}", flush=True)
     Path(args.out).write_text(json.dumps({"split": args.split, "conf": args.conf, "resultados": results}, indent=2), encoding="utf-8")

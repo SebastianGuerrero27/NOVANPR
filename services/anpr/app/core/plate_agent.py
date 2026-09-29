@@ -29,6 +29,7 @@ from ultralytics import YOLO
 
 from app.config import PLATE_MODEL_PATH
 from app.core.ocr_engine import OcrEngine, OcrResult, create_ocr_engine
+from app.core.plate_rectifier import get_rectifier
 from app.utils.logger import get_logger
 from app.utils.plate_parser import (
     extract_plate_from_tokens,
@@ -56,8 +57,9 @@ class PlateEnhancementAgent:
     Optimizado para ejecución directa en milisegundos.
     """
 
-    def __init__(self, ocr_engine: Optional[OcrEngine] = None) -> None:
+    def __init__(self, ocr_engine: Optional[OcrEngine] = None, use_learned_rectifier: bool = True) -> None:
         self._ocr = ocr_engine or create_ocr_engine()
+        self.use_learned_rectifier = use_learned_rectifier
 
     def process_image(
         self,
@@ -105,9 +107,16 @@ class PlateEnhancementAgent:
         if plate_crop.size == 0:
             plate_crop = full_image
 
-        # 4. Rectificación Homográfica de Perspectiva (Inspirada en iWPOD-NET / Silva & Jung)
-        # Corrige distorsión trapezoidal e inclinación por ángulo oblicuo de la cámara
-        rectified_crop = self._rectify_quadrilateral(plate_crop)
+        # 4. Rectificación de perspectiva: primero la aprendida (YOLO26n-pose, 4 esquinas);
+        # si no hay modelo o sus esquinas no son confiables, la heurística por contornos.
+        rectified_crop = None
+        learned = get_rectifier() if self.use_learned_rectifier else None
+        if learned is not None:
+            rect = learned.rectify(plate_crop)
+            if rect is not None:
+                rectified_crop = rect.image
+        if rectified_crop is None:
+            rectified_crop = self._rectify_quadrilateral(plate_crop)
 
         best_plate = ""
         best_conf = 0.0
