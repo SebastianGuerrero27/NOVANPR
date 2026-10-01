@@ -1,0 +1,191 @@
+{
+  "dataset": "Open Images V7, clase Vehicle registration plate (/m/01jfm_), particiones oficiales; generado con services/anpr/scripts/prepare_openimages_plates.py",
+  "particiones": {
+    "train": {
+      "imagenes": 5362,
+      "placas": 7843
+    },
+    "val": {
+      "imagenes": 719,
+      "placas": 978
+    },
+    "test": {
+      "imagenes": 2048,
+      "placas": 2816
+    }
+  },
+  "modelos": {
+    "yolov8n": {
+      "archivo": "services/anpr/models/baseline_yolov8n_koushim.pt",
+      "sha256": "2d95861825bb4184404344c9cf809f40fd31dba785fe54e8ba5b9a3583789822",
+      "origen": "Koushim/yolov8-license-plate-detection (Hugging Face), sin reentrenar"
+    },
+    "yolo26n": {
+      "archivo": "services/anpr/models/license_plate_detector.pt",
+      "sha256": "3667d8168e8a5a62fddf0992546efa0dc60f37578c9e95e8c0cbc92d4ed74c5c",
+      "origen": "yolo26n.pt (COCO) afinado 25 épocas en Open Images train, imgsz 512, batch 16, AdamW automático, semilla 0"
+    }
+  },
+  "ultralytics_val_test": {
+    "yolov8n@512": {
+      "P": 0.8107204433628175,
+      "R": 0.5568181818181818,
+      "mAP50": 0.6153818599133039,
+      "mAP50_95": 0.37997859358669894,
+      "mAP75": 0.4290489651183704
+    },
+    "yolov8n@640": {
+      "P": 0.8005379877171341,
+      "R": 0.5601207714976838,
+      "mAP50": 0.632205173522938,
+      "mAP50_95": 0.38390371005721996,
+      "mAP75": 0.4310717364171653
+    },
+    "yolo26n@512": {
+      "P": 0.9438383628272816,
+      "R": 0.8114346590909091,
+      "mAP50": 0.8690024124957845,
+      "mAP50_95": 0.5458468045576066,
+      "mAP75": 0.6155798237475014
+    },
+    "yolo26n@640": {
+      "P": 0.934440840962984,
+      "R": 0.8249289772727273,
+      "mAP50": 0.8830768850303168,
+      "mAP50_95": 0.5527707450318731,
+      "mAP75": 0.6363054298702543
+    }
+  },
+  "evaluate_detectors_test_conf035_imgsz512": {
+    "dataset": "/home/user/NOVANPR-v2/dataset/openimages_plates",
+    "split": "test",
+    "conf": 0.35,
+    "imgsz": 512,
+    "imagenes": 2048,
+    "placas": 2816,
+    "resultados": {
+      "yolov8n": {
+        "precision": 0.9046624913013221,
+        "recall": 0.4616477272727273,
+        "f1": 0.6113331765812368,
+        "ap50": 0.6004646115100467,
+        "iou_medio": 0.835043720537366,
+        "detector_ocr_exacto": 0.0,
+        "ms_por_imagen": 31.323767702636786,
+        "ruta": "models/baseline_yolov8n_koushim.pt"
+      },
+      "yolo26n": {
+        "precision": 0.938291785860237,
+        "recall": 0.8153409090909091,
+        "f1": 0.8725061751852554,
+        "ap50": 0.8624271471672139,
+        "iou_medio": 0.8239508861252289,
+        "detector_ocr_exacto": 0.0,
+        "ms_por_imagen": 39.25717419531194,
+        "ruta": "models/yolo26n_openimages_candidato.pt"
+      }
+    }
+  },
+  "mcnemar_por_placa_conf035_iou05": {
+    "placas": 2816,
+    "solo_yolo26n": 1007,
+    "solo_yolov8n": 11,
+    "ambos": 1289,
+    "ninguno": 509,
+    "chi2_continuidad": 972.5,
+    "p": 1.69e-213
+  },
+  "bootstrap_f1_imagenes_2000_rep_semilla0": {
+    "yolov8n_ic95": [
+      0.593,
+      0.63
+    ],
+    "yolo26n_ic95": [
+      0.86,
+      0.884
+    ],
+    "diferencia_ic95": [
+      0.245,
+      0.277
+    ]
+  },
+  "f1_val_por_umbral": {
+    "yolov8n": {
+      "0.22": 0.67,
+      "0.35": 0.648,
+      "max": [
+        0.68,
+        0.17
+      ]
+    },
+    "yolo26n": {
+      "0.22": 0.861,
+      "0.35": 0.87,
+      "max": [
+        0.872,
+        0.37
+      ]
+    }
+  },
+  "latencia_ms_cpu_imgsz512_300_imagenes": {
+    "hardware": "Intel Xeon 2.80 GHz, 4 vCPU (contenedor)",
+    "software": "ultralytics 8.4.171, torch 2.14.1, OpenVINO 2026.4.1",
+    "yolov8n": {
+      "pytorch": {
+        "media": 30.2,
+        "p50": 28.6,
+        "p95": 43.2
+      },
+      "openvino": {
+        "media": 25.3,
+        "p50": 24.3,
+        "p95": 32.3
+      }
+    },
+    "yolo26n": {
+      "pytorch": {
+        "media": 38.6,
+        "p50": 36.7,
+        "p95": 54.3
+      },
+      "openvino": {
+        "media": 24.0,
+        "p50": 23.0,
+        "p95": 31.9
+      }
+    }
+  },
+  "capturas_ecuatorianas_repositorio_4_imagenes": {
+    "nota": "solo inspección, sin valor estadístico",
+    "yolov8n": {
+      "detectadas": 4,
+      "conf": [
+        0.93,
+        0.87,
+        0.9,
+        0.7
+      ],
+      "iou": [
+        0.88,
+        0.9,
+        0.69,
+        0.85
+      ]
+    },
+    "yolo26n": {
+      "detectadas": 4,
+      "conf": [
+        0.57,
+        0.43,
+        0.74,
+        0.38
+      ],
+      "iou": [
+        0.89,
+        0.76,
+        0.67,
+        0.75
+      ]
+    }
+  }
+}

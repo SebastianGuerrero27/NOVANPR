@@ -13,7 +13,8 @@ Código: `services/anpr/app/core/verificacion_placa.py` (análisis y veredicto),
 
 ## 1. Problema
 
-Un detector de una sola etapa (YOLOv8n entrenado para placas) propone regiones con
+Un detector de una sola etapa (YOLO26n afinado para placas, sin NMS; ver
+`services/anpr/models/MODEL_CARD.md`) propone regiones con
 confianza, pero:
 
 1. propone también regiones que no son placas o que son solo parte de una (la franja

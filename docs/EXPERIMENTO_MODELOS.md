@@ -32,6 +32,36 @@ se ejecutan desde `services/anpr`.
 
 ## 2. Detector: YOLO26n frente a RF-DETR-nano
 
+### 2.1 Etapa A (hecha): preentrenamiento en un dataset público
+
+Open Images V7, clase *Vehicle registration plate*, particiones oficiales (5 362 / 719 / 2 048
+imágenes). El YOLO26n resultante es el detector de producción desde el 2026-10-01.
+
+```
+python scripts/prepare_openimages_plates.py --max-train 0
+python scripts/train_plate_detector.py --arch yolo26n --data ../../dataset/openimages_plates/data.yaml \
+    --nombre openimages --epochs 25 --imgsz 512 --batch 16
+python scripts/evaluate_detectors.py --data-dir ../../dataset/openimages_plates --split test --imgsz 512 \
+    --models yolov8n=models/baseline_yolov8n_koushim.pt yolo26n=models/license_plate_detector.pt
+```
+
+| Prueba (2 048 imágenes, 2 816 placas) | P | R | F1 | AP50 | mAP50-95 | ms OpenVINO |
+|---|---|---|---|---|---|---|
+| YOLOv8n Koushim (línea base) | 90.5 % | 46.2 % | 0.611 | 0.600 | 0.380 | 25.3 |
+| YOLO26n Open Images | 93.8 % | 81.5 % | 0.873 | 0.862 | 0.546 | 24.0 |
+
+McNemar por placa p ≈ 1.7 × 10⁻²¹³; diferencia de F1 +0.261 (IC 95 % 0.245–0.277). Detalle y
+limitaciones en `models/MODEL_CARD.md` y `docs/resultados/detector_yolo26n_vs_yolov8n_openimages.json`.
+
+**Pendiente para una comparación de arquitecturas en igualdad de condiciones:** entrenar YOLOv8n,
+YOLO11n (y opcionalmente YOLO26s y RF-DETR-nano) con el mismo dataset y configuración, 3 semillas cada
+uno.
+
+### 2.2 Etapa B: afinamiento con placas ecuatorianas
+
+Partir de `models/license_plate_detector.pt` (YOLO26n Open Images) en lugar de `yolo26n.pt` COCO, y
+comparar ambas inicializaciones (ablación "COCO → Ecuador" frente a "COCO → Open Images → Ecuador").
+
 ```
 .venv-train/Scripts/python scripts/train_plate_detector.py --arch yolo26n --epochs 80
 .venv-train/Scripts/python scripts/train_plate_detector.py --arch rfdetr-nano --epochs 30
