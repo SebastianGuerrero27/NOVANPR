@@ -1,15 +1,17 @@
-# Base de datos · esquema v3
+# Base de datos · esquema v5
 
-SQL Server 2022, base `ANPR_ECU911`. Instalación nueva: `db/init.sql`. Bases existentes:
-`db/migration_v2_seguridad.sql` y `db/migration_v3_operacion.sql` (idempotentes, se ejecutan en
-cada arranque del backend).
+SQL Server 2022, base `ANPR_ECU911`. Instalación nueva: `db/init.sql` seguido de las migraciones
+`db/migration_*.sql` (idempotentes). El backend las aplica al arrancar en el orden de
+`MIGRACIONES` (`backend/src/config/db.ts`) y registra cada una en `SchemaMigraciones` con su suma
+SHA-256: una migración ya aplicada no se vuelve a ejecutar salvo que su archivo cambie.
 
 ## Principios
 
 - **Sin datos de prueba ni usuarios predefinidos.** El primer administrador se crea en la
   pantalla de configuración inicial (`POST /api/auth/configuracion-inicial`), que solo
   funciona mientras no exista ningún administrador (transacción serializable).
-- **Solo se precarga el catálogo de roles** (ADMIN, SUPERVISOR, OPERADOR).
+- **Solo se precarga el catálogo de roles** (ADMIN, SUPERVISOR, OPERADOR, GESTOR_ACCESOS). La matriz
+  rol → permiso vive en el código (`backend/src/dominio/permisos.ts`, ver [ROLES_Y_PERMISOS.md](ROLES_Y_PERMISOS.md)).
 - **Trazabilidad:** quién registró cada placa y cámara, quién validó cada ingreso,
   auditoría de acciones administrativas y de cada intento de inicio de sesión.
 - **Secretos fuera de la base:** las contraseñas se guardan con bcrypt (12 rondas) y los
@@ -29,10 +31,16 @@ cada arranque del backend).
 | Sistema | `ConfiguracionSistema` | Parámetros editables desde la pantalla de configuración (sin filas iniciales: rige la variable de entorno o el valor por omisión) |
 | Infraestructura | `Camaras` | Canales RTSP; `activa` = habilitación administrativa, `estado` = conectividad observada (EN_LINEA, SIN_CONEXION, SIN_VERIFICAR); `registrado_por` |
 | Listas | `ListaNegra` | Placas con alerta (nivel CRÍTICA/ALTA/MEDIA), marca/modelo/color registrados, **fecha de vencimiento** y observaciones; `registrado_por` |
-| | `VehiculosAutorizados` | Padrón institucional con marca/modelo/color, **fecha de vencimiento** (visitas y proveedores) y observaciones; `registrado_por` |
+| | `VehiculosAutorizados` | Permisos de placa: categoría, **vigencia desde/hasta**, **franjas horarias** (JSON), marca/modelo/color, observaciones, `registrado_por` y `solicitud_id` de origen |
+| | `SolicitudesAcceso` | Solicitudes de autorización (pendiente / aprobada / rechazada / cancelada) con solicitante, resolutor, vigencia y horario pedidos, ingreso de origen y permiso creado |
 | Operación | `DeteccionVehiculo` | Cada paso vehicular: captura, OCR, decisión, validación del operador (`usuario_validador_id`), lectura y decisión automáticas originales, metadatos de evaluación y atributos del vehículo |
 | | `AuditoriaDescartes` | Detecciones descartadas por la segunda verificación OCR |
 | | `AuditoriaConsultaPropietario` | Consultas de datos del propietario (solo con convenio oficial) |
+| Notificaciones | `Notificaciones` | Alarmas y avisos: tipo, prioridad, mensaje, enlace, clave de supresión y repeticiones, reconocimiento (quién y cuándo), resolución y escalamiento |
+| | `NotificacionUsuario` | Bandeja por usuario (destinatarios resueltos por permiso) y fecha de lectura |
+| | `SuscripcionesPush` | Suscripciones Web Push de los navegadores (endpoint, claves p256dh/auth) |
+| | `ClavesServicio` | Claves generadas por el sistema (par VAPID si no se define en el entorno) |
+| Esquema | `SchemaMigraciones` | Migraciones aplicadas y su suma SHA-256 |
 
 ## Relaciones principales
 
@@ -51,14 +59,25 @@ ListaNegra 1───* DeteccionVehiculo (alerta_id) · VehiculosAutorizados 1�
 - Registro público (`REGISTRO_PUBLICO_HABILITADO`) solo con dominios de `ALLOWED_EMAIL_DOMAINS`;
   la cuenta queda `pendiente` hasta verificar el correo y luego `activo` con rol Operador.
 - No se puede quitar el rol ni desactivar al último administrador activo.
-- Una autorización con `fecha_vencimiento` pasada ya no concede acceso automático; una alerta
-  vencida deja de alertar. "Hoy" se calcula en hora de Ecuador (la base guarda UTC).
+- Un permiso de placa solo concede el paso dentro de su vigencia (desde/hasta) y de sus franjas
+  horarias; fuera de ellas el paso queda `no_reconocido` con `DeteccionVehiculo.restriccion_acceso`
+  (`fuera_horario`, `no_iniciada`, `vencida`) y solo `accesos:excepcion` puede concederlo. Una alerta
+  vencida deja de alertar. "Hoy" y el horario se calculan en hora de Ecuador (la base guarda UTC).
+- Quien registra una solicitud de acceso no puede resolverla (separación de funciones).
 - Bloquear, desactivar o cambiar el rol de una cuenta surte efecto en segundos: cada solicitud
   verifica el estado vigente de la cuenta (caché de 20 s), no solo el token.
 - Las listas se retiran con baja lógica y motivo; una cámara con historial no se elimina (se
   deshabilita). Eliminar una detección exige motivo y rol Administrador.
 - Las rutas del servicio ANPR (`/detecciones/ingreso`, `/completar-ocr`, `/descarte`) exigen
   el encabezado `X-Servicio-Token` (`ANPR_SERVICE_TOKEN`); el resto exige sesión y rol.
+
+## Cambios de la versión 5 (`migration_v5_accesos_notificaciones.sql`)
+
+- Se retira el `CHECK` fijo de `Roles.codigo` y se agrega `GESTOR_ACCESOS`.
+- `VehiculosAutorizados`: `categoria`, `fecha_inicio`, `horario`, `solicitud_id`.
+- `DeteccionVehiculo.restriccion_acceso`.
+- Tablas nuevas: `SolicitudesAcceso`, `Notificaciones`, `NotificacionUsuario`, `SuscripcionesPush`,
+  `ClavesServicio` (y `SchemaMigraciones`, creada por el backend).
 
 ## Cambios de la versión 3
 

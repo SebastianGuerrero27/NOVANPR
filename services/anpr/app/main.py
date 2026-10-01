@@ -76,6 +76,7 @@ from app.services.metrics import (
     get_metrics,
 )
 from app.utils.logger import get_logger
+from app.utils.memoria import purgar_expirados
 
 logger = get_logger("main")
 
@@ -613,10 +614,12 @@ def _trigger_photo_capture(candidate, ocr_worker: AsyncOcrWorker) -> None:
                     return
                 _recent_plates_committed[clean_plate] = now_commit
                 _captured_commit_ids[tracking_id] = now_commit
-                # Purgar entradas expiradas del diccionario en memoria
-                stale_keys = [p for p, ts in _recent_plates_committed.items() if (now_commit - ts) > (PLATE_DEBOUNCE_SECONDS * 2)]
-                for p in stale_keys:
-                    _recent_plates_committed.pop(p, None)
+                # Purgar entradas expiradas de los tres registros en memoria (antes solo se purgaba
+                # el de placas: los de tracks crecían sin límite en operación 24/7)
+                horizonte = PLATE_DEBOUNCE_SECONDS * 2
+                purgar_expirados(_recent_plates_committed, now_commit, horizonte)
+                purgar_expirados(_captured_commit_ids, now_commit, horizonte)
+                purgar_expirados(_ocr_last_attempt, now_commit, horizonte)
 
             # Marcar el track como confirmado (el estado autorizado/alerta lo decide el backend
             # al cruzar con las listas; aquí solo se indica que la placa ya fue registrada).
