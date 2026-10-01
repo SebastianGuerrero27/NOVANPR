@@ -1,0 +1,30 @@
+# Imagen de producción del backend (la usa el CD). Contexto de construcción: raíz del repositorio,
+# porque el backend aplica en el arranque los scripts de db/ registrados en config/db.ts.
+#   docker build -f backend/Dockerfile.prod -t anpr-backend .
+# El Dockerfile de desarrollo (backend/Dockerfile, ts-node-dev) sigue siendo el de docker compose.
+
+FROM node:20-alpine AS build
+WORKDIR /app
+COPY backend/package*.json ./
+RUN npm ci
+COPY backend/tsconfig.json ./
+COPY backend/src ./src
+RUN npm run build && npm prune --omit=dev
+
+FROM node:20-alpine
+ENV NODE_ENV=production \
+    PORT=5000 \
+    DOCKER_CONTAINER=true \
+    MEDIA_DIR=/app/media
+WORKDIR /app
+COPY --from=build --chown=node:node /app/node_modules ./node_modules
+COPY --from=build --chown=node:node /app/dist ./dist
+COPY --chown=node:node backend/package.json ./
+# config/db.ts busca los scripts en path.join(__dirname, '../../db') → /app/db
+COPY --chown=node:node db ./db
+RUN mkdir -p /app/media /app/logs && chown node:node /app/media /app/logs
+USER node
+EXPOSE 5000
+HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
+  CMD wget -qO- http://127.0.0.1:5000/health > /dev/null || exit 1
+CMD ["node", "dist/index.js"]

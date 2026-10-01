@@ -1,0 +1,37 @@
+# Base del despliegue en Kubernetes del sistema ANPR. Los nombres de los Services replican los de
+# docker-compose.yml (db, redis, backend, anpr, mediamtx, frontend) para que la configuración del
+# backend, del motor y de MediaMTX funcione igual en ambos entornos.
+#
+# Requisitos previos en cada namespace (ver docs/CICD.md):
+#   - Secret "anpr-secrets" con MSSQL_SA_PASSWORD, JWT_SECRET, ANPR_SERVICE_TOKEN
+#     (opcionales: SMTP_PASSWORD, VAPID_PRIVATE_KEY)
+#   - ConfigMap "mediamtx-config" (el CD lo genera desde mediamtx/mediamtx.yml)
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+labels:
+  - pairs:
+      app.kubernetes.io/part-of: anpr-ecu911
+    includeSelectors: false
+
+resources:
+  - db.yaml
+  - redis.yaml
+  - media-pvc.yaml
+  - backend.yaml
+  - anpr.yaml
+  - mediamtx.yaml
+  - frontend.yaml
+  - ingress.yaml
+
+# El CD fija la etiqueta inmutable (SHA del commit) con `kustomize edit set image`
+images:
+  - name: anpr-backend
+    newName: ghcr.io/sebastianguerrero27/anpr-backend
+    newTag: latest
+  - name: anpr-service
+    newName: ghcr.io/sebastianguerrero27/anpr-service
+    newTag: latest
+  - name: anpr-frontend
+    newName: ghcr.io/sebastianguerrero27/anpr-frontend
+    newTag: latest

@@ -1,0 +1,114 @@
+# Motor de reconocimiento (FastAPI). Se ejecuta sin --reload (el CMD de la imagen es de desarrollo).
+apiVersion: v1
+kind: Service
+metadata:
+  name: anpr
+  labels:
+    app.kubernetes.io/name: anpr
+spec:
+  selector:
+    app.kubernetes.io/name: anpr
+  ports:
+    - name: http
+      port: 8000
+      targetPort: 8000
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: anpr-service
+  labels:
+    app.kubernetes.io/name: anpr
+spec:
+  # Un solo motor por cámara activa: dos réplicas procesarían el mismo flujo dos veces
+  replicas: 1
+  revisionHistoryLimit: 5
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: anpr
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: anpr
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8000"
+        prometheus.io/path: /metrics
+    spec:
+      # Secret docker-registry para GHCR (paquetes privados); si no existe, se intenta sin credenciales
+      imagePullSecrets:
+        - name: ghcr-pull
+      containers:
+        - name: anpr
+          image: anpr-service
+          args: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+          ports:
+            - containerPort: 8000
+              name: http
+          env:
+            - name: PORT
+              value: "8000"
+            - name: BACKEND_URL
+              value: http://backend:5000
+            - name: BACKEND_SOCKETIO_URL
+              value: http://backend:5000
+            - name: ANPR_SERVICE_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: anpr-secrets
+                  key: ANPR_SERVICE_TOKEN
+            - name: OCR_ENGINE
+              value: plate
+            - name: MEDIA_DIR
+              value: /app/media
+            - name: CAMERA_SOURCE
+              value: rtsp
+            - name: RTSP_URL
+              value: ""
+            - name: RTSP_STREAM_URL
+              value: ""
+            - name: RUNNING_IN_DOCKER
+              value: "true"
+            - name: DEBUG_VISUAL
+              value: "false"
+            - name: DEBUG_SHOW_WINDOW
+              value: "false"
+          volumeMounts:
+            - name: media
+              mountPath: /app/media
+            - name: model-cache
+              mountPath: /root/.cache
+          # La primera carga de los modelos (detector, OCR, verificador) puede tardar varios minutos
+          startupProbe:
+            httpGet:
+              path: /status
+              port: http
+            periodSeconds: 10
+            failureThreshold: 60
+          readinessProbe:
+            httpGet:
+              path: /status
+              port: http
+            periodSeconds: 15
+          livenessProbe:
+            httpGet:
+              path: /status
+              port: http
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: "1"
+              memory: 2Gi
+            limits:
+              memory: 6Gi
+      volumes:
+        - name: media
+          persistentVolumeClaim:
+            claimName: anpr-media
+        - name: model-cache
+          emptyDir:
+            sizeLimit: 5Gi

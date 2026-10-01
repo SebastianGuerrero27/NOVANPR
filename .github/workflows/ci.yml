@@ -160,12 +160,24 @@ jobs:
           path: trivy-results.sarif
 
   docker-build:
-    name: Build Docker Images
+    name: Build Docker Images (${{ matrix.name }})
     runs-on: ubuntu-latest
     needs: [test-backend, test-anpr-service, test-frontend]
-    # Sin el secreto DOCKER_USERNAME las imágenes se construyen con el prefijo "anpr" y no se publican
-    env:
-      DOCKERHUB_USER: ${{ secrets.DOCKER_USERNAME }}
+    # Construye las mismas imágenes de producción que publica el CD (sin publicarlas): un Dockerfile
+    # roto se detecta en el PR y la caché (mismo scope) la reutiliza el CD al publicar en GHCR.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: anpr-backend
+            context: .
+            file: backend/Dockerfile.prod
+          - name: anpr-service
+            context: services/anpr
+            file: services/anpr/Dockerfile
+          - name: anpr-frontend
+            context: frontend
+            file: frontend/Dockerfile.prod
 
     steps:
       - name: Checkout code
@@ -173,6 +185,7 @@ jobs:
 
       # La imagen del motor ANPR incluye torch y librerías CUDA (varios GB): se libera espacio del runner
       - name: Free disk space
+        if: matrix.name == 'anpr-service'
         run: |
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
           sudo docker image prune -af
@@ -181,42 +194,12 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Login to Docker Hub
-        if: github.event_name != 'pull_request' && env.DOCKERHUB_USER != ''
-        uses: docker/login-action@v3
+      - name: Build
+        uses: docker/build-push-action@v6
         with:
-          username: ${{ secrets.DOCKER_USERNAME }}
-          password: ${{ secrets.DOCKER_PASSWORD }}
-
-      - name: Build and push Backend
-        uses: docker/build-push-action@v5
-        with:
-          context: ./backend
-          push: ${{ github.event_name != 'pull_request' && env.DOCKERHUB_USER != '' }}
-          tags: |
-            ${{ env.DOCKERHUB_USER || 'anpr' }}/anpr-backend:latest
-            ${{ env.DOCKERHUB_USER || 'anpr' }}/anpr-backend:${{ github.sha }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max,ignore-error=true
-
-      - name: Build and push ANPR Service
-        uses: docker/build-push-action@v5
-        with:
-          context: ./services/anpr
-          push: ${{ github.event_name != 'pull_request' && env.DOCKERHUB_USER != '' }}
-          tags: |
-            ${{ env.DOCKERHUB_USER || 'anpr' }}/anpr-service:latest
-            ${{ env.DOCKERHUB_USER || 'anpr' }}/anpr-service:${{ github.sha }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max,ignore-error=true
-
-      - name: Build and push Frontend
-        uses: docker/build-push-action@v5
-        with:
-          context: ./frontend
-          push: ${{ github.event_name != 'pull_request' && env.DOCKERHUB_USER != '' }}
-          tags: |
-            ${{ env.DOCKERHUB_USER || 'anpr' }}/anpr-frontend:latest
-            ${{ env.DOCKERHUB_USER || 'anpr' }}/anpr-frontend:${{ github.sha }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max,ignore-error=true
+          context: ${{ matrix.context }}
+          file: ${{ matrix.file }}
+          push: false
+          tags: ${{ matrix.name }}:${{ github.sha }}
+          cache-from: type=gha,scope=${{ matrix.name }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.name }},ignore-error=true

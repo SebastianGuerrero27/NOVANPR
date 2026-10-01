@@ -1,0 +1,62 @@
+# Overlay de production. Antes del primer despliegue cree en el namespace anpr-production el Secret anpr-secrets
+# (docs/CICD.md § Kubernetes) y, si el clúster usa cert-manager, ajuste el ClusterIssuer.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: anpr-production
+
+resources:
+  - namespace.yaml
+  - ../../base
+
+configMapGenerator:
+  - name: anpr-config
+    literals:
+      - FRONTEND_URL=https://anpr.ecu911.gob.ec
+      - ANPR_PUBLIC_URL=https://motor.anpr.ecu911.gob.ec
+      - WEBRTC_PUBLIC_URL=https://video.anpr.ecu911.gob.ec
+      # IP pública del Service mediamtx-webrtc (LoadBalancer) que el navegador usa para los medios
+      - WEBRTC_HOSTS=127.0.0.1
+      - ALLOWED_EMAIL_DOMAINS=ecu911.gob.ec
+      - SMTP_HOST=
+      - SMTP_PORT=587
+      - SMTP_USER=
+      - SMTP_FROM=
+      - VAPID_PUBLIC_KEY=
+      - VAPID_SUBJECT=mailto:anpr@ecu911.gob.ec
+      # Edición Express: gratuita y válida en producción (límite de 10 GB por base). Con licencia,
+      # use Standard o Enterprise.
+      - MSSQL_PID=Express
+
+patches:
+  - target:
+      kind: Ingress
+      name: anpr
+    patch: |-
+      - op: replace
+        path: /spec/rules/0/host
+        value: anpr.ecu911.gob.ec
+      - op: replace
+        path: /spec/rules/1/host
+        value: motor.anpr.ecu911.gob.ec
+      - op: replace
+        path: /spec/rules/2/host
+        value: video.anpr.ecu911.gob.ec
+      - op: add
+        path: /metadata/annotations/cert-manager.io~1cluster-issuer
+        value: letsencrypt
+      - op: add
+        path: /spec/tls
+        value:
+          - hosts:
+              - anpr.ecu911.gob.ec
+              - motor.anpr.ecu911.gob.ec
+              - video.anpr.ecu911.gob.ec
+            secretName: anpr-tls
+  - target:
+      kind: Deployment
+      name: anpr-frontend
+    patch: |-
+      - op: replace
+        path: /spec/replicas
+        value: 2

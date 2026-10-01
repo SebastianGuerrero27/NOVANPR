@@ -1,140 +1,141 @@
 name: CD Pipeline
 
+# Entrega continua: se ejecuta solo cuando el CI terminó en verde para un push a main (o a mano).
+#   1. Publica las imágenes de producción en GHCR con la etiqueta inmutable del commit (y latest).
+#   2. Despliega a staging con Kustomize (k8s/overlays/staging), espera los rollouts y hace smoke tests.
+#   3. Si staging quedó desplegado y verificado, despliega a producción con respaldo previo de SQL
+#      Server y rollback automático de los Deployments si algo falla.
+# Sin el kubeconfig de un entorno, su despliegue se omite con un aviso (el workflow queda en verde y
+# las imágenes publicadas); la configuración está en docs/CICD.md.
+
 on:
-  push:
-    branches: [ main ]
+  workflow_run:
+    workflows: ["CI Pipeline"]
+    types: [completed]
+    branches: [main]
   workflow_dispatch:
+    inputs:
+      produccion:
+        description: 'Desplegar también a producción después de staging'
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+# Un despliegue a la vez; uno nuevo espera al anterior en lugar de cancelarlo a medias
+concurrency:
+  group: cd-${{ github.repository }}
+  cancel-in-progress: false
+
+env:
+  # En workflow_run, github.sha es la punta de main al momento del disparo, no el commit verificado
+  SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
 
 jobs:
-  deploy-staging:
-    name: Deploy to Staging
+  images:
+    name: Publish images (${{ matrix.name }})
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push')
     runs-on: ubuntu-latest
-    environment:
-      name: staging
-      url: https://staging.anpr.ecu911.gob.ec
-    
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - name: anpr-backend
+            context: .
+            file: backend/Dockerfile.prod
+          - name: anpr-service
+            context: services/anpr
+            file: services/anpr/Dockerfile
+          - name: anpr-frontend
+            context: frontend
+            file: frontend/Dockerfile.prod
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-
-      - name: Configure kubectl
-        uses: azure/k8s-set-context@v4
         with:
-          method: kubeconfig
-          kubeconfig: ${{ secrets.KUBE_CONFIG_STAGING }}
+          ref: ${{ env.SHA }}
 
-      - name: Deploy to Kubernetes
+      # La imagen del motor ANPR incluye torch y librerías CUDA (varios GB)
+      - name: Free disk space
+        if: matrix.name == 'anpr-service'
         run: |
-          kubectl apply -f k8s/staging/
-          kubectl rollout status deployment/anpr-backend -n staging
-          kubectl rollout status deployment/anpr-frontend -n staging
-          kubectl rollout status deployment/anpr-service -n staging
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          sudo docker image prune -af
+          df -h /
 
-      - name: Run database migrations
+      - name: Image name and tags
+        id: img
+        env:
+          OWNER: ${{ github.repository_owner }}
+          IMAGE: ${{ matrix.name }}
+          REF: ${{ github.ref }}
+          EVENT: ${{ github.event_name }}
         run: |
-          kubectl exec -n staging deployment/anpr-backend -- npm run migrate
+          repo="ghcr.io/${OWNER,,}/${IMAGE}"
+          tags="${repo}:${SHA}"
+          # latest solo para main: un disparo manual desde otra rama no mueve la etiqueta
+          if [ "$EVENT" = "workflow_run" ] || [ "$REF" = "refs/heads/main" ]; then
+            tags="${tags},${repo}:latest"
+          fi
+          echo "tags=${tags}" >> "$GITHUB_OUTPUT"
 
-      - name: Verify deployment
-        run: |
-          kubectl get pods -n staging
-          kubectl get services -n staging
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
 
-      - name: Run smoke tests
-        run: |
-          curl -f https://staging.anpr.ecu911.gob.ec/health || exit 1
-          curl -f https://staging.anpr.ecu911.gob.ec/api/health || exit 1
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.file }}
+          push: true
+          tags: ${{ steps.img.outputs.tags }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ env.SHA }}
+            org.opencontainers.image.title=${{ matrix.name }}
+          cache-from: type=gha,scope=${{ matrix.name }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.name }},ignore-error=true
+
+  deploy-staging:
+    name: Deploy to Staging
+    needs: images
+    uses: ./.github/workflows/deploy-k8s.yml
+    with:
+      entorno: staging
+      namespace: anpr-staging
+      url: ${{ vars.STAGING_URL || 'https://staging.anpr.ecu911.gob.ec' }}
+      sha: ${{ github.event.workflow_run.head_sha || github.sha }}
+      secreto_kubeconfig: KUBE_CONFIG_STAGING
+      respaldo_bd: false
+    secrets: inherit
 
   deploy-production:
     name: Deploy to Production
-    runs-on: ubuntu-latest
     needs: deploy-staging
-    environment:
-      name: production
-      url: https://anpr.ecu911.gob.ec
-    
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Configure kubectl
-        uses: azure/k8s-set-context@v4
-        with:
-          method: kubeconfig
-          kubeconfig: ${{ secrets.KUBE_CONFIG_PRODUCTION }}
-
-      - name: Create backup
-        run: |
-          TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-          kubectl exec -n production deployment/anpr-db -- pg_dump ANPR_ECU911 > backup_${TIMESTAMP}.sql
-          # Upload backup to S3 or similar storage
-
-      - name: Deploy to Kubernetes
-        run: |
-          kubectl apply -f k8s/production/
-          kubectl rollout status deployment/anpr-backend -n production
-          kubectl rollout status deployment/anpr-frontend -n production
-          kubectl rollout status deployment/anpr-service -n production
-
-      - name: Run database migrations
-        run: |
-          kubectl exec -n production deployment/anpr-backend -- npm run migrate
-
-      - name: Verify deployment
-        run: |
-          kubectl get pods -n production
-          kubectl get services -n production
-
-      - name: Run smoke tests
-        run: |
-          curl -f https://anpr.ecu911.gob.ec/health || exit 1
-          curl -f https://anpr.ecu911.gob.ec/api/health || exit 1
-
-      - name: Notify deployment success
-        if: success()
-        uses: 8398a7/action-slack@v3
-        with:
-          status: ${{ job.status }}
-          text: 'Deployment to production successful'
-          webhook_url: ${{ secrets.SLACK_WEBHOOK }}
-
-      - name: Notify deployment failure
-        if: failure()
-        uses: 8398a7/action-slack@v3
-        with:
-          status: ${{ job.status }}
-          text: 'Deployment to production failed'
-          webhook_url: ${{ secrets.SLACK_WEBHOOK }}
-
-  rollback:
-    name: Rollback Production
-    runs-on: ubuntu-latest
-    if: failure()
-    needs: deploy-production
-    
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Configure kubectl
-        uses: azure/k8s-set-context@v4
-        with:
-          method: kubeconfig
-          kubeconfig: ${{ secrets.KUBE_CONFIG_PRODUCTION }}
-
-      - name: Rollback deployment
-        run: |
-          kubectl rollout undo deployment/anpr-backend -n production
-          kubectl rollout undo deployment/anpr-frontend -n production
-          kubectl rollout undo deployment/anpr-service -n production
-
-      - name: Restore database backup
-        run: |
-          # Restore from latest backup
-          kubectl exec -n production deployment/anpr-db -- psql ANPR_ECU911 < backup_latest.sql
-
-      - name: Notify rollback
-        uses: 8398a7/action-slack@v3
-        with:
-          status: 'rollback'
-          text: 'Production rollback executed'
-          webhook_url: ${{ secrets.SLACK_WEBHOOK }}
+    # Solo si staging se desplegó de verdad (no omitido) y pasó sus smoke tests
+    if: >-
+      needs.deploy-staging.outputs.desplegado == 'true' &&
+      (github.event_name != 'workflow_dispatch' || inputs.produccion)
+    uses: ./.github/workflows/deploy-k8s.yml
+    with:
+      entorno: production
+      namespace: anpr-production
+      url: ${{ vars.PRODUCTION_URL || 'https://anpr.ecu911.gob.ec' }}
+      sha: ${{ github.event.workflow_run.head_sha || github.sha }}
+      secreto_kubeconfig: KUBE_CONFIG_PRODUCTION
+      respaldo_bd: true
+    secrets: inherit

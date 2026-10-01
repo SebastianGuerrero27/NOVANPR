@@ -1,9 +1,11 @@
 import axios from 'axios';
 
 // La URL apunta al backend expuesto en localhost para el navegador del cliente.
+// VITE_API_URL vacío (imagen de producción tras un Ingress) = la API está en el mismo origen.
 // Normalizar para evitar que VITE_API_URL incluya el sufijo '/api' accidentalmente
 // y luego añadir el prefijo real de la API una sola vez.
-let API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000';
+const URL_CONFIGURADA = import.meta.env.VITE_API_URL ?? 'http://localhost:5000';
+let API_URL = URL_CONFIGURADA.trim() || window.location.origin;
 API_URL = API_URL.replace(/\/api\/?$/, '');
 
 // La sesión vive en sessionStorage: se cierra al cerrar el navegador del puesto de guardia.
