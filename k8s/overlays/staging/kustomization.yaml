@@ -1,0 +1,61 @@
+# Overlay de staging. Antes del primer despliegue cree en el namespace anpr-staging el Secret anpr-secrets
+# (docs/CICD.md § Kubernetes) y, si el clúster usa cert-manager, ajuste el ClusterIssuer.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: anpr-staging
+
+resources:
+  - namespace.yaml
+  - ../../base
+
+configMapGenerator:
+  - name: anpr-config
+    literals:
+      - FRONTEND_URL=https://staging.anpr.ecu911.gob.ec
+      - ANPR_PUBLIC_URL=https://motor.staging.anpr.ecu911.gob.ec
+      - WEBRTC_PUBLIC_URL=https://video.staging.anpr.ecu911.gob.ec
+      # IP pública del Service mediamtx-webrtc (LoadBalancer) que el navegador usa para los medios
+      - WEBRTC_HOSTS=127.0.0.1
+      - ALLOWED_EMAIL_DOMAINS=ecu911.gob.ec
+      - SMTP_HOST=
+      - SMTP_PORT=587
+      - SMTP_USER=
+      - SMTP_FROM=
+      - VAPID_PUBLIC_KEY=
+      - VAPID_SUBJECT=mailto:anpr@ecu911.gob.ec
+      # Edición Developer: gratuita, solo para entornos que no son de producción
+      - MSSQL_PID=Developer
+
+patches:
+  - target:
+      kind: Ingress
+      name: anpr
+    patch: |-
+      - op: replace
+        path: /spec/rules/0/host
+        value: staging.anpr.ecu911.gob.ec
+      - op: replace
+        path: /spec/rules/1/host
+        value: motor.staging.anpr.ecu911.gob.ec
+      - op: replace
+        path: /spec/rules/2/host
+        value: video.staging.anpr.ecu911.gob.ec
+      - op: add
+        path: /metadata/annotations/cert-manager.io~1cluster-issuer
+        value: letsencrypt
+      - op: add
+        path: /spec/tls
+        value:
+          - hosts:
+              - staging.anpr.ecu911.gob.ec
+              - motor.staging.anpr.ecu911.gob.ec
+              - video.staging.anpr.ecu911.gob.ec
+            secretName: anpr-tls
+  - target:
+      kind: Deployment
+      name: anpr-frontend
+    patch: |-
+      - op: replace
+        path: /spec/replicas
+        value: 1

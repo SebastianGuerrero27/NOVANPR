@@ -1,0 +1,213 @@
+name: Deploy to Kubernetes
+
+# Workflow reutilizable: despliega un overlay de k8s/overlays/<entorno> con las imágenes del commit.
+# El kubeconfig se toma del secreto KUBE_CONFIG del entorno de GitHub o, si no existe, del secreto de
+# repositorio indicado en `secreto_kubeconfig` (KUBE_CONFIG_STAGING / KUBE_CONFIG_PRODUCTION). Se
+# admite el kubeconfig en texto plano o en base64.
+
+on:
+  workflow_call:
+    inputs:
+      entorno:
+        description: 'Entorno de GitHub y overlay de Kustomize (staging | production)'
+        type: string
+        required: true
+      namespace:
+        type: string
+        required: true
+      url:
+        description: 'URL pública para los smoke tests'
+        type: string
+        required: true
+      sha:
+        description: 'Commit cuyas imágenes se despliegan'
+        type: string
+        required: true
+      secreto_kubeconfig:
+        type: string
+        required: true
+      respaldo_bd:
+        description: 'Respaldar SQL Server (BACKUP DATABASE) antes de aplicar'
+        type: boolean
+        default: false
+    outputs:
+      desplegado:
+        description: "'true' si se aplicó y verificó el despliegue; 'false' si se omitió"
+        value: ${{ jobs.deploy.outputs.desplegado }}
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    name: ${{ inputs.entorno }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    environment:
+      name: ${{ inputs.entorno }}
+      url: ${{ steps.config.outputs.habilitado == 'true' && inputs.url || '' }}
+    outputs:
+      desplegado: ${{ steps.smoke.outcome == 'success' && 'true' || 'false' }}
+    env:
+      NS: ${{ inputs.namespace }}
+      URL_PUBLICA: ${{ inputs.url }}
+      SHA: ${{ inputs.sha }}
+      ENTORNO: ${{ inputs.entorno }}
+      SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.sha }}
+
+      - name: Check configuration
+        id: config
+        env:
+          KUBE_CONFIG: ${{ secrets.KUBE_CONFIG || secrets[inputs.secreto_kubeconfig] }}
+          SECRETO: ${{ inputs.secreto_kubeconfig }}
+        run: |
+          if [ -z "$KUBE_CONFIG" ]; then
+            msg="Sin kubeconfig para ${ENTORNO} (secreto KUBE_CONFIG del entorno o ${SECRETO}): se omite el despliegue. Las imágenes del commit ${SHA:0:7} quedaron publicadas en GHCR."
+            echo "::notice title=Despliegue a ${ENTORNO} omitido::${msg}"
+            echo "### Despliegue a ${ENTORNO} omitido" >> "$GITHUB_STEP_SUMMARY"
+            echo "${msg} Configuración: docs/CICD.md." >> "$GITHUB_STEP_SUMMARY"
+            echo "habilitado=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ ! -f "k8s/overlays/${ENTORNO}/kustomization.yaml" ]; then
+            echo "::error::No existe k8s/overlays/${ENTORNO}/kustomization.yaml"
+            exit 1
+          fi
+          kubeconfig="$RUNNER_TEMP/kubeconfig"
+          # Texto plano o base64 (lo que se haya pegado en el secreto)
+          if printf '%s' "$KUBE_CONFIG" | grep -q 'apiVersion'; then
+            printf '%s\n' "$KUBE_CONFIG" > "$kubeconfig"
+          else
+            printf '%s' "$KUBE_CONFIG" | base64 -d > "$kubeconfig"
+          fi
+          chmod 600 "$kubeconfig"
+          echo "KUBECONFIG=$kubeconfig" >> "$GITHUB_ENV"
+          echo "habilitado=true" >> "$GITHUB_OUTPUT"
+
+      - name: Set up kubectl
+        if: steps.config.outputs.habilitado == 'true'
+        uses: azure/setup-kubectl@v4
+
+      - name: Check cluster and secrets
+        if: steps.config.outputs.habilitado == 'true'
+        run: |
+          kubectl version
+          kubectl create namespace "$NS" --dry-run=client -o yaml | kubectl apply -f -
+          if ! kubectl -n "$NS" get secret anpr-secrets > /dev/null 2>&1; then
+            echo "::error title=Falta el Secret anpr-secrets::Cree el Secret anpr-secrets en el namespace $NS (MSSQL_SA_PASSWORD, JWT_SECRET, ANPR_SERVICE_TOKEN). Ver docs/CICD.md."
+            exit 1
+          fi
+
+      - name: Render manifests
+        if: steps.config.outputs.habilitado == 'true'
+        env:
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          command -v kustomize > /dev/null || {
+            curl -fsSL "https://raw.githubusercontent.com/kubernetes-sigs/kustomize/master/hack/install_kustomize.sh" | bash -s -- 5.4.3 "$RUNNER_TEMP"
+            echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
+            export PATH="$RUNNER_TEMP:$PATH"
+          }
+          registro="ghcr.io/${OWNER,,}"
+          cd "k8s/overlays/${ENTORNO}"
+          kustomize edit set image \
+            "anpr-backend=${registro}/anpr-backend:${SHA}" \
+            "anpr-service=${registro}/anpr-service:${SHA}" \
+            "anpr-frontend=${registro}/anpr-frontend:${SHA}"
+          kustomize build . > "$RUNNER_TEMP/manifiestos.yaml"
+          grep -E '^\s+image:' "$RUNNER_TEMP/manifiestos.yaml" | sort -u
+
+      - name: Backup database
+        id: respaldo
+        if: steps.config.outputs.habilitado == 'true' && inputs.respaldo_bd
+        run: |
+          if ! kubectl -n "$NS" get pod db-0 > /dev/null 2>&1; then
+            echo "::notice::Primer despliegue en $NS (no existe db-0): no hay base que respaldar"
+            exit 0
+          fi
+          archivo="ANPR_ECU911_$(date -u +%Y%m%dT%H%M%SZ)_${SHA:0:7}.bak"
+          kubectl -n "$NS" exec db-0 -- /bin/sh -c "mkdir -p /var/opt/mssql/backup && \
+            /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P \"\$MSSQL_SA_PASSWORD\" -C -b -Q \
+            \"BACKUP DATABASE [ANPR_ECU911] TO DISK = N'/var/opt/mssql/backup/${archivo}' WITH INIT, CHECKSUM, NAME = N'pre-deploy ${SHA:0:7}'\""
+          echo "archivo=${archivo}" >> "$GITHUB_OUTPUT"
+          echo "Respaldo: \`db-0:/var/opt/mssql/backup/${archivo}\`" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Apply manifests
+        id: aplicar
+        if: steps.config.outputs.habilitado == 'true'
+        run: |
+          kubectl -n "$NS" create configmap mediamtx-config \
+            --from-file=mediamtx.yml=mediamtx/mediamtx.yml --dry-run=client -o yaml | kubectl apply -f -
+          kubectl apply -f "$RUNNER_TEMP/manifiestos.yaml"
+
+      # El backend aplica el esquema y las migraciones al arrancar (registro SchemaMigraciones con
+      # SHA-256), así que no hay un paso de migración aparte: el rollout no termina hasta que el
+      # backend responde /health, es decir, con las migraciones ya aplicadas.
+      - name: Wait for rollouts
+        if: steps.config.outputs.habilitado == 'true'
+        run: |
+          kubectl -n "$NS" rollout status statefulset/db --timeout=10m
+          kubectl -n "$NS" rollout status statefulset/redis --timeout=5m
+          kubectl -n "$NS" rollout status deployment/mediamtx --timeout=5m
+          kubectl -n "$NS" rollout status deployment/anpr-backend --timeout=10m
+          kubectl -n "$NS" rollout status deployment/anpr-frontend --timeout=5m
+          # Primera carga de los modelos de reconocimiento: puede tardar varios minutos
+          kubectl -n "$NS" rollout status deployment/anpr-service --timeout=20m
+          kubectl -n "$NS" get pods,services,ingress -o wide
+
+      - name: Smoke tests
+        id: smoke
+        if: steps.config.outputs.habilitado == 'true'
+        run: |
+          base="${URL_PUBLICA%/}"
+          reintentos=(--retry 12 --retry-delay 10 --retry-all-errors --max-time 15)
+          curl -fsS "${reintentos[@]}" "${base}/health"
+          echo
+          curl -fsS "${reintentos[@]}" "${base}/healthz"
+          echo
+          curl -fsS "${reintentos[@]}" -o /dev/null -w 'SPA %{http_code}\n' "${base}/"
+          # La API responde (401 sin token = viva y protegida)
+          codigo=$(curl -sS "${reintentos[@]}" -o /dev/null -w '%{http_code}' "${base}/api/auth/me")
+          echo "API /api/auth/me → ${codigo}"
+          [ "$codigo" = "401" ] || [ "$codigo" = "200" ]
+
+      - name: Rollback
+        if: failure() && steps.aplicar.outcome == 'success'
+        env:
+          RESPALDO: ${{ steps.respaldo.outputs.archivo }}
+        run: |
+          echo "::warning title=Rollback en ${ENTORNO}::El despliegue de ${SHA:0:7} falló; se revierten los Deployments a su revisión anterior"
+          for d in anpr-backend anpr-frontend anpr-service; do
+            kubectl -n "$NS" rollout undo "deployment/$d" || echo "Sin revisión anterior para $d"
+          done
+          kubectl -n "$NS" rollout status deployment/anpr-backend --timeout=10m || true
+          {
+            echo "### Rollback ejecutado en ${ENTORNO}"
+            echo "Los Deployments volvieron a su revisión anterior."
+            # Las migraciones son aditivas e idempotentes: la versión anterior funciona con el esquema
+            # nuevo. La base NO se restaura automáticamente porque perdería los ingresos registrados
+            # después del respaldo; si hiciera falta, se restaura a mano desde el archivo indicado.
+            if [ -n "$RESPALDO" ]; then
+              echo "Respaldo previo disponible: \`db-0:/var/opt/mssql/backup/${RESPALDO}\` (RESTORE DATABASE manual, ver docs/CICD.md)."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Notify Slack
+        if: always() && steps.config.outputs.habilitado == 'true' && env.SLACK_WEBHOOK != ''
+        env:
+          ESTADO: ${{ job.status }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          case "$ESTADO" in
+            success) icono=":white_check_mark:"; texto="desplegado" ;;
+            cancelled) icono=":warning:"; texto="cancelado" ;;
+            *) icono=":x:"; texto="falló (rollback aplicado)" ;;
+          esac
+          payload=$(jq -n --arg t "${icono} ANPR ${ENTORNO}: ${SHA:0:7} ${texto} — ${URL_PUBLICA} — ${RUN_URL}" '{text: $t}')
+          curl -fsS -X POST -H 'Content-Type: application/json' --data "$payload" "$SLACK_WEBHOOK" || echo "::warning::No se pudo notificar a Slack"

@@ -15,6 +15,7 @@ Push, y evaluación científica del reconocimiento y de las alarmas.
 | `db/` | Esquema y migraciones | SQL Server 2022 (`init.sql` + `migration_*.sql`, registradas en `SchemaMigraciones`) |
 | `mediamtx/` | Video | Relay RTSP → WebRTC (WHEP) |
 | `monitoring/` | Observabilidad | Prometheus + Grafana |
+| `k8s/` | Despliegue | Kustomize (base + overlays staging/producción); CI/CD con GitHub Actions y GHCR ([docs/CICD.md](docs/CICD.md)) |
 
 ## Roles
 

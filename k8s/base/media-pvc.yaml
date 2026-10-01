@@ -1,0 +1,12 @@
+# Evidencia fotográfica: el motor ANPR la escribe y el backend la sirve con enlace firmado, así que
+# ambos montan el mismo volumen. ReadWriteMany requiere una StorageClass que lo soporte (NFS, Azure
+# Files, EFS, Longhorn…); en un clúster de un solo nodo puede cambiarse a ReadWriteOnce en el overlay.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: anpr-media
+spec:
+  accessModes: ["ReadWriteMany"]
+  resources:
+    requests:
+      storage: 50Gi

@@ -1,332 +1,182 @@
-# Guía de CI/CD para el Sistema ANPR
+# CI/CD del sistema ANPR
 
-## Overview
+Integración y entrega continuas con GitHub Actions, imágenes en GitHub Container Registry (GHCR) y
+despliegue en Kubernetes con Kustomize.
 
-Esta guía explica la implementación del pipeline de CI/CD automatizado para el sistema ANPR utilizando GitHub Actions.
-
-## Arquitectura del Pipeline
-
-```
-┌─────────────────┐         ┌─────────────────┐         ┌─────────────────┐
-│   Git Push      │         │   CI Pipeline   │         │   CD Pipeline   │
-│   (GitHub)      │         │   (Tests + Build)│         │   (Deploy)       │
-└────────┬────────┘         └────────┬────────┘         └────────┬────────┘
-         │                          │                          │
-         │ trigger                  │ trigger                  │ trigger
-         │─────────────────────────>│                          │
-         │                          │                          │
-         │                          │                          │
-         │                          │<─────────────────────────│
-         │                          │                          │
-         │                          │ deploy                   │
-         │                          │─────────────────────────>│
-         │                          │                          │
-         │                          │                          │
-         │<─────────────────────────│<─────────────────────────│
-         │                          │                          │
-         │ success/failure          │ success/failure          │ success/failure
+```mermaid
+flowchart LR
+  PR[Pull request] --> CI
+  P[Push a main] --> CI
+  subgraph CI[CI Pipeline · ci.yml]
+    T1[Test Backend] & T2[Test ANPR] & T3[Test Frontend] --> B[Build imágenes de producción\nsin publicar]
+    S[Security Scan · Trivy]
+  end
+  CI -- verde y push a main --> CD
+  subgraph CD[CD Pipeline · cd.yml]
+    I[Publicar en GHCR\n:sha y :latest] --> ST[Staging\nrollout + smoke tests]
+    ST -- desplegado y verificado --> PRD[Producción\nrespaldo SQL Server + rollout\n+ smoke tests + rollback]
+  end
 ```
 
-## Pipeline de CI (Continuous Integration)
+| Archivo | Función |
+|---|---|
+| `.github/workflows/ci.yml` | Pruebas, escaneo de seguridad y construcción de las imágenes de producción |
+| `.github/workflows/cd.yml` | Publicación de imágenes y orquestación staging → producción |
+| `.github/workflows/deploy-k8s.yml` | Workflow reutilizable que despliega un entorno |
+| `backend/Dockerfile.prod`, `frontend/Dockerfile.prod`, `frontend/nginx.conf` | Imágenes de producción (los `Dockerfile` sin sufijo siguen siendo los de desarrollo de `docker compose`) |
+| `k8s/base`, `k8s/overlays/{staging,production}` | Manifiestos de Kubernetes |
 
-### Trigger
+## 1. CI (`ci.yml`)
 
-El pipeline de CI se ejecuta automáticamente en:
-- Push a branches `main` o `develop`
-- Pull requests a `main` o `develop`
+Se ejecuta en cada push a `main`/`develop` y en cada pull request.
 
-### Jobs
+| Job | Qué verifica |
+|---|---|
+| Test Backend | `npm ci`, `tsc`, Jest (dominio, orquestación, integración RBAC, esquema) |
+| Test ANPR Service | `pytest` del motor (configurado en `services/anpr/pytest.ini`) |
+| Test Frontend | `tsc && vite build` |
+| Security Scan | Trivy sobre el repositorio. Falla ante vulnerabilidades **críticas con corrección disponible**; el informe completo se sube como SARIF (repositorios públicos o con Advanced Security) o como artefacto `trivy-results` |
+| Build Docker Images | Construye, sin publicar, las tres imágenes de producción que publicará el CD; comparte la caché de capas con el CD (`type=gha`, un scope por imagen) |
 
-#### 1. Test Backend
+## 2. CD (`cd.yml`)
 
-**Objetivo**: Ejecutar pruebas del backend Node.js
+**Disparo:** al terminar en verde el CI de un *push* a `main` (`workflow_run`), o a mano
+(*Run workflow*, con la opción de detenerse en staging). Los despliegues no se solapan: uno nuevo
+espera al anterior (`concurrency`).
 
-**Pasos**:
-1. Checkout del código
-2. Setup de Node.js 20
-3. Instalación de dependencias
-4. Ejecución de linter
-5. Ejecución de tests unitarios
-6. Generación de coverage
-7. Upload de coverage a Codecov
+### 2.1 Publicación de imágenes
 
-#### 2. Test ANPR Service
+| Imagen | Origen | Contenido |
+|---|---|---|
+| `ghcr.io/<owner>/anpr-backend` | `backend/Dockerfile.prod` (contexto: raíz) | Node 20, `dist/` compilado, dependencias de producción, scripts `db/`, usuario sin root |
+| `ghcr.io/<owner>/anpr-service` | `services/anpr/Dockerfile` | Motor FastAPI (en Kubernetes se ejecuta sin `--reload`) |
+| `ghcr.io/<owner>/anpr-frontend` | `frontend/Dockerfile.prod` | Build de Vite servido por nginx sin root (puerto 8080); API en el mismo origen |
 
-**Objetivo**: Ejecutar pruebas del microservicio Python
+Etiquetas: el SHA del commit (inmutable, es la que se despliega) y `latest` (solo desde `main`). Se
+publican con el `GITHUB_TOKEN` del workflow (`packages: write`); no hace falta ningún secreto.
 
-**Pasos**:
-1. Checkout del código
-2. Setup de Python 3.11
-3. Instalación de dependencias
-4. Ejecución de tests con pytest
-5. Generación de coverage
-6. Upload de coverage a Codecov
+### 2.2 Despliegue de un entorno (`deploy-k8s.yml`)
 
-#### 3. Test Frontend
+1. **Configuración.** Sin kubeconfig, el despliegue se **omite con un aviso** y el workflow queda en
+   verde (las imágenes ya están publicadas). Con kubeconfig, comprueba que el overlay exista.
+2. **Clúster.** Crea el namespace si falta y exige el Secret `anpr-secrets`; si no existe, falla con
+   un mensaje que explica qué crear.
+3. **Manifiestos.** `kustomize edit set image` fija las tres imágenes al SHA del commit, y luego
+   `kustomize build`.
+4. **Respaldo (solo producción).** `BACKUP DATABASE [ANPR_ECU911] … WITH CHECKSUM` en `db-0`, con
+   un archivo con fecha y SHA en `/var/opt/mssql/backup/`. Se omite en el primer despliegue.
+5. **Aplicación.** Crea el ConfigMap `mediamtx-config` desde `mediamtx/mediamtx.yml` y ejecuta
+   `kubectl apply`.
+6. **Rollouts.** Espera a db, redis, mediamtx, backend, frontend y motor (hasta 20 min para el motor
+   por la primera carga de modelos).
+   - **No hay paso de migración aparte:** el backend aplica `init.sql` y las migraciones al arrancar
+     (registro `SchemaMigraciones` con SHA-256).
+   - Su *startup probe* exige `/health`, así que el rollout termina con el esquema ya migrado.
+7. **Smoke tests** contra la URL pública:
+   - `/health` del backend, `/healthz` de nginx y la SPA;
+   - `/api/auth/me` debe responder `401` (API viva y protegida).
+8. **Rollback.** Si fallan los rollouts o los smoke tests, `kubectl rollout undo` de los tres
+   Deployments.
+   - La base **no** se restaura automáticamente: las migraciones son aditivas e idempotentes (la
+     versión anterior funciona con el esquema nuevo), y una restauración perdería los ingresos
+     registrados después del respaldo.
+   - El resumen del job indica el archivo de respaldo por si hiciera falta restaurarlo a mano (§ 4).
+9. **Slack** (opcional): resultado del despliegue si existe `SLACK_WEBHOOK`.
 
-**Objetivo**: Compilar y validar el frontend React
+**Producción** solo se despliega si staging se desplegó de verdad (no omitido) y pasó sus smoke tests.
+Para exigir aprobación manual, agregue *Required reviewers* al entorno `production` (Settings →
+Environments).
 
-**Pasos**:
-1. Checkout del código
-2. Setup de Node.js 20
-3. Instalación de dependencias
-4. Ejecución de linter
-5. Build de producción
-6. Upload de artefactos
+## 3. Configuración
 
-#### 4. Security Scan
+### 3.1 GitHub (Settings → Secrets and variables → Actions, o por entorno)
 
-**Objetivo**: Escanear vulnerabilidades de seguridad
+| Nombre | Tipo | Uso |
+|---|---|---|
+| `KUBE_CONFIG` (secreto del entorno `staging`/`production`) **o** `KUBE_CONFIG_STAGING` / `KUBE_CONFIG_PRODUCTION` (secretos de repositorio) | Secreto | kubeconfig del clúster, en texto plano o base64 (`base64 -w0 ~/.kube/config`). Sin él, ese entorno se omite |
+| `SLACK_WEBHOOK` | Secreto (opcional) | Notificaciones de despliegue |
+| `STAGING_URL`, `PRODUCTION_URL` | Variables (opcionales) | URL pública de los smoke tests (por omisión `https://staging.anpr.ecu911.gob.ec` y `https://anpr.ecu911.gob.ec`) |
 
-**Pasos**:
-1. Checkout del código
-2. Escaneo con Trivy
-3. Upload de resultados a GitHub Security
+Use una cuenta de servicio con permisos solo sobre su namespace en lugar de un kubeconfig de
+administrador del clúster.
 
-#### 5. Docker Build
-
-**Objetivo**: Construir imágenes Docker
-
-**Pasos**:
-1. Checkout del código
-2. Setup de Docker Buildx
-3. Login a Docker Hub
-4. Build y push de imágenes
-5. Caching de capas para builds rápidos
-
-## Pipeline de CD (Continuous Deployment)
-
-### Trigger
-
-El pipeline de CD se ejecuta automáticamente en:
-- Push a branch `main`
-- Disparo manual (workflow_dispatch)
-
-### Jobs
-
-#### 1. Deploy to Staging
-
-**Objetivo**: Desplegar a ambiente de staging
-
-**Pasos**:
-1. Checkout del código
-2. Configuración de kubectl
-3. Deploy a Kubernetes
-4. Ejecución de migraciones de BD
-5. Verificación del deployment
-6. Ejecución de smoke tests
-
-#### 2. Deploy to Production
-
-**Objetivo**: Desplegar a ambiente de producción
-
-**Pasos**:
-1. Checkout del código
-2. Configuración de kubectl
-3. Creación de backup de BD
-4. Deploy a Kubernetes
-5. Ejecución de migraciones de BD
-6. Verificación del deployment
-7. Ejecución de smoke tests
-8. Notificación de éxito/fallo
-
-#### 3. Rollback Production
-
-**Objetivo**: Rollback automático en caso de fallo
-
-**Pasos**:
-1. Checkout del código
-2. Configuración de kubectl
-3. Rollback de deployments
-4. Restauración de backup de BD
-5. Notificación de rollback
-
-## Configuración de Secrets
-
-### Secrets Requeridos
-
-#### Docker Hub
-```
-DOCKER_USERNAME: usuario de Docker Hub
-DOCKER_PASSWORD: password de Docker Hub
-```
-
-#### Kubernetes
-```
-KUBE_CONFIG_STAGING: configuración de kubeconfig para staging
-KUBE_CONFIG_PRODUCTION: configuración de kubeconfig para producción
-```
-
-#### Slack (Opcional)
-```
-SLACK_WEBHOOK: webhook URL para notificaciones de Slack
-```
-
-### Configuración de Secrets en GitHub
-
-1. Ir al repositorio en GitHub
-2. Settings → Secrets and variables → Actions
-3. New repository secret
-4. Agregar cada secret requerido
-
-## Comandos Locales
-
-### Ejecutar Tests Localmente
+### 3.2 Kubernetes (una vez por namespace: `anpr-staging`, `anpr-production`)
 
 ```bash
-# Backend
-cd backend
-npm test
-npm run test:coverage
+NS=anpr-staging
+kubectl create namespace $NS
 
-# ANPR Service
-cd services/anpr
-pytest tests/ -v --cov=app
+# Secretos de la aplicación (obligatorio)
+kubectl -n $NS create secret generic anpr-secrets \
+  --from-literal=MSSQL_SA_PASSWORD='<contraseña fuerte>' \
+  --from-literal=JWT_SECRET="$(python3 -c 'import secrets;print(secrets.token_urlsafe(48))')" \
+  --from-literal=ANPR_SERVICE_TOKEN="$(python3 -c 'import secrets;print(secrets.token_urlsafe(32))')" \
+  --from-literal=SMTP_PASSWORD='' \
+  --from-literal=VAPID_PRIVATE_KEY=''
 
-# Frontend
-cd frontend
-npm run build
+# Credenciales de GHCR si los paquetes son privados (token con read:packages)
+kubectl -n $NS create secret docker-registry ghcr-pull \
+  --docker-server=ghcr.io --docker-username=<usuario> --docker-password=<token>
 ```
 
-### Build Docker Images Localmente
+Requisitos del clúster y valores a revisar en `k8s/overlays/<entorno>/kustomization.yaml`:
+
+| Elemento | Detalle |
+|---|---|
+| Ingress | Controlador `ingress-nginx` y cert-manager con un ClusterIssuer `letsencrypt` (o ajuste la anotación). Tres hosts por entorno: la aplicación (`/`, `/api`, `/socket.io`, `/media`), `motor.` (vista previa del motor, `ANPR_PUBLIC_URL`) y `video.` (señalización WHEP, `WEBRTC_PUBLIC_URL`). Web Push exige https |
+| Evidencia | PVC `anpr-media` en `ReadWriteMany`, compartido por backend y motor. En un clúster de un nodo puede usarse `ReadWriteOnce` |
+| WebRTC | Service `mediamtx-webrtc` (LoadBalancer, 8189 UDP/TCP). Su IP pública va en `WEBRTC_HOSTS` |
+| SQL Server | Staging usa la edición Developer y producción Express (gratuita, 10 GB por base). Con licencia, cambie `MSSQL_PID` a Standard o Enterprise |
+| Correo y Web Push | `SMTP_*`, `VAPID_PUBLIC_KEY`. Si faltan las claves VAPID, el backend las genera y guarda en `ClavesServicio` |
+
+Validación local de los manifiestos:
 
 ```bash
-# Backend
-docker build -t anpr-backend ./backend
-
-# ANPR Service
-docker build -t anpr-service ./services/anpr
-
-# Frontend
-docker build -t anpr-frontend ./frontend
+kustomize build k8s/overlays/staging | kubeconform -strict -summary
 ```
 
-### Ejecutar Pipeline Localmente
+## 4. Restaurar un respaldo (manual)
 
 ```bash
-# Usar act para ejecutar GitHub Actions localmente
-brew install act  # macOS
-# o
-choco install act-cli  # Windows
-
-act push  # Simular push
-act pull_request  # Simular PR
+NS=anpr-production
+kubectl -n $NS exec db-0 -- ls /var/opt/mssql/backup
+kubectl -n $NS scale deployment/anpr-backend deployment/anpr-service --replicas=0
+kubectl -n $NS exec db-0 -- /bin/sh -c '/opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P "$MSSQL_SA_PASSWORD" -C -b -Q \
+  "RESTORE DATABASE [ANPR_ECU911] FROM DISK = N'"'"'/var/opt/mssql/backup/<archivo>.bak'"'"' WITH REPLACE, CHECKSUM"'
+kubectl -n $NS rollout undo deployment/anpr-backend   # si se vuelve a la versión anterior de la aplicación
+kubectl -n $NS scale deployment/anpr-backend deployment/anpr-service --replicas=1
 ```
 
-## Monitoreo del Pipeline
+Copie los respaldos fuera del clúster (`kubectl cp`) según la política de retención institucional.
 
-### Ver Estado de Workflows
+## 5. Comandos locales
 
-1. Ir a la pestaña "Actions" en GitHub
-2. Ver workflows en ejecución
-3. Revisar logs de cada job
-4. Ver artefactos generados
+```bash
+# Pruebas
+cd backend && npm test
+cd services/anpr && pytest
+cd frontend && npm run build
 
-### Notificaciones
+# Imágenes de producción (las mismas que construye el CI)
+docker build -f backend/Dockerfile.prod -t anpr-backend .
+docker build -t anpr-service services/anpr
+docker build -f frontend/Dockerfile.prod -t anpr-frontend frontend
 
-Configurar notificaciones en:
-- GitHub Actions notifications
-- Slack (webhook configurado)
-- Email (GitHub notifications)
+# Lint de los workflows
+docker run --rm -v "$PWD:/repo" -w /repo rhysd/actionlint:latest
+```
 
-## Troubleshooting
+Para desarrollo se sigue usando `docker compose up --build` (Dockerfiles de desarrollo con recarga en
+caliente).
 
-### Tests Fallando
+## 6. Solución de problemas
 
-**Síntoma**: Job de tests falla
-
-**Solución**:
-1. Revisar logs del job
-2. Ejecutar tests localmente
-3. Verificar dependencias
-4. Revisar configuración de tests
-
-### Docker Build Fallando
-
-**Síntoma**: Job de Docker build falla
-
-**Solución**:
-1. Revisar logs del build
-2. Verificar Dockerfile
-3. Verificar dependencias
-4. Revisar credenciales de Docker Hub
-
-### Deployment Fallando
-
-**Símtoma**: Job de deployment falla
-
-**Solución**:
-1. Revisar logs de kubectl
-2. Verificar configuración de Kubernetes
-3. Verificar secrets de kubeconfig
-4. Revisar manifests de Kubernetes
-
-### Coverage Bajo
-
-**Síntoma**: Coverage debajo del umbral
-
-**Solución**:
-1. Agregar más tests
-2. Revisar código no testeado
-3. Ajustar configuración de coverage
-4. Priorizar código crítico
-
-## Mejores Prácticas
-
-### Branch Strategy
-
-- `main`: Branch de producción
-- `develop`: Branch de desarrollo
-- `feature/*`: Branches para nuevas features
-- `hotfix/*`: Branches para correcciones urgentes
-
-### Commits
-
-- Usar commits descriptivos
-- Seguir conventional commits
-- Agregar issue numbers en commits
-- Evitar commits grandes
-
-### Code Review
-
-- Requerir approval para PRs
-- Usar GitHub protections
-- Ejecutar CI en PRs
-- Revisar cambios manualmente
-
-### Rollback
-
-- Tener plan de rollback
-- Automatizar rollback en CD
-- Mantener backups recientes
-- Documentar procedimientos
-
-## Seguridad
-
-### Secrets Management
-
-- Nunca hardcodear secrets
-- Usar GitHub Secrets
-- Rotar secrets regularmente
-- Usar least privilege
-
-### Dependency Scanning
-
-- Escanear dependencias regularmente
-- Actualizar dependencias
-- Usar Dependabot
-- Revisar advisories
-
-### Container Security
-
-- Escanear imágenes Docker
-- Usar imágenes base oficiales
-- Minimizar tamaño de imágenes
-- No incluir secrets en imágenes
-
-## Referencias
-
-- [GitHub Actions Documentation](https://docs.github.com/en/actions)
-- [Docker Build Push Action](https://github.com/docker/build-push-action)
-- [Kubernetes Documentation](https://kubernetes.io/docs/)
-- [Codecov Documentation](https://docs.codecov.com/)
+| Síntoma | Causa probable |
+|---|---|
+| "Despliegue a staging omitido" | No hay kubeconfig configurado para el entorno (§ 3.1) |
+| "Falta el Secret anpr-secrets" | Crear el Secret en el namespace (§ 3.2) |
+| `ImagePullBackOff` | Paquetes de GHCR privados sin Secret `ghcr-pull`, o paquete sin acceso del token |
+| Pods del backend/motor en `Pending` | El PVC `anpr-media` no se enlaza: StorageClass sin `ReadWriteMany` |
+| El rollout del backend no termina | No conecta a SQL Server (contraseña del Secret o `db-0` no listo): `kubectl -n <ns> logs deploy/anpr-backend` |
+| Smoke tests fallan con TLS o DNS | El host del overlay no apunta al Ingress o el certificado aún no se emite |
+| Video sin imagen | `WEBRTC_HOSTS` no contiene la IP pública de `mediamtx-webrtc` o el puerto 8189 está bloqueado |

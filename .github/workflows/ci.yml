@@ -114,7 +114,13 @@ jobs:
   security-scan:
     name: Security Scan
     runs-on: ubuntu-latest
-    
+    # upload-sarif necesita escribir alertas de code scanning y leer el run (si faltan: "Resource not
+    # accessible by integration")
+    permissions:
+      contents: read
+      security-events: write
+      actions: read
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -127,59 +133,73 @@ jobs:
           format: 'sarif'
           output: 'trivy-results.sarif'
 
+      # Umbral del job: falla ante vulnerabilidades CRÍTICAS que tengan versión corregida
+      - name: Fail on fixable critical vulnerabilities
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'fs'
+          scan-ref: '.'
+          format: 'table'
+          severity: 'CRITICAL'
+          ignore-unfixed: true
+          exit-code: '1'
+
+      # Code scanning en repositorios privados requiere GitHub Advanced Security: ahí el informe
+      # se conserva como artefacto del workflow
       - name: Upload Trivy results to GitHub Security
+        if: ${{ !github.event.repository.private }}
         uses: github/codeql-action/upload-sarif@v3
         with:
           sarif_file: 'trivy-results.sarif'
 
+      - name: Upload Trivy report (artifact)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: trivy-results
+          path: trivy-results.sarif
+
   docker-build:
-    name: Build Docker Images
+    name: Build Docker Images (${{ matrix.name }})
     runs-on: ubuntu-latest
     needs: [test-backend, test-anpr-service, test-frontend]
-    
+    # Construye las mismas imágenes de producción que publica el CD (sin publicarlas): un Dockerfile
+    # roto se detecta en el PR y la caché (mismo scope) la reutiliza el CD al publicar en GHCR.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: anpr-backend
+            context: .
+            file: backend/Dockerfile.prod
+          - name: anpr-service
+            context: services/anpr
+            file: services/anpr/Dockerfile
+          - name: anpr-frontend
+            context: frontend
+            file: frontend/Dockerfile.prod
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      # La imagen del motor ANPR incluye torch y librerías CUDA (varios GB): se libera espacio del runner
+      - name: Free disk space
+        if: matrix.name == 'anpr-service'
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          sudo docker image prune -af
+          df -h /
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Login to Docker Hub
-        if: github.event_name != 'pull_request'
-        uses: docker/login-action@v3
+      - name: Build
+        uses: docker/build-push-action@v6
         with:
-          username: ${{ secrets.DOCKER_USERNAME }}
-          password: ${{ secrets.DOCKER_PASSWORD }}
-
-      - name: Build and push Backend
-        uses: docker/build-push-action@v5
-        with:
-          context: ./backend
-          push: ${{ github.event_name != 'pull_request' }}
-          tags: |
-            ${{ secrets.DOCKER_USERNAME }}/anpr-backend:latest
-            ${{ secrets.DOCKER_USERNAME }}/anpr-backend:${{ github.sha }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-      - name: Build and push ANPR Service
-        uses: docker/build-push-action@v5
-        with:
-          context: ./services/anpr
-          push: ${{ github.event_name != 'pull_request' }}
-          tags: |
-            ${{ secrets.DOCKER_USERNAME }}/anpr-service:latest
-            ${{ secrets.DOCKER_USERNAME }}/anpr-service:${{ github.sha }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-      - name: Build and push Frontend
-        uses: docker/build-push-action@v5
-        with:
-          context: ./frontend
-          push: ${{ github.event_name != 'pull_request' }}
-          tags: |
-            ${{ secrets.DOCKER_USERNAME }}/anpr-frontend:latest
-            ${{ secrets.DOCKER_USERNAME }}/anpr-frontend:${{ github.sha }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          context: ${{ matrix.context }}
+          file: ${{ matrix.file }}
+          push: false
+          tags: ${{ matrix.name }}:${{ github.sha }}
+          cache-from: type=gha,scope=${{ matrix.name }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.name }},ignore-error=true

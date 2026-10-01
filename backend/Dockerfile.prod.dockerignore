@@ -1,0 +1,7 @@
+# Contexto de backend/Dockerfile.prod (raíz del repositorio): solo lo que la imagen necesita
+*
+!backend/package.json
+!backend/package-lock.json
+!backend/tsconfig.json
+!backend/src
+!db
