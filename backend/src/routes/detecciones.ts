@@ -1,14 +1,20 @@
 import { Router, Request, Response } from 'express';
 import sql from 'mssql';
 import { getDB } from '../config/db';
-import { authMiddleware, servicioMiddleware, soloAdmin } from '../middlewares/auth';
+import { authMiddleware, requierePermiso, servicioMiddleware } from '../middlewares/auth';
+import { tienePermiso } from '../dominio/permisos';
+import { decidirAcceso, Decision, EstadoValidacion, MOTIVO_RESTRICCION, RestriccionAcceso } from '../dominio/decisionAcceso';
+import { describirHorario, evaluarVigencia, Vigencia } from '../dominio/horario';
 import { emitEvent } from '../services/socket';
-import { findAuthorizedExact, findBlacklistMatch, normalizePlate } from '../services/plateMatching';
+import { findBlacklistMatch, findPermisoExacto, normalizePlate } from '../services/plateMatching';
 import { guardarMetadatosCaptura, registrarLecturaAutomatica } from '../services/evaluacion';
 import { compararVehiculo } from '../services/vehiculoAtributos';
 import { eliminarEvidencia, urlMedia } from '../services/media';
-import { config, evaluarAutorizacion, EvidenciaLectura } from '../services/configuracion';
+import { evaluarAutorizacion, EvidenciaLectura, politicaAutorizacion } from '../services/configuracion';
 import { auditarOperacion } from '../services/seguridad';
+import { ZONA_HORARIA } from '../services/tiempo';
+import { notificarDecision } from '../services/avisosAcceso';
+import { resolverPorDeteccion } from '../services/notificaciones';
 
 /**
  * Detecciones vehiculares (cada paso por un acceso).
@@ -23,22 +29,24 @@ import { auditarOperacion } from '../services/seguridad';
  *   GET  /exportar           CSV con los mismos filtros del historial
  *   GET  /buscar-placa/:placa situación de una placa en listas e historial
  *   GET  /:id                detalle completo con lectura automática, metadatos y auditoría
- *   POST /validar/:id        corrección / confirmación del operador
+ *   POST /validar/:id        corrección / confirmación del operador (excepción con accesos:excepcion)
  *   POST /registro-manual    paso registrado a mano (cámara sin lectura, visita, etc.)
- *   DELETE /:id              solo Administrador, con motivo auditado (borra también la evidencia)
- *   DELETE /                 eliminación masiva (todas o las filtradas), Administrador
+ *   DELETE /:id              permiso detecciones:eliminar, con motivo auditado (borra también la evidencia)
+ *   DELETE /                 eliminación masiva (todas o las filtradas), permiso detecciones:eliminar
+ *
+ * La decisión de acceso la toma la política pura de dominio/decisionAcceso.ts; este módulo solo
+ * reúne las evidencias, persiste el resultado y lo difunde (Socket.IO + centro de notificaciones).
  *
  * Eventos Socket.IO: deteccion:nueva, deteccion:actualizada, deteccion:alerta, deteccion:eliminada, deteccion:eliminadas
  */
 const router = Router();
 
-type EstadoValidacion = 'autorizado' | 'alerta' | 'no_reconocido' | 'pendiente_revision';
-
 const SELECT_DETECCION = `
   SELECT d.*,
          c.nombre AS camara_nombre, c.ubicacion AS camara_ubicacion,
          l.motivo AS alerta_motivo, l.nivel_alerta,
-         v.propietario, v.departamento, v.tipo_vehiculo AS autorizado_tipo,
+         v.propietario, v.departamento, v.tipo_vehiculo AS autorizado_tipo, v.categoria AS autorizado_categoria,
+         v.horario AS autorizado_horario, v.fecha_inicio AS autorizado_inicio, v.fecha_vencimiento AS autorizado_vence,
          uv.nombre_completo AS validador_nombre, uv.email AS validador_email
   FROM DeteccionVehiculo d
   LEFT JOIN Camaras c ON c.id = d.camara_id
@@ -51,8 +59,21 @@ function evidenciaDe(d: any): EvidenciaLectura | null {
   try { return JSON.parse(d.evidencia_lectura); } catch { return null; }
 }
 
+const fechaCorta = (v: any) => (v ? new Date(v).toISOString().slice(0, 10) : '');
+
+/** Explicación de una restricción temporal del permiso (fuera de horario, no vigente, vencido). */
+function motivoRestriccion(d: any): string | null {
+  const r = d.restriccion_acceso as RestriccionAcceso | null;
+  if (!r || !MOTIVO_RESTRICCION[r]) return null;
+  const detalle = r === 'fuera_horario' ? `horario autorizado: ${describirHorario(d.autorizado_horario)}`
+    : r === 'no_iniciada' ? `vigente desde ${fechaCorta(d.autorizado_inicio)}`
+      : `venció el ${fechaCorta(d.autorizado_vence)}`;
+  return `${MOTIVO_RESTRICCION[r]} (${detalle}).`;
+}
+
 /** Por qué un paso quedó pendiente de confirmación (lectura no confirmada, confianza o vehículo). */
 function motivoRevision(d: any): string | null {
+  if (d.estado_validacion === 'no_reconocido' && !d.validado_manualmente) return motivoRestriccion(d);
   if (d.estado_validacion !== 'pendiente_revision' || d.validado_manualmente || d.estado_procesamiento !== 'procesado') return null;
   const enPadron = Boolean(d.vehiculo_autorizado_id);
   const ev = evidenciaDe(d);
@@ -93,7 +114,8 @@ export function mapearDeteccion(d: any, detalle = false) {
     verificacion_detalle: d.verificacion_detalle ?? null,
     alerta: d.alerta_id ? { id: d.alerta_id, motivo: d.alerta_motivo, nivel: d.nivel_alerta } : null,
     autorizado: d.vehiculo_autorizado_id
-      ? { id: d.vehiculo_autorizado_id, propietario: d.propietario, departamento: d.departamento } : null,
+      ? { id: d.vehiculo_autorizado_id, propietario: d.propietario, departamento: d.departamento, categoria: d.autorizado_categoria ?? null } : null,
+    restriccion_acceso: (d.restriccion_acceso ?? null) as RestriccionAcceso | null,
     validado_manualmente: Boolean(d.validado_manualmente),
     lectura_valida: d.lectura_valida === null || d.lectura_valida === undefined ? null : Boolean(d.lectura_valida),
     motivo_revision: motivoRevision(d),
@@ -141,13 +163,37 @@ function tipoPorFormato(placa: string): string | null {
   return null;
 }
 
-/** Cruce de una placa con la lista de alertas (con tolerancia) y con los autorizados (exacto). */
-async function cruzarListas(db: sql.ConnectionPool, placa: string) {
+interface Cruce {
+  /** Coincidencia con la lista de alertas (tolerante a homoglifos del OCR) */
+  alerta: any | null;
+  /** Permiso del padrón (coincidencia exacta). Si hay alerta no se considera. */
+  permiso: any | null;
+  vigencia: Vigencia | null;
+}
+
+/**
+ * Evidencias de las listas para una placa en el instante del paso: lista de alertas
+ * (aproximada) y permiso del padrón (exacto) con su estado temporal.
+ */
+async function cruzarListas(db: sql.ConnectionPool, placa: string, instante: Date): Promise<Cruce> {
   const alerta = await findBlacklistMatch(db, placa);
-  if (alerta) return { estado: 'alerta' as EstadoValidacion, alerta: { ...alerta.row, coincidencia: alerta.coincidencia }, autorizado: null };
-  const autorizado = await findAuthorizedExact(db, placa);
-  if (autorizado) return { estado: 'autorizado' as EstadoValidacion, alerta: null, autorizado };
-  return { estado: 'no_reconocido' as EstadoValidacion, alerta: null, autorizado: null };
+  if (alerta) return { alerta: { ...alerta.row, coincidencia: alerta.coincidencia }, permiso: null, vigencia: null };
+  const permiso = await findPermisoExacto(db, placa);
+  return { alerta: null, permiso, vigencia: permiso ? evaluarVigencia(permiso, instante, ZONA_HORARIA) : null };
+}
+
+const entradaListas = (c: Cruce) => ({
+  alerta: c.alerta ? { id: c.alerta.id as number, coincidencia: c.alerta.coincidencia } : null,
+  permiso: c.permiso ? { id: c.permiso.id as number, vigencia: c.vigencia! } : null,
+});
+
+/** Persiste la decisión sobre el paso (estado, vínculos con las listas y restricción). */
+function parametrosDecision(request: sql.Request, cruce: Cruce, decision: Decision) {
+  return request
+    .input('estado', sql.VarChar(30), decision.estado)
+    .input('alerta', sql.Int, cruce.alerta?.id ?? null)
+    .input('autorizado', sql.Int, cruce.permiso?.id ?? null)
+    .input('restriccion', sql.VarChar(30), decision.restriccion);
 }
 
 // =============================================================================
@@ -267,62 +313,46 @@ router.post('/completar-ocr', servicioMiddleware, async (req: Request, res: Resp
       .input('evidencia', sql.NVarChar(1500), evidencia)
       .query('UPDATE DeteccionVehiculo SET lectura_valida = @valida, evidencia_lectura = @evidencia WHERE id = @id');
 
-    const cruce = await cruzarListas(db, placa);
-    let estado = cruce.estado;
-    let tipo: string | null = tipoPorFormato(placa);
-    if (cruce.autorizado) {
-      placa = normalizePlate(cruce.autorizado.placa) || placa;
-      tipo = cruce.autorizado.tipo_vehiculo || tipo;
-    }
+    const obs = (await db.request().input('id', sql.Int, ingreso_id).query(`
+      SELECT confianza_deteccion, fecha_hora_ingreso, vehiculo_marca AS marca, vehiculo_color AS color, vehiculo_tipo AS tipo
+      FROM DeteccionVehiculo WHERE id = @id`)).recordset[0];
+    if (!obs) return res.status(404).json({ error: 'Ingreso no encontrado.' });
 
-    // Autorización automática solo si la lectura cumple el criterio configurado (validez de la
-    // lectura y/o confianza mínima); si no, el personal confirma la placa. Una placa fuera del
-    // padrón con lectura no confirmada tampoco se da por "no registrada": podría ser un error
-    // de lectura de una placa autorizada, así que queda pendiente sin alarma.
-    // (Las alertas nunca se rebajan: ante la duda se avisa.)
-    if (estado === 'autorizado') {
-      const det = await db.request().input('id', sql.Int, ingreso_id).query('SELECT confianza_deteccion FROM DeteccionVehiculo WHERE id = @id');
-      const c = evaluarAutorizacion(validez, confianza, det.recordset[0]?.confianza_deteccion);
-      if (!c.cumple) {
-        estado = 'pendiente_revision';
-        console.log(`[AUTORIZACION] Ingreso #${ingreso_id} ${placa}: criterio ${c.criterio} no cumplido `
-          + `(lectura ${validez === null ? 'sin veredicto' : validez ? 'válida' : 'no válida'}, confianza ${(c.confianza.evaluada * 100).toFixed(1)} %) → confirmación manual`);
-      } else {
-        console.log(`[AUTORIZACION] Ingreso #${ingreso_id} ${placa}: autorizado automáticamente (criterio ${c.criterio})`);
-      }
-    } else if (estado === 'no_reconocido' && validez === false) {
-      estado = 'pendiente_revision';
+    // El acceso se juzga en el instante del paso (horario y vigencia del permiso)
+    const cruce = await cruzarListas(db, placa, new Date(obs.fecha_hora_ingreso));
+    let tipo: string | null = tipoPorFormato(placa);
+    if (cruce.permiso) {
+      placa = normalizePlate(cruce.permiso.placa) || placa;
+      tipo = cruce.permiso.tipo_vehiculo || tipo;
     }
 
     // Segundo factor: marca / color / tipo observados vs. registrados (posible placa clonada)
-    const registrado = cruce.alerta ?? cruce.autorizado;
+    const registrado = cruce.alerta ?? cruce.permiso;
+    let verificacion: ReturnType<typeof compararVehiculo> | null = null;
     if (registrado) {
-      try {
-        const obs = await db.request().input('id', sql.Int, ingreso_id).query(
-          'SELECT vehiculo_marca AS marca, vehiculo_color AS color, vehiculo_tipo AS tipo FROM DeteccionVehiculo WHERE id = @id');
-        const v = compararVehiculo(registrado, obs.recordset[0]);
-        if (v.resultado === 'no_coincide' && estado === 'autorizado' && config.booleano('verificar_vehiculo_autorizados')) {
-          estado = 'pendiente_revision';
-        }
-        if (v.resultado === 'no_coincide') console.warn(`[SEGUNDO FACTOR] Ingreso #${ingreso_id} ${placa}: ${v.detalle}`);
-        await db.request()
-          .input('id', sql.Int, ingreso_id)
-          .input('res', sql.VarChar(20), v.resultado)
-          .input('det', sql.VarChar(255), v.detalle.substring(0, 255))
-          .query('UPDATE DeteccionVehiculo SET verificacion_vehiculo = @res, verificacion_detalle = @det WHERE id = @id');
-      } catch (e: any) {
-        console.warn(`[SEGUNDO FACTOR] Ingreso #${ingreso_id}: ${e.message}`);
-      }
+      verificacion = compararVehiculo(registrado, obs);
+      if (verificacion.resultado === 'no_coincide') console.warn(`[SEGUNDO FACTOR] Ingreso #${ingreso_id} ${placa}: ${verificacion.detalle}`);
+      await db.request()
+        .input('id', sql.Int, ingreso_id)
+        .input('res', sql.VarChar(20), verificacion.resultado)
+        .input('det', sql.VarChar(255), verificacion.detalle.substring(0, 255))
+        .query('UPDATE DeteccionVehiculo SET verificacion_vehiculo = @res, verificacion_detalle = @det WHERE id = @id');
     }
 
-    await db.request()
+    const decision = decidirAcceso({
+      origen: 'automatico',
+      ...entradaListas(cruce),
+      lectura: { lecturaValida: validez, confianzaOcr: confianza, confianzaDeteccion: obs.confianza_deteccion ?? null },
+      verificacionVehiculo: verificacion?.resultado ?? null,
+      politica: politicaAutorizacion(),
+    });
+    console.log(`[DECISION] Ingreso #${ingreso_id} ${placa}: ${decision.estado} (${decision.regla}: ${decision.motivos.join('; ')})`);
+
+    await parametrosDecision(db.request(), cruce, decision)
       .input('id', sql.Int, ingreso_id)
       .input('placa', sql.VarChar(20), placa)
       .input('conf', sql.Float, confianza)
       .input('ruta', sql.VarChar(255), ruta_imagen_placa || null)
-      .input('estado', sql.VarChar(30), estado)
-      .input('alerta', sql.Int, cruce.alerta?.id ?? null)
-      .input('autorizado', sql.Int, cruce.autorizado?.id ?? null)
       .input('tipo', sql.VarChar(50), tipo)
       .query(`
         UPDATE DeteccionVehiculo SET
@@ -330,11 +360,11 @@ router.post('/completar-ocr', servicioMiddleware, async (req: Request, res: Resp
           ruta_imagen_placa = COALESCE(@ruta, ruta_imagen_placa),
           fecha_hora_procesamiento = GETDATE(), estado_procesamiento = 'procesado',
           estado_validacion = @estado, alerta_id = @alerta, vehiculo_autorizado_id = @autorizado,
-          tipo_vehiculo = COALESCE(@tipo, tipo_vehiculo)
+          restriccion_acceso = @restriccion, tipo_vehiculo = COALESCE(@tipo, tipo_vehiculo)
         WHERE id = @id`);
-    await lecturaAutomatica(estado);
+    await lecturaAutomatica(decision.estado);
     const dto = await difundir(db, ingreso_id, 'deteccion:actualizada');
-    if (estado === 'alerta') console.warn(`[ALERTA] Placa ${placa} en lista de alertas: ${cruce.alerta?.motivo}`);
+    if (dto) void notificarDecision(dto, decision, cruce.permiso);
     return res.json({ message: 'OCR completado.', deteccion: dto });
   } catch (e: any) {
     console.error('[DETECCIONES] fase 2:', e.message);
@@ -468,15 +498,19 @@ router.get('/buscar-placa/:placa', authMiddleware, async (req: Request, res: Res
   if (placa.length < 3) return res.status(400).json({ error: 'Ingrese al menos 3 caracteres de la placa.' });
   try {
     const db = getDB();
-    const cruce = await cruzarListas(db, placa);
+    const cruce = await cruzarListas(db, placa, new Date());
+    const decision = decidirAcceso({ origen: 'manual', ...entradaListas(cruce), politica: politicaAutorizacion() });
     const hist = await db.request().input('placa', sql.VarChar(20), placa).query(`
       ${SELECT_DETECCION}
       WHERE REPLACE(COALESCE(d.placa_validada, d.placa_reconocida, ''), '-', '') = @placa
       ORDER BY d.fecha_hora_ingreso DESC OFFSET 0 ROWS FETCH NEXT 10 ROWS ONLY`);
     return res.json({
       placa,
-      estado: cruce.estado === 'no_reconocido' ? 'no_registrado' : cruce.estado,
-      alerta: cruce.alerta, autorizado: cruce.autorizado,
+      estado: decision.estado === 'no_reconocido' ? (cruce.permiso ? 'restringido' : 'no_registrado') : decision.estado,
+      restriccion: decision.restriccion,
+      motivo: decision.restriccion ? MOTIVO_RESTRICCION[decision.restriccion] : null,
+      alerta: cruce.alerta,
+      autorizado: cruce.permiso ? { ...cruce.permiso, horario_texto: describirHorario(cruce.permiso.horario) } : null,
       ultimos_ingresos: hist.recordset.map(d => mapearDeteccion(d)),
     });
   } catch (e: any) {
@@ -514,27 +548,33 @@ router.get('/:id(\\d+)', authMiddleware, async (req: Request, res: Response) => 
 // Acciones del personal
 // =============================================================================
 
-router.post('/validar/:id(\\d+)', authMiddleware, async (req: Request, res: Response) => {
+router.post('/validar/:id(\\d+)', authMiddleware, requierePermiso('detecciones:validar'), async (req: Request, res: Response) => {
   const id = Number(req.params.id);
   const placa = normalizePlate(req.body?.placa_validada);
   const tipoVehiculo = req.body?.tipo_vehiculo ? String(req.body.tipo_vehiculo).substring(0, 50) : null;
-  const observacion = req.body?.observacion ? String(req.body.observacion).substring(0, 300) : null;
+  const observacion = req.body?.observacion ? String(req.body.observacion).trim().substring(0, 300) : null;
+  // Excepción: conceder el paso pese a la restricción temporal del permiso (con motivo auditado)
+  const excepcion = req.body?.excepcion === true;
   if (placa.length < 4 || placa.length > 10) return res.status(400).json({ error: 'Ingrese una placa válida (4 a 10 caracteres).' });
+  if (excepcion && !tienePermiso(req.user!.rol, 'accesos:excepcion')) {
+    return res.status(403).json({ error: 'No tiene permiso para autorizar ingresos por excepción.' });
+  }
+  if (excepcion && (observacion?.length ?? 0) < 5) {
+    return res.status(400).json({ error: 'Indique el motivo de la excepción (mínimo 5 caracteres).' });
+  }
 
   try {
     const db = getDB();
     const actual = await obtenerDeteccion(db, id);
     if (!actual) return res.status(404).json({ error: 'Detección no encontrada.' });
 
-    const cruce = await cruzarListas(db, placa);
-    const final = cruce.autorizado ? normalizePlate(cruce.autorizado.placa) || placa : placa;
-    await db.request()
+    const cruce = await cruzarListas(db, placa, new Date(actual.fecha_hora_ingreso));
+    const decision = decidirAcceso({ origen: 'manual', ...entradaListas(cruce), excepcion, politica: politicaAutorizacion() });
+    const final = cruce.permiso ? normalizePlate(cruce.permiso.placa) || placa : placa;
+    await parametrosDecision(db.request(), cruce, decision)
       .input('id', sql.Int, id)
       .input('placa', sql.VarChar(20), final)
-      .input('estado', sql.VarChar(30), cruce.estado)
-      .input('alerta', sql.Int, cruce.alerta?.id ?? null)
-      .input('autorizado', sql.Int, cruce.autorizado?.id ?? null)
-      .input('tipo', sql.VarChar(50), tipoVehiculo || cruce.autorizado?.tipo_vehiculo || tipoPorFormato(final))
+      .input('tipo', sql.VarChar(50), tipoVehiculo || cruce.permiso?.tipo_vehiculo || tipoPorFormato(final))
       .input('usuario', sql.Int, req.user!.id)
       .query(`
         UPDATE DeteccionVehiculo SET
@@ -543,13 +583,17 @@ router.post('/validar/:id(\\d+)', authMiddleware, async (req: Request, res: Resp
           decision_automatica = COALESCE(decision_automatica, estado_validacion),
           validado_manualmente = 1, placa_validada = @placa, usuario_validador_id = @usuario, fecha_validacion = GETDATE(),
           estado_procesamiento = 'procesado', estado_validacion = @estado,
-          alerta_id = @alerta, vehiculo_autorizado_id = @autorizado, tipo_vehiculo = COALESCE(@tipo, tipo_vehiculo)
+          alerta_id = @alerta, vehiculo_autorizado_id = @autorizado, restriccion_acceso = @restriccion,
+          tipo_vehiculo = COALESCE(@tipo, tipo_vehiculo)
         WHERE id = @id`);
 
     const antes = actual.placa_validada || actual.placa_reconocida || 'sin lectura';
-    await auditarOperacion(db, req, 'VALIDACION', 'deteccion', id,
-      `${antes} → ${final} (${ETIQUETA_ESTADO[cruce.estado]})${observacion ? ` · ${observacion}` : ''}`);
+    await auditarOperacion(db, req, decision.regla === 'R2-excepcion' ? 'EXCEPCION_ACCESO' : 'VALIDACION', 'deteccion', id,
+      `${antes} → ${final} (${ETIQUETA_ESTADO[decision.estado]}${decision.restriccion ? ` · ${MOTIVO_RESTRICCION[decision.restriccion]}` : ''})${observacion ? ` · ${observacion}` : ''}`);
+    // La persona atendió el paso: sus alarmas se resuelven; si la corrección revela una alerta, se avisa
+    await resolverPorDeteccion(id);
     const dto = await difundir(db, id, 'deteccion:actualizada');
+    if (dto && decision.estado === 'alerta' && actual.estado_validacion !== 'alerta') void notificarDecision(dto, decision);
     return res.json({ message: 'Validación registrada.', deteccion: dto });
   } catch (e: any) {
     console.error('[DETECCIONES] validar:', e.message);
@@ -562,7 +606,7 @@ router.post('/validar/:id(\\d+)', authMiddleware, async (req: Request, res: Resp
  * legible, etc.). Se cruza con las listas igual que una lectura automática y NO modifica
  * el padrón de autorizados: para autorizar un vehículo se usa la pantalla de listas.
  */
-router.post('/registro-manual', authMiddleware, async (req: Request, res: Response) => {
+router.post('/registro-manual', authMiddleware, requierePermiso('detecciones:validar'), async (req: Request, res: Response) => {
   const placa = normalizePlate(req.body?.placa);
   const motivo = String(req.body?.motivo ?? '').trim();
   const camaraId = Number.isInteger(Number(req.body?.camara_id)) ? Number(req.body.camara_id) : null;
@@ -572,25 +616,24 @@ router.post('/registro-manual', authMiddleware, async (req: Request, res: Respon
 
   try {
     const db = getDB();
-    const cruce = await cruzarListas(db, placa);
-    const ins = await db.request()
+    const cruce = await cruzarListas(db, placa, new Date());
+    const decision = decidirAcceso({ origen: 'manual', ...entradaListas(cruce), politica: politicaAutorizacion() });
+    const ins = await parametrosDecision(db.request(), cruce, decision)
       .input('placa', sql.VarChar(20), placa)
-      .input('estado', sql.VarChar(30), cruce.estado)
-      .input('alerta', sql.Int, cruce.alerta?.id ?? null)
-      .input('autorizado', sql.Int, cruce.autorizado?.id ?? null)
       .input('camara', sql.Int, camaraId)
-      .input('tipo', sql.VarChar(50), tipo || cruce.autorizado?.tipo_vehiculo || tipoPorFormato(placa))
+      .input('tipo', sql.VarChar(50), tipo || cruce.permiso?.tipo_vehiculo || tipoPorFormato(placa))
       .input('usuario', sql.Int, req.user!.id)
       .query(`
         INSERT INTO DeteccionVehiculo (placa_reconocida, placa_validada, fuente, camara_id, estado_procesamiento, estado_validacion,
-                                       alerta_id, vehiculo_autorizado_id, tipo_vehiculo, validado_manualmente, usuario_validador_id,
-                                       fecha_validacion, fecha_hora_ingreso, fecha_hora_procesamiento, decision_automatica)
+                                       alerta_id, vehiculo_autorizado_id, restriccion_acceso, tipo_vehiculo, validado_manualmente,
+                                       usuario_validador_id, fecha_validacion, fecha_hora_ingreso, fecha_hora_procesamiento, decision_automatica)
         OUTPUT INSERTED.id
-        VALUES (NULL, @placa, 'manual', @camara, 'procesado', @estado, @alerta, @autorizado, @tipo, 1, @usuario,
+        VALUES (NULL, @placa, 'manual', @camara, 'procesado', @estado, @alerta, @autorizado, @restriccion, @tipo, 1, @usuario,
                 GETDATE(), GETDATE(), GETDATE(), 'manual')`);
     const id = ins.recordset[0].id;
-    await auditarOperacion(db, req, 'REGISTRO_MANUAL', 'deteccion', id, `${placa} (${ETIQUETA_ESTADO[cruce.estado]}) · ${motivo}`);
+    await auditarOperacion(db, req, 'REGISTRO_MANUAL', 'deteccion', id, `${placa} (${ETIQUETA_ESTADO[decision.estado]}) · ${motivo}`);
     const dto = await difundir(db, id, 'deteccion:nueva');
+    if (dto && decision.estado === 'alerta') void notificarDecision(dto, decision);
     return res.status(201).json({ message: 'Ingreso registrado manualmente.', deteccion: dto });
   } catch (e: any) {
     console.error('[DETECCIONES] registro manual:', e.message);
@@ -601,7 +644,7 @@ router.post('/registro-manual', authMiddleware, async (req: Request, res: Respon
 const fechaLocal = (f: Date) => new Date(f).toLocaleString('es-EC', { timeZone: 'America/Guayaquil' });
 
 /** Elimina una detección y su evidencia fotográfica (solo Administrador, con motivo auditado). */
-router.delete('/:id(\\d+)', authMiddleware, soloAdmin, async (req: Request, res: Response) => {
+router.delete('/:id(\\d+)', authMiddleware, requierePermiso('detecciones:eliminar'), async (req: Request, res: Response) => {
   const id = Number(req.params.id);
   const motivo = String(req.body?.motivo ?? '').trim();
   if (motivo.length < 3) return res.status(400).json({ error: 'Indique el motivo de la eliminación.' });
@@ -614,6 +657,7 @@ router.delete('/:id(\\d+)', authMiddleware, soloAdmin, async (req: Request, res:
     await auditarOperacion(db, req, 'DETECCION_ELIMINADA', 'deteccion', id,
       `${d.placa_validada || d.placa_reconocida || 'sin lectura'} del ${fechaLocal(d.fecha_hora_ingreso)} · ${archivos} imágenes · ${motivo}`);
     emitEvent('deteccion:eliminada', { id });
+    await resolverPorDeteccion(id);
     return res.json({ message: 'Detección eliminada.', id });
   } catch (e: any) {
     console.error('[DETECCIONES] eliminar:', e.message);
@@ -627,7 +671,7 @@ router.delete('/:id(\\d+)', authMiddleware, soloAdmin, async (req: Request, res:
  * ELIMINAR como confirmación y un motivo; borra también la evidencia fotográfica y queda en
  * la auditoría con la cantidad y los filtros usados.
  */
-router.delete('/', authMiddleware, soloAdmin, async (req: Request, res: Response) => {
+router.delete('/', authMiddleware, requierePermiso('detecciones:eliminar'), async (req: Request, res: Response) => {
   const motivo = String(req.body?.motivo ?? '').trim();
   if (req.body?.confirmacion !== 'ELIMINAR') return res.status(400).json({ error: 'Escriba ELIMINAR para confirmar.' });
   if (motivo.length < 5) return res.status(400).json({ error: 'Indique el motivo de la eliminación (mínimo 5 caracteres).' });

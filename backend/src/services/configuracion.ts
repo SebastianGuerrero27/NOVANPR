@@ -1,4 +1,5 @@
 import sql from 'mssql';
+import { cumpleCriterioLectura, CriterioAutorizacion, FuenteConfianza, PoliticaAutorizacion } from '../dominio/decisionAcceso';
 
 /**
  * Parámetros del sistema editables por el administrador (tabla ConfiguracionSistema).
@@ -14,7 +15,7 @@ interface Definicion {
   tipo: Tipo;
   etiqueta: string;
   descripcion: string;
-  grupo: 'Acceso y cuentas' | 'Operación' | 'Institución';
+  grupo: 'Acceso y cuentas' | 'Operación' | 'Notificaciones' | 'Institución';
   env?: string;
   omision: string;
   min?: number;
@@ -92,6 +93,36 @@ export const DEFINICIONES: Definicion[] = [
     etiqueta: 'Aviso de autorizaciones por vencer (días)',
     descripcion: 'Las autorizaciones que vencen dentro de este plazo se destacan en el panel.',
     omision: '7', min: 1, max: 90,
+  },
+  {
+    clave: 'notif_escalamiento_segundos', tipo: 'entero', grupo: 'Notificaciones',
+    etiqueta: 'Escalar alarmas no atendidas (segundos)',
+    descripcion: 'Si nadie reconoce una alarma crítica o alta en este tiempo, se notifica al supervisor y al administrador (ISA-18.2). 0 desactiva el escalamiento.',
+    env: 'NOTIF_ESCALAMIENTO_SEGUNDOS', omision: '90', min: 0, max: 3600,
+  },
+  {
+    clave: 'notif_escalamiento_correo', tipo: 'booleano', grupo: 'Notificaciones',
+    etiqueta: 'Enviar por correo las alarmas escaladas',
+    descripcion: 'Además del aviso en el sistema y del push del navegador, envía un correo a quienes reciben las alarmas escaladas (requiere SMTP).',
+    env: 'NOTIF_ESCALAMIENTO_CORREO', omision: 'false',
+  },
+  {
+    clave: 'notif_reincidencia_umbral', tipo: 'entero', grupo: 'Notificaciones',
+    etiqueta: 'Intentos denegados que avisan al gestor de accesos',
+    descripcion: 'Cuando una misma placa sin permiso intenta ingresar este número de veces en 24 horas, se avisa al gestor de accesos para que la registre o investigue.',
+    env: 'NOTIF_REINCIDENCIA_UMBRAL', omision: '3', min: 2, max: 20,
+  },
+  {
+    clave: 'notif_push_habilitado', tipo: 'booleano', grupo: 'Notificaciones',
+    etiqueta: 'Notificaciones push del navegador',
+    descripcion: 'Entrega las alarmas críticas y altas aunque la pestaña del sistema esté cerrada o en segundo plano (Web Push con claves VAPID).',
+    env: 'NOTIF_PUSH_HABILITADO', omision: 'true',
+  },
+  {
+    clave: 'notif_retencion_dias', tipo: 'entero', grupo: 'Notificaciones',
+    etiqueta: 'Conservar notificaciones (días)',
+    descripcion: 'Las notificaciones más antiguas se eliminan automáticamente cada día. La auditoría de operaciones no se ve afectada.',
+    env: 'NOTIF_RETENCION_DIAS', omision: '90', min: 7, max: 730,
   },
   {
     clave: 'unidad_institucional', tipo: 'texto', grupo: 'Institución',
@@ -202,31 +233,29 @@ export interface EvidenciaLectura {
   lectura_verificador?: string | null;
 }
 
-/**
- * ¿Un paso de una placa del padrón puede autorizarse sin intervención del personal?
- * Combina, según `autorizacion_criterio`, la validez de la lectura (evidencias del motor) y
- * la confianza mínima. Si el motor no informó la validez (versiones anteriores o flujo del
- * navegador) solo se evalúa la confianza.
- */
-export function evaluarAutorizacion(lecturaValida: boolean | null | undefined, confOcr: number | null | undefined,
-                                    confDeteccion: number | null | undefined) {
-  const criterio = config.texto('autorizacion_criterio');
-  const confianza = evaluarConfianzaAutorizacion(confOcr, confDeteccion);
-  const conValidez = typeof lecturaValida === 'boolean' && criterio !== 'confianza';
-  const validezOk = !conValidez || lecturaValida === true;
-  const confianzaOk = criterio === 'validez' && conValidez ? true : confianza.cumple;
-  return { cumple: validezOk && confianzaOk, validezOk, confianzaOk, criterio, confianza };
+/** Política de autorización automática vigente (parámetros de la pantalla de configuración). */
+export function politicaAutorizacion(): PoliticaAutorizacion {
+  return {
+    criterio: config.texto('autorizacion_criterio') as CriterioAutorizacion,
+    confianzaMinima: config.entero('autorizacion_confianza_minima') / 100,
+    fuenteConfianza: config.texto('autorizacion_confianza_fuente') as FuenteConfianza,
+    verificarVehiculo: config.booleano('verificar_vehiculo_autorizados'),
+  };
 }
 
 /**
- * ¿La confianza de un paso alcanza el mínimo para autorizarlo sin intervención del personal?
- * Devuelve también el valor evaluado para explicarlo en pantalla.
+ * ¿Un paso de una placa del padrón puede autorizarse sin intervención del personal?
+ * Delegado en la política pura de dominio/decisionAcceso.ts (cumpleCriterioLectura).
  */
-export function evaluarConfianzaAutorizacion(confOcr: number | null | undefined, confDeteccion: number | null | undefined) {
-  const minimo = config.entero('autorizacion_confianza_minima') / 100;
-  const fuente = config.texto('autorizacion_confianza_fuente');
-  const valores = fuente === 'deteccion' ? [confDeteccion] : fuente === 'ambas' ? [confOcr, confDeteccion] : [confOcr];
-  const conocidos = valores.map(v => (typeof v === 'number' ? v : 0));
-  const evaluada = Math.min(...conocidos);
-  return { cumple: evaluada >= minimo, evaluada, minimo, fuente };
+export function evaluarAutorizacion(lecturaValida: boolean | null | undefined, confOcr: number | null | undefined,
+                                    confDeteccion: number | null | undefined) {
+  const p = politicaAutorizacion();
+  const c = cumpleCriterioLectura({
+    lecturaValida: typeof lecturaValida === 'boolean' ? lecturaValida : null,
+    confianzaOcr: confOcr ?? null, confianzaDeteccion: confDeteccion ?? null,
+  }, p);
+  return {
+    cumple: c.cumple, validezOk: c.validezOk, confianzaOk: c.confianzaOk, criterio: c.criterio,
+    confianza: { cumple: c.evaluada >= c.minimo, evaluada: c.evaluada, minimo: c.minimo, fuente: p.fuenteConfianza },
+  };
 }

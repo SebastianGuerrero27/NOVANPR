@@ -3,7 +3,8 @@ import { Router, Request, Response } from 'express';
 import bcrypt from 'bcryptjs';
 import sql from 'mssql';
 import { getDB } from '../config/db';
-import { authMiddleware, CODIGO_POR_ROL, invalidarCuenta, Rol, ROL_POR_CODIGO, soloAdmin } from '../middlewares/auth';
+import { authMiddleware, CODIGO_POR_ROL, invalidarCuenta, requierePermiso, Rol, ROL_POR_CODIGO } from '../middlewares/auth';
+import { esRol, NOMBRE_ROL, permisosDe } from '../dominio/permisos';
 import { emailService } from '../services/emailService';
 import {
   auditarUsuario, generarToken, HORAS_CUENTA_NUEVA, MINUTOS_RESTABLECIMIENTO, normalizarEmail,
@@ -11,7 +12,7 @@ import {
 } from '../services/seguridad';
 
 /**
- * Administración de cuentas (solo rol Administrador). Toda acción queda en AuditoriaUsuarios.
+ * Administración de cuentas (permiso usuarios:gestionar). Toda acción queda en AuditoriaUsuarios.
  *
  *   GET    /api/usuarios                         listado
  *   GET    /api/usuarios/roles                   catálogo de roles
@@ -23,9 +24,8 @@ import {
  *   GET    /api/usuarios/auditoria               acciones administrativas y accesos recientes
  */
 const router = Router();
-router.use(authMiddleware, soloAdmin);
+router.use(authMiddleware, requierePermiso('usuarios:gestionar'));
 
-const ROLES_VALIDOS: Rol[] = ['Admin', 'Supervisor', 'Operador'];
 
 const SELECT_USUARIO = `
   SELECT u.id, u.email, u.nombre_completo, u.cargo, u.estado, u.email_verificado, u.bloqueado,
@@ -78,14 +78,15 @@ router.get('/', async (_req: Request, res: Response) => {
 
 router.get('/roles', async (_req: Request, res: Response) => {
   const r = await getDB().request().query('SELECT codigo, nombre, descripcion FROM Roles ORDER BY id');
-  return res.json(r.recordset.map(x => ({ rol: ROL_POR_CODIGO[x.codigo], nombre: x.nombre, descripcion: x.descripcion })));
+  return res.json(r.recordset.filter(x => ROL_POR_CODIGO[x.codigo])
+    .map(x => ({ rol: ROL_POR_CODIGO[x.codigo], nombre: x.nombre, descripcion: x.descripcion, permisos: permisosDe(ROL_POR_CODIGO[x.codigo]) })));
 });
 
 router.post('/', async (req: Request, res: Response) => {
   const email = normalizarEmail(req.body?.email);
   const nombre = String(req.body?.nombre_completo ?? '').trim();
   const rol = req.body?.rol as Rol;
-  const error = validarNombre(nombre) || validarEmail(email) || (ROLES_VALIDOS.includes(rol) ? null : 'Rol inválido.');
+  const error = validarNombre(nombre) || validarEmail(email) || (esRol(rol) ? null : 'Rol inválido.');
   if (error) return res.status(400).json({ error });
 
   try {
@@ -111,7 +112,7 @@ router.post('/', async (req: Request, res: Response) => {
     await db.request().input('uid', sql.Int, id).input('hash', sql.Char(64), hash).input('h', sql.Int, HORAS_CUENTA_NUEVA).query(`
       INSERT INTO RestablecimientoPassword (usuario_id, token_hash, fecha_expiracion) VALUES (@uid, @hash, DATEADD(HOUR, @h, SYSDATETIME()))`);
     const enviado = await emailService.definirPasswordCuentaNueva(
-      email, nombre, `${urlFrontend()}/restablecer-password?token=${token}`, HORAS_CUENTA_NUEVA, rol);
+      email, nombre, `${urlFrontend()}/restablecer-password?token=${token}`, HORAS_CUENTA_NUEVA, NOMBRE_ROL[rol]);
     await auditarUsuario(db, req, 'USUARIO_CREADO', { id, email }, `Rol ${rol}`);
     return res.status(201).json({
       message: enviado
@@ -138,7 +139,7 @@ router.put('/:id', async (req: Request, res: Response) => {
     const estado: string = req.body?.estado ?? actual.estado;
     const errorNombre = validarNombre(nombre);
     if (errorNombre) return res.status(400).json({ error: errorNombre });
-    if (!ROLES_VALIDOS.includes(rol)) return res.status(400).json({ error: 'Rol inválido.' });
+    if (!esRol(rol)) return res.status(400).json({ error: 'Rol inválido.' });
     if (!['activo', 'inactivo', 'pendiente'].includes(estado)) return res.status(400).json({ error: 'Estado inválido.' });
 
     const pierdeAdmin = actual.rol_codigo === 'ADMIN' && (rol !== 'Admin' || estado !== 'activo');

@@ -1,7 +1,7 @@
 import { Router, Request, Response } from 'express';
 import sql from 'mssql';
 import { getDB } from '../config/db';
-import { authMiddleware, soloAdmin } from '../middlewares/auth';
+import { authMiddleware, requierePermiso } from '../middlewares/auth';
 
 /**
  * Consulta de auditoría (solo Administrador), paginada y con filtros.
@@ -13,7 +13,7 @@ import { authMiddleware, soloAdmin } from '../middlewares/auth';
  *   accesos      cada intento de inicio de sesión (AuditoriaAccesos)
  */
 const router = Router();
-router.use(authMiddleware, soloAdmin);
+router.use(authMiddleware, requierePermiso('auditoria:ver'));
 
 const FUENTES = {
   operaciones: {

@@ -136,10 +136,14 @@ describe('CacheHelper', () => {
     jest.clearAllMocks();
   });
 
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
   describe('getSession', () => {
     it('debería obtener sesión del caché', async () => {
       const mockSession = { userId: 1, username: 'test' };
-      (cacheService.get as jest.Mock).mockResolvedValue(mockSession);
+      jest.spyOn(cacheService, 'get').mockResolvedValue(mockSession);
 
       const result = await cacheHelper.getSession(1);
       expect(result).toEqual(mockSession);
@@ -150,7 +154,7 @@ describe('CacheHelper', () => {
   describe('setSession', () => {
     it('debería guardar sesión en caché', async () => {
       const mockSession = { userId: 1, username: 'test' };
-      (cacheService.set as jest.Mock).mockResolvedValue(true);
+      jest.spyOn(cacheService, 'set').mockResolvedValue(true);
 
       const result = await cacheHelper.setSession(1, mockSession, 3600);
       expect(result).toBe(true);
@@ -161,7 +165,7 @@ describe('CacheHelper', () => {
   describe('getBlacklist', () => {
     it('debería obtener lista negra del caché', async () => {
       const mockBlacklist = [{ id: 1, placa: 'PBA-1234' }];
-      (cacheService.get as jest.Mock).mockResolvedValue(mockBlacklist);
+      jest.spyOn(cacheService, 'get').mockResolvedValue(mockBlacklist);
 
       const result = await cacheHelper.getBlacklist();
       expect(result).toEqual(mockBlacklist);
@@ -172,7 +176,7 @@ describe('CacheHelper', () => {
   describe('setBlacklist', () => {
     it('debería guardar lista negra en caché', async () => {
       const mockBlacklist = [{ id: 1, placa: 'PBA-1234' }];
-      (cacheService.set as jest.Mock).mockResolvedValue(true);
+      jest.spyOn(cacheService, 'set').mockResolvedValue(true);
 
       const result = await cacheHelper.setBlacklist(mockBlacklist, 300);
       expect(result).toBe(true);
@@ -182,14 +186,14 @@ describe('CacheHelper', () => {
 
   describe('checkRateLimit', () => {
     it('debería permitir cuando no excede el límite', async () => {
-      (cacheService.incrementWithExpiry as jest.Mock).mockResolvedValue(5);
+      jest.spyOn(cacheService, 'incrementWithExpiry').mockResolvedValue(5);
 
       const result = await cacheHelper.checkRateLimit('user_123', 10, 60);
       expect(result).toBe(true);
     });
 
     it('debería denegar cuando excede el límite', async () => {
-      (cacheService.incrementWithExpiry as jest.Mock).mockResolvedValue(15);
+      jest.spyOn(cacheService, 'incrementWithExpiry').mockResolvedValue(15);
 
       const result = await cacheHelper.checkRateLimit('user_123', 10, 60);
       expect(result).toBe(false);

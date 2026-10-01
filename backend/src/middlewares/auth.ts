@@ -2,18 +2,16 @@ import crypto from 'crypto';
 import { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
 import { config } from '../services/configuracion';
+import { CODIGO_POR_ROL, Permiso, Rol, ROL_POR_CODIGO, tienePermiso } from '../dominio/permisos';
+
+export { CODIGO_POR_ROL, ROL_POR_CODIGO };
+export type { Permiso, Rol };
 
 // Sin valor por defecto: un secreto conocido permitiría falsificar tokens de administrador.
 if (!process.env.JWT_SECRET) {
   throw new Error('JWT_SECRET no está definido. Configúrelo en backend/.env o en el .env de docker compose.');
 }
 export const JWT_SECRET: string = process.env.JWT_SECRET;
-
-/** Roles de la aplicación (tabla Roles.codigo: ADMIN, SUPERVISOR, OPERADOR). */
-export type Rol = 'Admin' | 'Supervisor' | 'Operador';
-
-export const ROL_POR_CODIGO: Record<string, Rol> = { ADMIN: 'Admin', SUPERVISOR: 'Supervisor', OPERADOR: 'Operador' };
-export const CODIGO_POR_ROL: Record<Rol, string> = { Admin: 'ADMIN', Supervisor: 'SUPERVISOR', Operador: 'OPERADOR' };
 
 export interface UserPayload {
   id: number;
@@ -44,10 +42,19 @@ export function firmarToken(u: Omit<UserPayload, 'username'>): string {
  */
 const SEGUNDOS_CACHE_CUENTA = 20;
 const cacheCuentas = new Map<number, { t: number; vigente: boolean; rol?: Rol }>();
+const alInvalidar: ((id?: number) => void)[] = [];
+
+/** Suscribe una acción al cambio de una cuenta (p. ej. cerrar sus conexiones de tiempo real). */
+export function alInvalidarCuenta(fn: (id?: number) => void) {
+  alInvalidar.push(fn);
+}
 
 export function invalidarCuenta(id?: number) {
   if (id === undefined) cacheCuentas.clear();
   else cacheCuentas.delete(id);
+  for (const fn of alInvalidar) {
+    try { fn(id); } catch { /* el oyente no debe romper la solicitud */ }
+  }
 }
 
 async function cuentaVigente(id: number): Promise<{ vigente: boolean; rol?: Rol }> {
@@ -113,9 +120,23 @@ export function roleMiddleware(roles: Rol[]) {
   };
 }
 
-/** Atajos por nivel de permiso. */
+/**
+ * Exige que el rol de la sesión tenga TODOS los permisos indicados (matriz de
+ * dominio/permisos.ts). Es el control que usan los endpoints; `roleMiddleware` queda solo
+ * por compatibilidad.
+ */
+export function requierePermiso(...permisos: Permiso[]) {
+  return (req: Request, res: Response, next: NextFunction) => {
+    if (!req.user) return res.status(401).json({ error: 'Sesión requerida.' });
+    if (!permisos.every(p => tienePermiso(req.user!.rol, p))) {
+      return res.status(403).json({ error: 'No tiene permisos para esta acción.' });
+    }
+    next();
+  };
+}
+
+/** Atajo histórico: administración exclusiva (equivale a los permisos de administración). */
 export const soloAdmin = roleMiddleware(['Admin']);
-export const adminOSupervisor = roleMiddleware(['Admin', 'Supervisor']);
 
 /**
  * Autenticación máquina a máquina para el microservicio ANPR (registro de capturas y

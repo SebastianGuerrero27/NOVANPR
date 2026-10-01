@@ -1,7 +1,7 @@
 import { Router, Request, Response } from 'express';
 import sql from 'mssql';
 import { getDB } from '../config/db';
-import { adminOSupervisor, authMiddleware, soloAdmin } from '../middlewares/auth';
+import { authMiddleware, requierePermiso } from '../middlewares/auth';
 import { destinoRtsp, diagnosticar, probarConexion, registrarConexion } from '../services/conectividadCamaras';
 import { crearRutaPrueba, eliminarRutaPrueba, emitirTicket, estadoRuta, rutaCamara, sincronizarRutas, urlWebrtcPublica } from '../services/medios';
 import { auditarOperacion } from '../services/seguridad';
@@ -80,7 +80,7 @@ router.get('/', authMiddleware, async (_req: Request, res: Response) => {
   }
 });
 
-router.post('/', authMiddleware, soloAdmin, async (req: Request, res: Response) => {
+router.post('/', authMiddleware, requierePermiso('camaras:gestionar'), async (req: Request, res: Response) => {
   const { datos, error } = leer(req.body);
   if (error) return res.status(400).json({ error });
   try {
@@ -107,7 +107,7 @@ router.post('/', authMiddleware, soloAdmin, async (req: Request, res: Response) 
   }
 });
 
-router.put('/:id(\\d+)', authMiddleware, soloAdmin, async (req: Request, res: Response) => {
+router.put('/:id(\\d+)', authMiddleware, requierePermiso('camaras:gestionar'), async (req: Request, res: Response) => {
   const id = Number(req.params.id);
   try {
     const db = getDB();
@@ -144,7 +144,7 @@ router.put('/:id(\\d+)', authMiddleware, soloAdmin, async (req: Request, res: Re
   }
 });
 
-router.patch('/:id(\\d+)/toggle', authMiddleware, soloAdmin, async (req: Request, res: Response) => {
+router.patch('/:id(\\d+)/toggle', authMiddleware, requierePermiso('camaras:gestionar'), async (req: Request, res: Response) => {
   const id = Number(req.params.id);
   try {
     const db = getDB();
@@ -169,7 +169,7 @@ router.patch('/:id(\\d+)/toggle', authMiddleware, soloAdmin, async (req: Request
  * El motor solo busca placas cuyo centro cae dentro (máscara de detección de OpenALPR).
  * { roi: [[x, y], ...] } o { roi: null } para usar el cuadro completo.
  */
-router.put('/:id(\\d+)/roi', authMiddleware, adminOSupervisor, async (req: Request, res: Response) => {
+router.put('/:id(\\d+)/roi', authMiddleware, requierePermiso('camaras:operar'), async (req: Request, res: Response) => {
   const id = Number(req.params.id);
   const { roi, error } = validarRoi(req.body?.roi ?? null);
   if (error) return res.status(400).json({ error });
@@ -191,7 +191,7 @@ router.put('/:id(\\d+)/roi', authMiddleware, adminOSupervisor, async (req: Reque
   }
 });
 
-router.delete('/:id(\\d+)', authMiddleware, soloAdmin, async (req: Request, res: Response) => {
+router.delete('/:id(\\d+)', authMiddleware, requierePermiso('camaras:gestionar'), async (req: Request, res: Response) => {
   const id = Number(req.params.id);
   try {
     const db = getDB();
@@ -220,7 +220,7 @@ async function urlReal(rtsp: string, camaraId: number): Promise<string> {
 }
 
 /** Ping + diagnóstico RTSP de una URL que aún no se guarda (formulario). */
-router.post('/probar', authMiddleware, soloAdmin, async (req: Request, res: Response) => {
+router.post('/probar', authMiddleware, requierePermiso('camaras:gestionar'), async (req: Request, res: Response) => {
   try {
     const rtsp = await urlReal(String(req.body?.rtsp_url ?? '').trim(), Number(req.body?.camara_id));
     return res.json(await diagnosticar(rtsp, String(req.body?.ip ?? '').trim() || null));
@@ -279,7 +279,7 @@ router.post('/:id(\\d+)/video', authMiddleware, async (req: Request, res: Respon
   }
 });
 
-router.post('/prueba-video', authMiddleware, soloAdmin, async (req: Request, res: Response) => {
+router.post('/prueba-video', authMiddleware, requierePermiso('camaras:gestionar'), async (req: Request, res: Response) => {
   try {
     const rtsp = await urlReal(String(req.body?.rtsp_url ?? '').trim(), Number(req.body?.camara_id));
     if (!destinoRtsp(rtsp)) return res.status(400).json({ error: 'URL RTSP inválida.' });
@@ -291,7 +291,7 @@ router.post('/prueba-video', authMiddleware, soloAdmin, async (req: Request, res
   }
 });
 
-router.delete('/prueba-video/:ruta', authMiddleware, soloAdmin, async (req: Request, res: Response) => {
+router.delete('/prueba-video/:ruta', authMiddleware, requierePermiso('camaras:gestionar'), async (req: Request, res: Response) => {
   await eliminarRutaPrueba(req.params.ruta);
   return res.json({ ok: true });
 });

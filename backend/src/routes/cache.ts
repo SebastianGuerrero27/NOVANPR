@@ -4,13 +4,13 @@
  */
 
 import { Router, Request, Response } from 'express';
-import { authMiddleware, roleMiddleware } from '../middlewares/auth';
+import { authMiddleware, requierePermiso } from '../middlewares/auth';
 import { cacheService, cacheHelper } from '../services/cache';
 
 const router = Router();
 
 // GET /api/cache/stats - Obtener estadísticas del caché
-router.get('/stats', authMiddleware, roleMiddleware(['Admin']), async (req: Request, res: Response) => {
+router.get('/stats', authMiddleware, requierePermiso('configuracion:gestionar'), async (req: Request, res: Response) => {
   try {
     const stats = await cacheService.getStats();
     return res.json({
@@ -24,7 +24,7 @@ router.get('/stats', authMiddleware, roleMiddleware(['Admin']), async (req: Requ
 });
 
 // DELETE /api/cache/flush - Limpiar todo el caché (con precaución)
-router.delete('/flush', authMiddleware, roleMiddleware(['Admin']), async (req: Request, res: Response) => {
+router.delete('/flush', authMiddleware, requierePermiso('configuracion:gestionar'), async (req: Request, res: Response) => {
   try {
     const success = await cacheService.flushAll();
     if (success) {
@@ -39,7 +39,7 @@ router.delete('/flush', authMiddleware, roleMiddleware(['Admin']), async (req: R
 });
 
 // DELETE /api/cache/blacklist - Invalidar caché de lista negra
-router.delete('/blacklist', authMiddleware, roleMiddleware(['Admin']), async (req: Request, res: Response) => {
+router.delete('/blacklist', authMiddleware, requierePermiso('configuracion:gestionar'), async (req: Request, res: Response) => {
   try {
     const success = await cacheHelper.invalidateBlacklist();
     if (success) {
@@ -54,7 +54,7 @@ router.delete('/blacklist', authMiddleware, roleMiddleware(['Admin']), async (re
 });
 
 // DELETE /api/cache/authorized - Invalidar caché de vehículos autorizados
-router.delete('/authorized', authMiddleware, roleMiddleware(['Admin']), async (req: Request, res: Response) => {
+router.delete('/authorized', authMiddleware, requierePermiso('configuracion:gestionar'), async (req: Request, res: Response) => {
   try {
     const success = await cacheHelper.invalidateAuthorizedVehicles();
     if (success) {
@@ -69,7 +69,7 @@ router.delete('/authorized', authMiddleware, roleMiddleware(['Admin']), async (r
 });
 
 // DELETE /api/cache/pattern/:pattern - Eliminar claves por patrón
-router.delete('/pattern/:pattern', authMiddleware, roleMiddleware(['Admin']), async (req: Request, res: Response) => {
+router.delete('/pattern/:pattern', authMiddleware, requierePermiso('configuracion:gestionar'), async (req: Request, res: Response) => {
   try {
     const { pattern } = req.params;
     const count = await cacheService.deletePattern(pattern);

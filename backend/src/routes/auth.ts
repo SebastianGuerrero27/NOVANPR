@@ -4,6 +4,7 @@ import bcrypt from 'bcryptjs';
 import sql from 'mssql';
 import { getDB } from '../config/db';
 import { authMiddleware, firmarToken, ROL_POR_CODIGO } from '../middlewares/auth';
+import { NOMBRE_ROL, permisosDe } from '../dominio/permisos';
 import { emailService } from '../services/emailService';
 import { config } from '../services/configuracion';
 import {
@@ -23,7 +24,7 @@ import {
  *   POST /api/auth/reenviar-verificacion   nuevo enlace de verificación
  *   POST /api/auth/olvide-password         enlace de restablecimiento (respuesta siempre genérica)
  *   POST /api/auth/restablecer-password    define la nueva contraseña con el token
- *   GET  /api/auth/me                      datos de la sesión actual
+ *   GET  /api/auth/me                      datos de la sesión actual (incluye los permisos del rol)
  *   PUT  /api/auth/perfil                  nombre y cargo propios
  *   POST /api/auth/cambiar-password        cambio con la contraseña actual
  */
@@ -53,7 +54,10 @@ function respuestaSesion(u: any) {
   const token = firmarToken({ id: u.id, email: u.email, nombre: u.nombre_completo, rol });
   return {
     token,
-    user: { id: u.id, email: u.email, username: u.email, nombre: u.nombre_completo, cargo: u.cargo, rol },
+    user: {
+      id: u.id, email: u.email, username: u.email, nombre: u.nombre_completo, cargo: u.cargo,
+      rol, rol_nombre: NOMBRE_ROL[rol], permisos: permisosDe(rol),
+    },
   };
 }
 
@@ -363,7 +367,7 @@ router.get('/me', authMiddleware, async (req: Request, res: Response) => {
     return res.json({
       user: {
         id: u.id, email: u.email, username: u.email, nombre: u.nombre_completo, cargo: u.cargo,
-        rol: ROL_POR_CODIGO[u.rol_codigo], rol_nombre: u.rol_nombre,
+        rol: ROL_POR_CODIGO[u.rol_codigo], rol_nombre: u.rol_nombre, permisos: permisosDe(ROL_POR_CODIGO[u.rol_codigo]),
         fecha_ultimo_acceso: u.fecha_ultimo_acceso, fecha_creacion: u.fecha_creacion,
       },
     });

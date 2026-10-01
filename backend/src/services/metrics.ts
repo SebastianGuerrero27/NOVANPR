@@ -180,35 +180,80 @@ export const validationErrorsTotal = new promClient.Counter({
 // Middleware para Express
 // =============================================================================
 
+/**
+ * Ruta normalizada para las etiquetas: plantilla de Express ("/api/detecciones/:id") en lugar
+ * de la URL concreta. Usar req.path generaba una serie temporal por cada id (explosión de
+ * cardinalidad en Prometheus) y, además, el contador "en curso" se incrementaba con una
+ * etiqueta y se decrementaba con otra, por lo que nunca volvía a cero.
+ */
+export function rutaNormalizada(req: any): string {
+  if (req.route?.path) return `${req.baseUrl || ''}${req.route.path}`;
+  return (req.path || '/').replace(/\/\d+(?=\/|$)/g, '/:id');
+}
+
 export function metricsMiddleware(req: any, res: any, next: any) {
-  const start = Date.now();
-  
-  // Incrementar contador de solicitudes en progreso
-  httpRequestsInProgress
-    .labels(req.method, req.route?.path || req.path)
-    .inc();
+  const start = process.hrtime.bigint();
+  // La etiqueta del contador en curso se fija al inicio y se reutiliza al terminar
+  const enCurso = { method: req.method, route: rutaNormalizada(req) };
+  httpRequestsInProgress.labels(enCurso.method, enCurso.route).inc();
 
   res.on('finish', () => {
-    const duration = (Date.now() - start) / 1000;
-    
-    // Registrar duración
-    httpRequestDuration
-      .labels(req.method, req.route?.path || req.path, res.statusCode)
-      .observe(duration);
-    
-    // Registrar solicitud total
-    httpRequestsTotal
-      .labels(req.method, req.route?.path || req.path, res.statusCode)
-      .inc();
-    
-    // Decrementar contador de solicitudes en progreso
-    httpRequestsInProgress
-      .labels(req.method, req.route?.path || req.path)
-      .dec();
+    const duration = Number(process.hrtime.bigint() - start) / 1e9;
+    const route = rutaNormalizada(req);
+    httpRequestDuration.labels(req.method, route, String(res.statusCode)).observe(duration);
+    httpRequestsTotal.labels(req.method, route, String(res.statusCode)).inc();
+    httpRequestsInProgress.labels(enCurso.method, enCurso.route).dec();
   });
 
   next();
 }
+
+// =============================================================================
+// Métricas del centro de notificaciones (evaluación: latencia y tiempo de reconocimiento)
+// =============================================================================
+
+export const notificacionesTotal = new promClient.Counter({
+  name: 'anpr_notificaciones_total',
+  help: 'Notificaciones emitidas por tipo y severidad',
+  labelNames: ['tipo', 'severidad'],
+  registers: [register],
+});
+
+export const notificacionesSuprimidas = new promClient.Counter({
+  name: 'anpr_notificaciones_suprimidas_total',
+  help: 'Repeticiones agrupadas por la supresión de avalanchas (misma clave dentro de la ventana)',
+  labelNames: ['tipo'],
+  registers: [register],
+});
+
+export const notificacionLatencia = new promClient.Histogram({
+  name: 'anpr_notificacion_latencia_seconds',
+  help: 'Latencia de extremo a extremo: captura del vehículo → notificación emitida a los destinatarios',
+  labelNames: ['tipo'],
+  buckets: [0.1, 0.25, 0.5, 1, 2, 3, 5, 10, 30],
+  registers: [register],
+});
+
+export const notificacionReconocimiento = new promClient.Histogram({
+  name: 'anpr_notificacion_tiempo_reconocimiento_seconds',
+  help: 'Tiempo hasta que una persona reconoce (ACK) una alarma',
+  labelNames: ['severidad'],
+  buckets: [2, 5, 10, 20, 30, 60, 90, 120, 300, 600],
+  registers: [register],
+});
+
+export const notificacionesEscaladas = new promClient.Counter({
+  name: 'anpr_notificaciones_escaladas_total',
+  help: 'Alarmas escaladas por no ser reconocidas a tiempo',
+  registers: [register],
+});
+
+export const pushEnvios = new promClient.Counter({
+  name: 'anpr_push_envios_total',
+  help: 'Envíos Web Push por resultado',
+  labelNames: ['resultado'],
+  registers: [register],
+});
 
 // =============================================================================
 // Endpoint de Métricas
