@@ -69,7 +69,7 @@ const BuscarPlacaModal: React.FC<{ onCerrar: () => void }> = ({ onCerrar }) => {
 };
 
 const Monitoreo: React.FC = () => {
-  const { user, tieneRol } = useAuth();
+  const { user, puede } = useAuth();
   const notificar = useNotificar();
   const visible = usePaginaVisible();
   const [perfil, setPerfil] = useState<PerfilVideo>(() => (leer(CLAVE_PERFIL, 'media') as PerfilVideo) in PERFILES ? leer(CLAVE_PERFIL, 'media') as PerfilVideo : 'media');
@@ -90,8 +90,8 @@ const Monitoreo: React.FC = () => {
   const [reinicioVideo, setReinicioVideo] = useState(0);
   const [eliminando, setEliminando] = useState<Deteccion | null>(null);
   const [eliminarTodos, setEliminarTodos] = useState(false);
-  const esAdmin = tieneRol('Admin');
-  const puedeCambiarCamara = tieneRol('Admin', 'Supervisor');
+  const esAdmin = puede('camaras:gestionar');
+  const puedeCambiarCamara = puede('camaras:operar');
 
   const { datos: camaras } = useConsulta<Camara[]>(() => api.get('/camaras').then(r => r.data), []);
   const estadoMotor = useConsulta<EstadoAnpr>(() => api.get('/monitoreo/estado').then(r => r.data), []);
@@ -165,7 +165,7 @@ const Monitoreo: React.FC = () => {
             <Aviso tipo="advertencia">
               {camaras?.some(c => c.activa)
                 ? <>El motor ANPR todavía procesa su fuente de arranque. {puedeCambiarCamara ? 'Seleccione la cámara en la lista para asignarla.' : 'Se asignará automáticamente en unos segundos.'}</>
-                : <>No hay cámaras habilitadas. {tieneRol('Admin') ? <>Registre una en <a href="/camaras">Administración › Cámaras</a>.</> : 'Solicite al administrador que registre una.'}</>}
+                : <>No hay cámaras habilitadas. {puede('camaras:gestionar') ? <>Registre una en <a href="/camaras">Administración › Cámaras</a>.</> : 'Solicite al administrador que registre una.'}</>}
             </Aviso>
           )}
           <Tarjeta sinPadding>
@@ -185,7 +185,7 @@ const Monitoreo: React.FC = () => {
                 )}
               </div>
               <div className="fila" style={{ marginLeft: 'auto', gap: 8 }}>
-                {tieneRol('Admin') && (
+                {puede('camaras:gestionar') && (
                   <Segmentado valor={fuente} onCambiar={setFuente} opciones={[
                     { valor: 'camara', etiqueta: <><Camera size={13} /> Cámara</> },
                     { valor: 'webcam', etiqueta: <><Webcam size={13} /> Webcam</> },

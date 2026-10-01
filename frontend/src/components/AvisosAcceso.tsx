@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { AlertOctagon, Camera, CheckCircle2, Eye, ShieldAlert, ShieldCheck, Volume2, VolumeX, X } from 'lucide-react';
+import { AlertOctagon, Camera, CheckCircle2, Clock, Eye, FileCheck2, ShieldAlert, ShieldCheck, Volume2, VolumeX, X } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { useEvento } from '../lib/tiempoReal';
 import type { Deteccion } from '../lib/tipos';
@@ -8,8 +8,10 @@ import { fecha, hora, NIVELES_ALERTA } from '../lib/formato';
 import { alCambiarSonido, detenerSonido, fijarSonido, sonarAutorizado, sonarDenegado, sonidoActivo } from '../lib/avisos';
 import { describirVehiculo, ImagenEvidencia, ValidarModal } from './deteccion';
 import { FormularioLista } from './FormularioLista';
+import { FormularioSolicitud } from './FormularioSolicitud';
 import { useNotificar } from './Notificaciones';
 import { VisorZoom } from './ZoomDual';
+import { useCentroNotificaciones } from '../lib/notificaciones';
 
 /**
  * Avisos de acceso en tiempo real, visibles en cualquier pantalla del sistema:
@@ -18,6 +20,11 @@ import { VisorZoom } from './ZoomDual';
  *  - Vehículo AUTORIZADO → aviso verde con melodía breve (se cierra solo).
  * Solo se avisa de decisiones automáticas recientes; las validaciones manuales no disparan
  * avisos (las hizo el propio personal).
+ *
+ * Se muestra a quien tiene el permiso avisos:garita (personal del punto de control). "Enterado"
+ * registra el reconocimiento (ACK) de las alarmas del paso en el centro de notificaciones, lo
+ * que detiene su escalamiento y mide el tiempo de respuesta del personal. Los demás roles (p. ej.
+ * el gestor de accesos) reciben estos eventos en el centro de notificaciones.
  */
 
 const VENTANA_S = 120;
@@ -29,8 +36,15 @@ const PROTOCOLO_NO_REGISTRADO = [
   ['Detener el vehículo en el punto de control', 'Con señal verbal y visual, indique al conductor que se detenga y no avance hacia las instalaciones hasta completar la verificación.'],
   ['Inspección visual', 'Desde un punto seguro, confirme que la placa física coincida con {placa} e identifique a los ocupantes.'],
   ['Solicitar documentos', 'Pida cédula de identidad, matrícula del vehículo y el motivo formal del ingreso.'],
-  ['Consultar al supervisor', 'Comunique la placa por radio al supervisor de turno: solo él decide el ingreso de un vehículo no registrado.'],
+  ['Solicitar la autorización', 'Use “Solicitar autorización”: el gestor de accesos (o el supervisor de turno) recibe la solicitud al instante y decide el ingreso de un vehículo no registrado.'],
   ['Espera y registro', 'Mientras se verifica, pida al conductor estacionar a un lado sin obstruir el acceso. Si se aprueba, deje constancia en el sistema; si no, indíquele retirarse por la vía de salida.'],
+];
+
+const PROTOCOLO_RESTRINGIDO = [
+  ['Detener el vehículo en el punto de control', 'Indique al conductor que se detenga: la placa {placa} tiene permiso, pero no es válido en este momento.'],
+  ['Verificar identidad', 'Confirme que la placa física coincida con {placa} y pida la identificación del conductor.'],
+  ['Consultar al gestor de accesos', 'El gestor de accesos ya fue notificado. Solo él (o el supervisor) puede autorizar el ingreso por excepción.'],
+  ['Registrar la decisión', 'Si se concede la excepción, quedará registrada con su motivo; si no, indique al conductor el horario o la vigencia de su permiso.'],
 ];
 
 const PROTOCOLO_ALERTA = [
@@ -41,15 +55,24 @@ const PROTOCOLO_ALERTA = [
   ['Verificar la lectura', 'Si la placa física no coincide con {placa}, corrija la lectura para que el sistema la reevalúe.'],
 ];
 
-const ModalNoAutorizado: React.FC<{ d: Deteccion; pendientes: number; onCerrar: () => void; onValidar: () => void; onAutorizar?: () => void }> =
-  ({ d, pendientes, onCerrar, onValidar, onAutorizar }) => {
+const TITULO_RESTRICCION: Record<string, string> = {
+  fuera_horario: 'Acceso no autorizado: fuera del horario del permiso',
+  no_iniciada: 'Acceso no autorizado: el permiso aún no está vigente',
+  vencida: 'Acceso no autorizado: permiso vencido',
+};
+
+const ModalNoAutorizado: React.FC<{
+  d: Deteccion; pendientes: number; onCerrar: () => void; onValidar: () => void;
+  onAutorizar?: () => void; onSolicitar?: () => void; onExcepcion?: () => void;
+}> = ({ d, pendientes, onCerrar, onValidar, onAutorizar, onSolicitar, onExcepcion }) => {
     const navigate = useNavigate();
     const [sonido, setSonido] = useState(sonidoActivo());
     const [zoom, setZoom] = useState(false);
     const boton = useRef<HTMLButtonElement>(null);
     const esAlerta = d.estado_validacion === 'alerta';
+    const restringido = !esAlerta && d.restriccion_acceso ? d.restriccion_acceso : null;
     const nivel = d.alerta ? NIVELES_ALERTA[d.alerta.nivel]?.etiqueta ?? d.alerta.nivel : null;
-    const protocolo = esAlerta ? PROTOCOLO_ALERTA : PROTOCOLO_NO_REGISTRADO;
+    const protocolo = esAlerta ? PROTOCOLO_ALERTA : restringido ? PROTOCOLO_RESTRINGIDO : PROTOCOLO_NO_REGISTRADO;
     useEffect(() => { boton.current?.focus(); return alCambiarSonido(setSonido); }, []);
 
     return (
@@ -59,7 +82,7 @@ const ModalNoAutorizado: React.FC<{ d: Deteccion; pendientes: number; onCerrar: 
             <span className="alerta-acceso-icono"><AlertOctagon size={26} strokeWidth={2.5} /></span>
             <div style={{ minWidth: 0 }}>
               <h2 id="alerta-acceso-titulo">
-                {esAlerta ? 'Alerta de seguridad: vehículo en lista de alertas' : 'Acceso no autorizado: vehículo no registrado'}
+                {esAlerta ? 'Alerta de seguridad: vehículo en lista de alertas' : restringido ? TITULO_RESTRICCION[restringido] : 'Acceso no autorizado: vehículo no registrado'}
                 {nivel && <span className="alerta-acceso-nivel">NIVEL {nivel.toUpperCase()}</span>}
               </h2>
               <p>Sistema ANPR ECU 911 · {d.camara ? `${d.camara.nombre} (${d.camara.ubicacion})` : 'Acceso vehicular'} · {hora(d.fecha_hora_ingreso)}</p>
@@ -76,10 +99,12 @@ const ModalNoAutorizado: React.FC<{ d: Deteccion; pendientes: number; onCerrar: 
               <div className="alerta-placa">
                 <span className="pais">REPÚBLICA DEL ECUADOR</span>
                 <span className="numero">{d.placa ?? 'SIN LECTURA'}</span>
-                <span className="pie"><span>ANT</span><span>{esAlerta ? 'EN LISTA DE ALERTAS' : 'NO AUTORIZADO'}</span></span>
+                <span className="pie"><span>ANT</span><span>{esAlerta ? 'EN LISTA DE ALERTAS' : restringido ? 'PERMISO RESTRINGIDO' : 'NO AUTORIZADO'}</span></span>
               </div>
               <dl className="alerta-ficha">
-                <dt>Motivo</dt><dd className="destacado">{esAlerta ? d.alerta?.motivo ?? 'Placa en la lista de alertas' : 'No consta en el padrón de vehículos autorizados'}</dd>
+                <dt>Motivo</dt><dd className="destacado">{esAlerta ? d.alerta?.motivo ?? 'Placa en la lista de alertas'
+                  : restringido ? d.motivo_revision ?? TITULO_RESTRICCION[restringido] : 'No consta en el padrón de vehículos autorizados'}</dd>
+                {restringido && d.autorizado && <><dt>Titular del permiso</dt><dd>{d.autorizado.propietario}{d.autorizado.departamento ? ` · ${d.autorizado.departamento}` : ''}</dd></>}
                 <dt>Vehículo</dt><dd>{describirVehiculo(d)}</dd>
                 <dt>Fecha y hora</dt><dd>{fecha(d.fecha_hora_ingreso)} · {hora(d.fecha_hora_ingreso)}</dd>
                 <dt>Registro</dt><dd>#{d.id}</dd>
@@ -109,7 +134,9 @@ const ModalNoAutorizado: React.FC<{ d: Deteccion; pendientes: number; onCerrar: 
             {pendientes > 0 && <span className="alerta-pendientes">{pendientes} {pendientes === 1 ? 'aviso más en espera' : 'avisos más en espera'}</span>}
             <button className="btn btn-sm alerta-boton-secundario" onClick={() => { onCerrar(); navigate(`/detecciones/${d.id}`); }}>Ver detalle</button>
             <button className="btn btn-sm alerta-boton-secundario" onClick={onValidar}>Corregir lectura</button>
-            {onAutorizar && !esAlerta && <button className="btn btn-sm alerta-boton-secundario" onClick={onAutorizar}><ShieldCheck size={14} /> Autorizar vehículo</button>}
+            {onExcepcion && restringido && <button className="btn btn-sm alerta-boton-secundario" onClick={onExcepcion}><Clock size={14} /> Autorizar por excepción</button>}
+            {onAutorizar && !esAlerta && !restringido && <button className="btn btn-sm alerta-boton-secundario" onClick={onAutorizar}><ShieldCheck size={14} /> Autorizar vehículo</button>}
+            {onSolicitar && !esAlerta && <button className="btn btn-sm alerta-boton-secundario" onClick={onSolicitar}><FileCheck2 size={14} /> Solicitar autorización</button>}
             <button ref={boton} className="btn alerta-boton-principal" onClick={onCerrar}><CheckCircle2 size={16} /> Enterado</button>
           </footer>
         </div>
@@ -156,16 +183,20 @@ const AvisoAutorizado: React.FC<{ d: Deteccion; onCerrar: () => void; onConfirma
 };
 
 export const AvisosAcceso: React.FC = () => {
-  const { tieneRol } = useAuth();
+  const { puede } = useAuth();
   const notificar = useNotificar();
+  const { reconocerDeteccion } = useCentroNotificaciones();
   const [cola, setCola] = useState<Deteccion[]>([]);
   const [autorizados, setAutorizados] = useState<Deteccion[]>([]);
   const [validando, setValidando] = useState<Deteccion | null>(null);
+  const [excepcion, setExcepcion] = useState<Deteccion | null>(null);
   const [autorizando, setAutorizando] = useState<Deteccion | null>(null);
+  const [solicitando, setSolicitando] = useState<Deteccion | null>(null);
   const avisados = useRef(new Set<string>());
+  const garita = puede('avisos:garita');
 
   const procesar = (d: Deteccion) => {
-    if (d.estado_procesamiento !== 'procesado') return;
+    if (!garita || d.estado_procesamiento !== 'procesado') return;
     const clave = `${d.id}:${d.estado_validacion}:${d.validado_manualmente ? 'm' : 'a'}`;
     if (avisados.current.has(clave)) return;
     // Autorizado confirmado por el personal: también suena (el guardia deja pasar al vehículo)
@@ -203,7 +234,17 @@ export const AvisosAcceso: React.FC = () => {
   useEvento('deteccion:eliminadas', () => { setCola([]); setAutorizados([]); });
 
   const actual = cola[0];
-  const cerrarActual = () => { detenerSonido(); setCola(c => c.slice(1)); if (cola.length > 1) sonarDenegado(); };
+  // Cerrar el aviso = el personal lo atendió: ACK de las alarmas del paso (detiene el escalamiento)
+  const reconocer = (d: Deteccion) => { void reconocerDeteccion(d.id).catch(() => undefined); };
+  const cerrarActual = () => {
+    if (actual) reconocer(actual);
+    detenerSonido();
+    setCola(c => c.slice(1));
+    if (cola.length > 1) sonarDenegado();
+  };
+  const abrir = (accion: (d: Deteccion) => void) => () => { if (!actual) return; reconocer(actual); detenerSonido(); accion(actual); };
+  const gestionaPadron = puede('padron:gestionar');
+  if (!garita) return null;
 
   return (
     <>
@@ -213,13 +254,27 @@ export const AvisosAcceso: React.FC = () => {
             onCerrar={() => setAutorizados(a => a.filter(x => x.id !== d.id || x.estado_validacion !== d.estado_validacion))} />)}
         </div>
       )}
-      {actual && !validando && !autorizando && (
+      {actual && !validando && !autorizando && !solicitando && !excepcion && (
         <ModalNoAutorizado d={actual} pendientes={cola.length - 1} onCerrar={cerrarActual}
-          onValidar={() => { detenerSonido(); setValidando(actual); }}
-          onAutorizar={tieneRol('Admin', 'Supervisor') && actual.placa ? () => { detenerSonido(); setAutorizando(actual); } : undefined} />
+          onValidar={abrir(setValidando)}
+          onAutorizar={gestionaPadron && actual.placa ? abrir(setAutorizando) : undefined}
+          onSolicitar={!gestionaPadron && puede('solicitudes:crear') && actual.placa ? abrir(setSolicitando) : undefined}
+          onExcepcion={puede('accesos:excepcion') && actual.placa ? abrir(setExcepcion) : undefined} />
       )}
       {validando && <ValidarModal d={validando} onCerrar={() => setValidando(null)}
         onValidada={d => setCola(c => c.filter(x => x.id !== d.id))} />}
+      {excepcion && <ValidarModal d={excepcion} excepcion onCerrar={() => setExcepcion(null)}
+        onValidada={d => setCola(c => c.filter(x => x.id !== d.id))} />}
+      {solicitando && (
+        <FormularioSolicitud
+          inicial={{ placa: solicitando.placa, marca: solicitando.vehiculo.marca, modelo: solicitando.vehiculo.modelo, color: solicitando.vehiculo.color, tipo_vehiculo: solicitando.tipo_vehiculo, deteccion_id: solicitando.id }}
+          onCerrar={() => setSolicitando(null)}
+          onEnviada={s => {
+            notificar('exito', `Solicitud #${s.id} enviada`, 'El gestor de accesos fue notificado. Mantenga el vehículo en espera.');
+            setCola(c => c.filter(x => x.id !== solicitando.id));
+            setSolicitando(null);
+          }} />
+      )}
       {autorizando && autorizando.placa && (
         <FormularioLista tipo="autorizados"
           inicial={{ placa: autorizando.placa, marca: autorizando.vehiculo.marca, modelo: autorizando.vehiculo.modelo, color: autorizando.vehiculo.color, tipo_vehiculo: autorizando.tipo_vehiculo }}

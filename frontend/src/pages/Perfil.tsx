@@ -7,12 +7,7 @@ import { fechaHora, iniciales, ROLES } from '../lib/formato';
 import { passwordValida, REGLAS_PASSWORD } from '../lib/password';
 import { Aviso, Tarjeta } from '../components/ui';
 import { useNotificar } from '../components/Notificaciones';
-
-const PERMISOS: Record<string, string[]> = {
-  Admin: ['Todas las funciones operativas', 'Gestión de usuarios, roles y bloqueos', 'Cámaras y configuración del sistema', 'Auditoría completa y consulta de propietarios'],
-  Supervisor: ['Monitoreo, validación e ingresos manuales', 'Alta y edición de las listas de control', 'Reportes y evaluación del sistema', 'Cambio de la cámara que procesa el motor'],
-  Operador: ['Monitoreo del acceso en tiempo real', 'Validación y corrección de lecturas', 'Registro de ingresos manuales', 'Consulta de listas y del registro de ingresos'],
-};
+import { ETIQUETA_PERMISO } from '../lib/permisos';
 
 const CampoClave: React.FC<{ id: string; etiqueta: string; valor: string; onCambiar: (v: string) => void; autoComplete: string }> = ({ id, etiqueta, valor, onCambiar, autoComplete }) => {
   const [ver, setVer] = useState(false);
@@ -88,7 +83,7 @@ const Perfil: React.FC = () => {
           </Tarjeta>
           <Tarjeta titulo="Permisos de su rol">
             <ul style={{ listStyle: 'none', display: 'grid', gap: 8, fontSize: 13 }}>
-              {PERMISOS[user.rol].map(p => <li key={p} className="fila" style={{ gap: 8, flexWrap: 'nowrap' }}><CheckCircle2 size={15} color="var(--autorizado)" />{p}</li>)}
+              {(user.permisos ?? []).map(p => <li key={p} className="fila" style={{ gap: 8, flexWrap: 'nowrap' }}><CheckCircle2 size={15} color="var(--autorizado)" />{ETIQUETA_PERMISO[p] ?? p}</li>)}
             </ul>
             <p className="texto-secundario" style={{ marginTop: 12 }}>El rol lo asigna el administrador del sistema.</p>
           </Tarjeta>

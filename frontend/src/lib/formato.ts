@@ -61,7 +61,11 @@ export const NIVELES_ALERTA: Record<string, { etiqueta: string; clase: string }>
   MEDIA: { etiqueta: 'Media', clase: 'no_reconocido' },
 };
 
-export const ROLES: Record<string, string> = { Admin: 'Administrador', Supervisor: 'Supervisor', Operador: 'Operador' };
+export const ROLES: Record<string, string> = { Admin: 'Administrador', Supervisor: 'Supervisor', Operador: 'Operador', GestorAccesos: 'Gestor de accesos' };
+
+export const CATEGORIAS_PERMISO: Record<string, string> = {
+  FUNCIONARIO: 'Funcionario', VISITANTE: 'Visitante', PROVEEDOR: 'Proveedor', CONTRATISTA: 'Contratista', OFICIAL: 'Vehículo oficial', EMERGENCIA: 'Emergencia',
+};
 
 export function iniciales(nombre?: string | null): string {
   return (nombre || '?').split(/\s+/).filter(Boolean).slice(0, 2).map(p => p[0]!.toUpperCase()).join('');

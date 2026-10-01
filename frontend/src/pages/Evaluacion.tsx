@@ -1,8 +1,9 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
-  AlertTriangle, BarChart3, Copy, Download, FileJson, FileSpreadsheet, FileText, FlaskConical, RefreshCw,
+  AlertTriangle, BarChart3, BellRing, Copy, Download, FileJson, FileSpreadsheet, FileText, FlaskConical, RefreshCw,
 } from 'lucide-react';
-import api from '../services/api';
+import api, { mensajeError } from '../services/api';
+import type { MetricasNotificacion } from '../lib/tipos';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Tipos (espejo de GET /api/evaluacion/resumen)
@@ -192,6 +193,69 @@ const Comando: React.FC<{ texto: string }> = ({ texto }) => {
 // ─────────────────────────────────────────────────────────────────────────────
 // Página
 // ─────────────────────────────────────────────────────────────────────────────
+const ETIQ_SEV: Record<string, string> = { critica: 'Crítica', alta: 'Alta', media: 'Media', baja: 'Baja' };
+const seg = (v: number | null | undefined) => (v === null || v === undefined ? '—' : `${v.toFixed(1)} s`);
+
+/**
+ * Desempeño del canal de alarmas para el artículo: tiempo de reconocimiento (TTA, mediana y
+ * p95) por prioridad, tasa de escalamiento, agrupación de repeticiones y tasa de alarmas por
+ * hora frente a los umbrales de ISA-18.2 (≤ 6 alarmas/h en régimen estable; avalancha > 10
+ * alarmas en 10 min). La latencia de extremo a extremo se publica en Prometheus
+ * (anpr_notificacion_latencia_seconds).
+ */
+const MetricasAlarmas: React.FC = () => {
+  const [dias, setDias] = useState(7);
+  const [m, setM] = useState<MetricasNotificacion | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    api.get('/notificaciones/metricas', { params: { dias } }).then(r => { setM(r.data); setError(null); }).catch(e => setError(mensajeError(e)));
+  }, [dias]);
+  const total = m?.por_severidad.reduce((a, f) => a + f.emitidas, 0) ?? 0;
+  const conAck = m?.por_severidad.reduce((a, f) => a + f.con_ack, 0) ?? 0;
+  const escaladas = m?.por_severidad.reduce((a, f) => a + f.escaladas, 0) ?? 0;
+  const agrupadas = m?.por_severidad.reduce((a, f) => a + f.repeticiones_agrupadas, 0) ?? 0;
+  return (
+    <div className="shadow-premium" style={{ background: '#fff', border: `1px solid ${BORDER}`, borderRadius: 10, padding: 18, display: 'flex', flexDirection: 'column', gap: 12 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+        <h3 style={{ fontSize: 15, fontWeight: 900, color: INK, display: 'flex', gap: 8, alignItems: 'center' }}>
+          <BellRing size={17} /> Canal de alarmas · gestión de alarmas ISA-18.2
+        </h3>
+        <select className="select" style={{ width: 'auto' }} value={dias} onChange={e => setDias(Number(e.target.value))} aria-label="Período">
+          <option value={1}>Últimas 24 h</option><option value={7}>Últimos 7 días</option><option value={30}>Últimos 30 días</option>
+        </select>
+      </div>
+      {error && <div style={{ color: 'var(--alerta)', fontSize: 12.5 }}>{error}</div>}
+      {m && (
+        <>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(170px, 1fr))', gap: 10 }}>
+            <Tarjeta titulo="Alarmas por hora" valor={m.alarmas_por_hora.toFixed(2)} detalle={`${total} en ${m.dias} ${m.dias === 1 ? 'día' : 'días'}`}
+              alerta={m.alarmas_por_hora > 6} ayuda="ISA-18.2 recomienda no superar ~6 alarmas por hora por operador en régimen estable." />
+            <Tarjeta titulo="Escalamiento" valor={conAck ? pct(escaladas / conAck) : '—'} detalle={`${escaladas} de ${conAck} con ACK`}
+              alerta={conAck > 0 && escaladas / conAck > 0.1} ayuda="Proporción de alarmas que nadie reconoció a tiempo y se escalaron al supervisor." />
+            <Tarjeta titulo="Repeticiones agrupadas" valor={String(agrupadas)} detalle={total ? `${(agrupadas / (total + agrupadas) * 100).toFixed(0)} % de los eventos` : '—'}
+              ayuda="Eventos repetidos absorbidos por la supresión de avalanchas (misma placa dentro de la ventana)." />
+            <Tarjeta titulo="Ventanas de avalancha" valor={String(m.ventanas_avalancha_10min)} detalle="> 10 alarmas altas/críticas en 10 min"
+              alerta={m.ventanas_avalancha_10min > 0} ayuda="Periodos de 10 minutos con más de 10 alarmas de prioridad alta o crítica." />
+          </div>
+          <div className="tabla-contenedor">
+            <table className="tabla">
+              <thead><tr><th>Prioridad</th><th className="num">Emitidas</th><th className="num">Requieren ACK</th><th className="num">Reconocidas</th>
+                <th className="num">Escaladas</th><th className="num">TTA mediana</th><th className="num">TTA p95</th></tr></thead>
+              <tbody>
+                {m.por_severidad.length === 0 ? <tr><td colSpan={7} style={{ textAlign: 'center', color: MUTED }}>Sin alarmas en el período</td></tr>
+                  : m.por_severidad.map(f => (
+                    <tr key={f.severidad}><td>{ETIQ_SEV[f.severidad] ?? f.severidad}</td><td className="num">{f.emitidas}</td><td className="num">{f.con_ack}</td>
+                      <td className="num">{f.reconocidas}</td><td className="num">{f.escaladas}</td><td className="num">{seg(f.tta_mediana_s)}</td><td className="num">{seg(f.tta_p95_s)}</td></tr>
+                  ))}
+              </tbody>
+            </table>
+          </div>
+        </>
+      )}
+    </div>
+  );
+};
+
 const Evaluacion: React.FC = () => {
   const [desde, setDesde] = useState(haceDias(30));
   const [hasta, setHasta] = useState(hoy());
@@ -355,7 +419,10 @@ const Evaluacion: React.FC = () => {
         </>
       )}
 
-      {/* 7. Análisis estadístico avanzado */}
+      {/* 7. Canal de alarmas (centro de notificaciones) */}
+      <MetricasAlarmas />
+
+      {/* 8. Análisis estadístico avanzado */}
       <div className="shadow-premium" style={{ background: '#fff', border: `1px solid ${BORDER}`, borderRadius: 10, padding: 18, display: 'flex', flexDirection: 'column', gap: 12 }}>
         <h3 style={{ fontSize: 15, fontWeight: 900, color: INK, display: 'flex', gap: 8, alignItems: 'center' }}>
           <FlaskConical size={17} /> Análisis estadístico avanzado

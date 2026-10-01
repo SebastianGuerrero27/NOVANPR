@@ -8,14 +8,10 @@ import type { UsuarioAdmin } from '../lib/tipos';
 import { fechaHora, iniciales, relativo, ROLES } from '../lib/formato';
 import { Aviso, Confirmar, FilasEsqueleto, Kpi, Modal, Tarjeta, Vacio } from '../components/ui';
 import { useNotificar } from '../components/Notificaciones';
+import { DESCRIPCION_ROL, ROLES_ORDEN } from '../lib/permisos';
+import type { Rol } from '../lib/permisos';
 
-type Rol = UsuarioAdmin['rol'];
-
-const DESCRIPCION_ROL: Record<Rol, string> = {
-  Admin: 'Control total: usuarios, cámaras, configuración, auditoría y todas las funciones operativas.',
-  Supervisor: 'Gestiona las listas de control, consulta reportes y la evaluación, y cambia la cámara del motor.',
-  Operador: 'Monitorea el acceso, valida lecturas y registra ingresos manuales. Consulta las listas.',
-};
+const COLOR_ROL: Record<Rol, string> = { Admin: 'var(--rojo)', Supervisor: 'var(--navy-700)', GestorAccesos: '#0f766e', Operador: '#64748b' };
 
 function estadoCuenta(u: UsuarioAdmin): { texto: string; clase: string } {
   if (u.bloqueado) return { texto: 'Bloqueada', clase: 'alerta' };
@@ -62,8 +58,8 @@ const FormularioUsuario: React.FC<{ usuario?: UsuarioAdmin; esPropio?: boolean; 
           <input id="u-cargo" className="input" value={f.cargo} onChange={e => setF({ ...f, cargo: e.target.value })} maxLength={100} /></div>
         <div className="campo completo">
           <span className="etiqueta-campo">Rol*</span>
-          <div className="grid-3" style={{ gap: 8 }}>
-            {(['Operador', 'Supervisor', 'Admin'] as Rol[]).map(r => (
+          <div className="grid-2" style={{ gap: 8 }}>
+            {ROLES_ORDEN.map(r => (
               <label key={r} className={`tarjeta`} style={{ padding: 12, cursor: esPropio ? 'not-allowed' : 'pointer', borderColor: f.rol === r ? 'var(--navy-700)' : undefined, boxShadow: f.rol === r ? '0 0 0 2px rgba(21,49,93,0.15)' : undefined, opacity: esPropio && f.rol !== r ? 0.5 : 1 }}>
                 <span className="fila" style={{ gap: 8 }}>
                   <input type="radio" name="rol" checked={f.rol === r} disabled={esPropio} onChange={() => setF({ ...f, rol: r })} />
@@ -147,7 +143,7 @@ const Usuarios: React.FC = () => {
                     <tr key={u.id}>
                       <td>
                         <div className="fila" style={{ gap: 10, flexWrap: 'nowrap' }}>
-                          <span className="avatar" style={{ width: 32, height: 32, fontSize: 12, background: u.rol === 'Admin' ? 'var(--rojo)' : u.rol === 'Supervisor' ? 'var(--navy-700)' : '#64748b' }}>{iniciales(u.nombre_completo)}</span>
+                          <span className="avatar" style={{ width: 32, height: 32, fontSize: 12, background: COLOR_ROL[u.rol] ?? '#64748b' }}>{iniciales(u.nombre_completo)}</span>
                           <div style={{ minWidth: 0 }}>
                             <strong style={{ color: 'var(--text)', fontWeight: 600 }}>{u.nombre_completo}{propio && <span className="texto-secundario"> (usted)</span>}</strong>
                             <span className="secundario">{u.email}{u.cargo ? ` · ${u.cargo}` : ''}</span>

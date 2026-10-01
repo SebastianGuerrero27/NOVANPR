@@ -114,21 +114,23 @@ router.get('/resumen', authMiddleware, async (_req: Request, res: Response) => {
  * Panel del Gestor de accesos: solicitudes, estado del padrón, accesos denegados y
  * restringidos de hoy y placas reincidentes (base para registrar o investigar).
  */
-router.get('/accesos', authMiddleware, requierePermiso('padron:gestionar'), async (_req: Request, res: Response) => {
+router.get('/accesos', authMiddleware, requierePermiso('padron:gestionar'), async (req: Request, res: Response) => {
   try {
     const db = getDB();
     const ahora = new Date();
     const hoy = inicioDiaLocal(ahora);
     const hace7 = inicioDiaLocal(ahora, -6);
     const diasAviso = config.entero('aviso_vencimiento_dias');
-    const p = () => db.request().input('hoy', sql.DateTime, hoy).input('hace7', sql.DateTime, hace7).input('dias', sql.Int, diasAviso);
+    const p = () => db.request().input('hoy', sql.DateTime, hoy).input('hace7', sql.DateTime, hace7).input('dias', sql.Int, diasAviso)
+      .input('uid', sql.Int, req.user!.id);
     const h = hoyLocalSql();
     const [solicitudes, padron, categorias, denegados, reincidentes, recientes] = await Promise.all([
       p().query(`
         SELECT TOP 5 s.id, s.placa, s.propietario, s.categoria, s.motivo, s.fecha_solicitud, u.nombre_completo AS solicitante,
-               (SELECT COUNT(*) FROM SolicitudesAcceso WHERE estado = 'pendiente') AS total
+               (SELECT COUNT(*) FROM SolicitudesAcceso WHERE estado = 'pendiente' AND solicitado_por <> @uid) AS total
         FROM SolicitudesAcceso s JOIN Usuarios u ON u.id = s.solicitado_por
-        WHERE s.estado = 'pendiente' ORDER BY s.fecha_solicitud`),
+        -- Separación de funciones: las solicitudes propias no son trabajo pendiente de quien las registró
+        WHERE s.estado = 'pendiente' AND s.solicitado_por <> @uid ORDER BY s.fecha_solicitud`),
       p().query(`
         SELECT
           SUM(CASE WHEN (fecha_vencimiento IS NULL OR fecha_vencimiento >= ${h}) AND (fecha_inicio IS NULL OR fecha_inicio <= ${h}) THEN 1 ELSE 0 END) AS vigentes,

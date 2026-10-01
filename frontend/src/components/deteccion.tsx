@@ -86,7 +86,11 @@ export const TarjetaDeteccion: React.FC<{ d: Deteccion; onValidar?: (d: Deteccio
         )}
         {!procesando && d.motivo_revision && (
           <div className="truncar" style={{ fontSize: 11.5, color: 'var(--no-registrado)', fontWeight: 600 }} title={d.motivo_revision}>
-            ⓘ En padrón{d.autorizado ? ` (${d.autorizado.propietario})` : ''} · confirme la placa
+            {d.restriccion_acceso
+              ? <>⏱ {d.restriccion_acceso === 'fuera_horario' ? 'Fuera de horario' : d.restriccion_acceso === 'no_iniciada' ? 'Permiso aún no vigente' : 'Permiso vencido'}{d.autorizado ? ` · ${d.autorizado.propietario}` : ''}</>
+              : d.autorizado
+                ? <>ⓘ En padrón ({d.autorizado.propietario}) · confirme la placa</>
+                : <>ⓘ Lectura no confirmada · verifique la placa</>}
           </div>
         )}
         {alerta && (
@@ -104,7 +108,12 @@ export const TarjetaDeteccion: React.FC<{ d: Deteccion; onValidar?: (d: Deteccio
 };
 
 /** Validación / corrección manual de un paso vehicular por el personal. */
-export const ValidarModal: React.FC<{ d: Deteccion; onCerrar: () => void; onValidada?: (d: Deteccion) => void }> = ({ d, onCerrar, onValidada }) => {
+/**
+ * Confirmación o corrección de la placa de un paso. Con `excepcion`, una persona con el
+ * permiso accesos:excepcion concede el paso pese a la restricción temporal del permiso
+ * (fuera de horario, aún no vigente o vencido); el motivo es obligatorio y queda auditado.
+ */
+export const ValidarModal: React.FC<{ d: Deteccion; onCerrar: () => void; onValidada?: (d: Deteccion) => void; excepcion?: boolean }> = ({ d, onCerrar, onValidada, excepcion }) => {
   const notificar = useNotificar();
   const [placa, setPlaca] = useState(d.placa_validada || d.placa_reconocida || '');
   const [tipo, setTipo] = useState(d.tipo_vehiculo && TIPOS_VEHICULO.includes(d.tipo_vehiculo) ? d.tipo_vehiculo : '');
@@ -112,14 +121,16 @@ export const ValidarModal: React.FC<{ d: Deteccion; onCerrar: () => void; onVali
   const [enviando, setEnviando] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const limpia = placa.toUpperCase().replace(/[^A-Z0-9]/g, '');
-  const valida = limpia.length >= 4 && limpia.length <= 10;
+  const valida = limpia.length >= 4 && limpia.length <= 10 && (!excepcion || observacion.trim().length >= 5);
   const [zoom, setZoom] = useState(false);
 
   const guardar = async () => {
     setEnviando(true);
     setError(null);
     try {
-      const r = await api.post(`/detecciones/validar/${d.id}`, { placa_validada: limpia, tipo_vehiculo: tipo || undefined, observacion: observacion.trim() || undefined });
+      const r = await api.post(`/detecciones/validar/${d.id}`, {
+        placa_validada: limpia, tipo_vehiculo: tipo || undefined, observacion: observacion.trim() || undefined, excepcion: excepcion || undefined,
+      });
       const det: Deteccion = r.data.deteccion;
       notificar(det.estado_validacion === 'alerta' ? 'error' : 'exito', `Ingreso validado: ${det.placa}`, ESTADOS[det.estado_validacion].etiqueta);
       onValidada?.(det);
@@ -131,10 +142,10 @@ export const ValidarModal: React.FC<{ d: Deteccion; onCerrar: () => void; onVali
   };
 
   return (
-    <Modal titulo="Validar ingreso" subtitulo={`${fechaHora(d.fecha_hora_ingreso)}${d.camara ? ` · ${d.camara.nombre}` : ''}`} onCerrar={onCerrar} bloquear={enviando}
+    <Modal titulo={excepcion ? 'Autorizar ingreso por excepción' : 'Validar ingreso'} subtitulo={`${fechaHora(d.fecha_hora_ingreso)}${d.camara ? ` · ${d.camara.nombre}` : ''}`} onCerrar={onCerrar} bloquear={enviando}
       pie={<>
         <button className="btn btn-secondary" onClick={onCerrar} disabled={enviando}>Cancelar</button>
-        <button className="btn btn-navy" onClick={guardar} disabled={!valida || enviando}>{enviando && <Loader2 size={14} className="girar" />} Confirmar placa</button>
+        <button className={`btn ${excepcion ? 'btn-exito' : 'btn-navy'}`} onClick={guardar} disabled={!valida || enviando}>{enviando && <Loader2 size={14} className="girar" />} {excepcion ? 'Autorizar por excepción' : 'Confirmar placa'}</button>
       </>}>
       <div className="pila">
         <div className="grid-2" style={{ gap: 10 }}>
@@ -163,11 +174,14 @@ export const ValidarModal: React.FC<{ d: Deteccion; onCerrar: () => void; onVali
             </select>
           </div>
           <div className="campo completo">
-            <label htmlFor="val-obs">Observación (opcional)</label>
-            <input id="val-obs" className="input" value={observacion} maxLength={300} onChange={e => setObservacion(e.target.value)} placeholder="Ej.: placa sucia, lectura corregida por el operador" />
+            <label htmlFor="val-obs">{excepcion ? 'Motivo de la excepción*' : 'Observación (opcional)'}</label>
+            <input id="val-obs" className="input" value={observacion} maxLength={300} onChange={e => setObservacion(e.target.value)}
+              placeholder={excepcion ? 'Ej.: reunión extraordinaria autorizada por la Coordinación Zonal' : 'Ej.: placa sucia, lectura corregida por el operador'} />
           </div>
         </div>
-        <Aviso tipo="info">Al confirmar, la placa se vuelve a cruzar con el padrón de autorizados y la lista de alertas. La corrección queda registrada con su usuario.</Aviso>
+        <Aviso tipo="info">{excepcion
+          ? 'La excepción concede solo este paso: el permiso conserva su horario y vigencia. Queda registrada en la auditoría con su usuario y el motivo.'
+          : 'Al confirmar, la placa se vuelve a cruzar con el padrón de autorizados (vigencia y horario) y la lista de alertas. La corrección queda registrada con su usuario.'}</Aviso>
         {error && <Aviso tipo="error">{error}</Aviso>}
       </div>
       {zoom && <VisorZoom d={d} onCerrar={() => setZoom(false)} />}

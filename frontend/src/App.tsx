@@ -1,8 +1,9 @@
 import React, { Suspense, lazy } from 'react';
 import { BrowserRouter as Router, Routes, Route, Navigate, useLocation } from 'react-router-dom';
-import { AuthProvider, Rol, useAuth } from './context/AuthContext';
+import { AuthProvider, Permiso, useAuth } from './context/AuthContext';
 import { TiempoRealProvider } from './lib/tiempoReal';
 import { NotificacionesProvider } from './components/Notificaciones';
+import { CentroNotificacionesProvider } from './lib/notificaciones';
 import { PantallaCarga } from './pages/auth/componentes';
 
 // Cada pantalla se descarga solo cuando se visita: el acceso no carga el panel ni el video,
@@ -24,18 +25,25 @@ const Auditoria = lazy(() => import('./pages/Auditoria'));
 const Camaras = lazy(() => import('./pages/Camaras'));
 const Configuracion = lazy(() => import('./pages/Configuracion'));
 const Perfil = lazy(() => import('./pages/Perfil'));
+const Notificaciones = lazy(() => import('./pages/Notificaciones'));
+const SolicitudesAcceso = lazy(() => import('./pages/SolicitudesAcceso'));
 
-const TODOS: Rol[] = ['Admin', 'Supervisor', 'Operador'];
-const GESTION: Rol[] = ['Admin', 'Supervisor'];
-const ADMIN: Rol[] = ['Admin'];
-
-/** Exige sesión y rol; la API aplica el mismo control en cada endpoint. */
-const Privada: React.FC<{ roles: Rol[]; children: React.ReactNode }> = ({ roles, children }) => {
-  const { user, loading } = useAuth();
+/**
+ * Exige sesión y el permiso de la pantalla (matriz RBAC del backend, entregada en la sesión).
+ * La API vuelve a verificar el permiso en cada endpoint.
+ */
+const Privada: React.FC<{ permiso: Permiso; children: React.ReactNode }> = ({ permiso, children }) => {
+  const { user, loading, puede } = useAuth();
   const location = useLocation();
   if (loading) return <PantallaCarga texto="VERIFICANDO SESIÓN…" />;
   if (!user) return <Navigate to="/login" replace state={{ desde: location.pathname + location.search }} />;
-  if (!roles.includes(user.rol)) return <Navigate to="/" replace />;
+  if (!puede(permiso)) {
+    // En la ruta raíz no se redirige (evita un ciclo si la sesión no trae permisos)
+    if (location.pathname === '/') {
+      return <AppLayout><div className="pagina"><div className="tarjeta" style={{ padding: 24 }}>Su cuenta no tiene permisos asignados. Contacte al administrador.</div></div></AppLayout>;
+    }
+    return <Navigate to="/" replace />;
+  }
   return <AppLayout>{children}</AppLayout>;
 };
 
@@ -44,6 +52,7 @@ const App: React.FC = () => (
     <AuthProvider>
       <TiempoRealProvider>
         <NotificacionesProvider>
+          <CentroNotificacionesProvider>
           <Suspense fallback={<PantallaCarga />}>
             <Routes>
               {/* Acceso y ciclo de vida de la cuenta */}
@@ -54,22 +63,24 @@ const App: React.FC = () => (
               <Route path="/restablecer-password" element={<RestablecerPassword />} />
 
               {/* Operación */}
-              <Route path="/" element={<Privada roles={TODOS}><Inicio /></Privada>} />
-              <Route path="/monitoreo" element={<Privada roles={TODOS}><Monitoreo /></Privada>} />
-              <Route path="/detecciones" element={<Privada roles={TODOS}><Detecciones /></Privada>} />
-              <Route path="/detecciones/:id" element={<Privada roles={TODOS}><DetalleDeteccion /></Privada>} />
-              <Route path="/listas/:tipo" element={<Privada roles={TODOS}><Listas /></Privada>} />
-              <Route path="/perfil" element={<Privada roles={TODOS}><Perfil /></Privada>} />
+              <Route path="/" element={<Privada permiso="operacion:monitorear"><Inicio /></Privada>} />
+              <Route path="/monitoreo" element={<Privada permiso="operacion:monitorear"><Monitoreo /></Privada>} />
+              <Route path="/detecciones" element={<Privada permiso="operacion:monitorear"><Detecciones /></Privada>} />
+              <Route path="/detecciones/:id" element={<Privada permiso="operacion:monitorear"><DetalleDeteccion /></Privada>} />
+              <Route path="/listas/:tipo" element={<Privada permiso="listas:ver"><Listas /></Privada>} />
+              <Route path="/solicitudes" element={<Privada permiso="solicitudes:crear"><SolicitudesAcceso /></Privada>} />
+              <Route path="/notificaciones" element={<Privada permiso="operacion:monitorear"><Notificaciones /></Privada>} />
+              <Route path="/perfil" element={<Privada permiso="operacion:monitorear"><Perfil /></Privada>} />
 
               {/* Análisis */}
-              <Route path="/reportes" element={<Privada roles={GESTION}><Reportes /></Privada>} />
-              <Route path="/evaluacion" element={<Privada roles={GESTION}><Evaluacion /></Privada>} />
+              <Route path="/reportes" element={<Privada permiso="reportes:ver"><Reportes /></Privada>} />
+              <Route path="/evaluacion" element={<Privada permiso="evaluacion:ver"><Evaluacion /></Privada>} />
 
               {/* Administración */}
-              <Route path="/usuarios" element={<Privada roles={ADMIN}><Usuarios /></Privada>} />
-              <Route path="/auditoria" element={<Privada roles={ADMIN}><Auditoria /></Privada>} />
-              <Route path="/camaras" element={<Privada roles={ADMIN}><Camaras /></Privada>} />
-              <Route path="/configuracion" element={<Privada roles={ADMIN}><Configuracion /></Privada>} />
+              <Route path="/usuarios" element={<Privada permiso="usuarios:gestionar"><Usuarios /></Privada>} />
+              <Route path="/auditoria" element={<Privada permiso="auditoria:ver"><Auditoria /></Privada>} />
+              <Route path="/camaras" element={<Privada permiso="camaras:gestionar"><Camaras /></Privada>} />
+              <Route path="/configuracion" element={<Privada permiso="configuracion:gestionar"><Configuracion /></Privada>} />
 
               {/* Rutas anteriores */}
               <Route path="/historial" element={<Navigate to="/detecciones" replace />} />
@@ -79,6 +90,7 @@ const App: React.FC = () => (
               <Route path="*" element={<Navigate to="/" replace />} />
             </Routes>
           </Suspense>
+          </CentroNotificacionesProvider>
         </NotificacionesProvider>
       </TiempoRealProvider>
     </AuthProvider>

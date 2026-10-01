@@ -28,7 +28,7 @@ const Detecciones: React.FC = () => {
   const [zoom, setZoom] = useState<Deteccion | null>(null);
   const [eliminando, setEliminando] = useState<Deteccion | null>(null);
   const [eliminarVarios, setEliminarVarios] = useState(false);
-  const esAdmin = useAuth().tieneRol('Admin');
+  const esAdmin = useAuth().puede('detecciones:eliminar');
   const [exportando, setExportando] = useState(false);
   const [nuevos, setNuevos] = useState(0);
   const [placaTexto, setPlacaTexto] = useState(params.get('placa') ?? '');

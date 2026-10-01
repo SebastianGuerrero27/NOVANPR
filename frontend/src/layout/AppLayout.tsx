@@ -1,6 +1,6 @@
 import React, { Suspense, useEffect, useRef, useState } from 'react';
 import { NavLink, useLocation, useNavigate } from 'react-router-dom';
-import { Bell, BellOff, ChevronsLeft, ChevronsRight, Clock, KeyRound, LogOut, Menu, UserCircle } from 'lucide-react';
+import { Bell, ChevronsLeft, ChevronsRight, Clock, KeyRound, LogOut, Menu, UserCircle, Volume2, VolumeX } from 'lucide-react';
 import api from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import { useEvento, useTiempoReal } from '../lib/tiempoReal';
@@ -8,6 +8,7 @@ import { useDiferido, useTic } from '../lib/hooks';
 import { iniciales, ROLES } from '../lib/formato';
 import { Cargando } from '../components/ui';
 import { AvisosAcceso } from '../components/AvisosAcceso';
+import { CampanaNotificaciones } from '../components/CentroNotificaciones';
 import { alCambiarSonido, fijarSonido, sonidoActivo } from '../lib/avisos';
 import { itemDeRuta, menuPara } from './navegacion';
 import logo from '../assets/ecu911.png';
@@ -28,11 +29,23 @@ function useColaRevision(): number {
   return n;
 }
 
+/** Solicitudes de acceso pendientes (para quien resuelve: las de otros; para el resto: las propias). */
+function useSolicitudesPendientes(activo: boolean): number {
+  const [n, setN] = useState(0);
+  const cargar = () => { if (activo) api.get('/solicitudes-acceso/resumen').then(r => setN(r.data.pendientes)).catch(() => undefined); };
+  const diferido = useDiferido(cargar, 800);
+  useEffect(() => { cargar(); }, [activo]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEvento('solicitudes:actualizadas', diferido);
+  return n;
+}
+
 const Sidebar: React.FC<{ colapsado: boolean; onColapsar: () => void; abiertoMovil: boolean; onCerrarMovil: () => void }> =
   ({ colapsado, onColapsar, abiertoMovil, onCerrarMovil }) => {
-    const { user } = useAuth();
+    const { user, puede } = useAuth();
     const revision = useColaRevision();
+    const solicitudes = useSolicitudesPendientes(!!user && puede('solicitudes:resolver'));
     if (!user) return null;
+    const contadores = { revision, solicitudes };
     return (
       <aside className={`sidebar${colapsado ? ' colapsado' : ''}${abiertoMovil ? ' abierto-movil' : ''}`} aria-label="Menú principal">
         <div className="sidebar-marca">
@@ -40,7 +53,7 @@ const Sidebar: React.FC<{ colapsado: boolean; onColapsar: () => void; abiertoMov
           <div className="texto"><strong>Sistema ANPR</strong><span>Control de ingreso vehicular</span></div>
         </div>
         <nav className="sidebar-nav">
-          {menuPara(user.rol).map(g => (
+          {menuPara(p => puede(p)).map(g => (
             <div className="sidebar-grupo" key={g.titulo}>
               <div className="sidebar-grupo-titulo">{g.titulo}</div>
               {g.items.map(i => (
@@ -48,7 +61,9 @@ const Sidebar: React.FC<{ colapsado: boolean; onColapsar: () => void; abiertoMov
                   className={({ isActive }) => `sidebar-link${isActive ? ' activo' : ''}`} title={colapsado ? i.titulo : undefined}>
                   {i.icono}
                   <span className="etiqueta">{i.titulo}</span>
-                  {i.contador === 'revision' && revision > 0 && <span className="contador" aria-label={`${revision} pendientes de revisión`}>{revision > 99 ? '99+' : revision}</span>}
+                  {i.contador && contadores[i.contador] > 0 && (
+                    <span className="contador" aria-label={`${contadores[i.contador]} pendientes`}>{contadores[i.contador] > 99 ? '99+' : contadores[i.contador]}</span>
+                  )}
                 </NavLink>
               ))}
             </div>
@@ -83,8 +98,8 @@ const BotonSonido: React.FC = () => {
   useEffect(() => alCambiarSonido(setActivo), []);
   return (
     <button className="btn btn-ghost btn-sm btn-icono" onClick={() => fijarSonido(!activo)}
-      title={activo ? 'Silenciar los avisos de acceso' : 'Activar el sonido de los avisos de acceso'} aria-label={activo ? 'Silenciar avisos' : 'Activar sonido de avisos'}>
-      {activo ? <Bell size={17} /> : <BellOff size={17} color="var(--alerta)" />}
+      title={activo ? 'Silenciar el sonido de los avisos' : 'Activar el sonido de los avisos'} aria-label={activo ? 'Silenciar avisos' : 'Activar sonido de avisos'}>
+      {activo ? <Volume2 size={17} /> : <VolumeX size={17} color="var(--alerta)" />}
     </button>
   );
 };
@@ -113,6 +128,7 @@ const MenuUsuario: React.FC = () => {
         <div className="menu" role="menu">
           <div className="menu-cabecera"><strong>{user.nombre}</strong><span>{user.email}</span></div>
           <button className="menu-item" role="menuitem" onClick={() => { setAbierto(false); navigate('/perfil'); }}><UserCircle size={16} /> Mi perfil</button>
+          <button className="menu-item" role="menuitem" onClick={() => { setAbierto(false); navigate('/notificaciones'); }}><Bell size={16} /> Notificaciones</button>
           <button className="menu-item" role="menuitem" onClick={() => { setAbierto(false); navigate('/perfil#contrasena'); }}><KeyRound size={16} /> Cambiar contraseña</button>
           <button className="menu-item peligro" role="menuitem" onClick={() => { logout(); navigate('/login', { replace: true }); }}><LogOut size={16} /> Cerrar sesión</button>
         </div>
@@ -138,6 +154,7 @@ const Header: React.FC<{ onMenuMovil: () => void }> = ({ onMenuMovil }) => {
         </span>
         <span className="ocultar-movil"><RelojSesion /></span>
         <BotonSonido />
+        <CampanaNotificaciones />
         <MenuUsuario />
       </div>
     </header>

@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
-import { ArrowLeft, CheckCircle2, Edit3, FileSearch, MinusCircle, ShieldAlert, ShieldCheck, Trash2, UserSearch, XCircle } from 'lucide-react';
+import { ArrowLeft, CheckCircle2, Clock, Edit3, FileCheck2, FileSearch, MinusCircle, ShieldAlert, ShieldCheck, Trash2, UserSearch, XCircle } from 'lucide-react';
 import api, { mensajeError } from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import { useEvento } from '../lib/tiempoReal';
@@ -13,6 +13,7 @@ import { VisorZoom } from '../components/ZoomDual';
 import { useNotificar } from '../components/Notificaciones';
 import { FormularioLista } from '../components/FormularioLista';
 import { EliminarUno } from '../components/EliminarDetecciones';
+import { FormularioSolicitud } from '../components/FormularioSolicitud';
 
 const DECISION: Record<string, string> = { ...Object.fromEntries(Object.entries(ESTADOS).map(([k, v]) => [k, v.etiqueta])), manual: 'Registro manual' };
 
@@ -96,9 +97,11 @@ const DetalleDeteccion: React.FC = () => {
   const { id } = useParams();
   const navigate = useNavigate();
   const notificar = useNotificar();
-  const { tieneRol } = useAuth();
+  const { puede } = useAuth();
   const { datos: d, cargando, error, recargar } = useConsulta<DeteccionDetalle>(() => api.get(`/detecciones/${id}`).then(r => r.data), [id]);
   const [validar, setValidar] = useState(false);
+  const [excepcion, setExcepcion] = useState(false);
+  const [solicitar, setSolicitar] = useState(false);
   const [eliminar, setEliminar] = useState(false);
   const [propietario, setPropietario] = useState(false);
   const [lista, setLista] = useState<'autorizados' | 'alertas' | null>(null);
@@ -123,14 +126,20 @@ const DetalleDeteccion: React.FC = () => {
         <button className="btn btn-ghost" onClick={() => (window.history.length > 1 ? navigate(-1) : navigate('/detecciones'))}><ArrowLeft size={16} /> Volver</button>
         <div className="fila">
           {!procesando && <button className="btn btn-navy" onClick={() => setValidar(true)}><Edit3 size={15} /> {d.validado_manualmente ? 'Corregir placa' : 'Validar placa'}</button>}
-          {tieneRol('Admin', 'Supervisor') && d.placa && !d.autorizado && !d.alerta && (
+          {puede('accesos:excepcion') && d.placa && d.restriccion_acceso && d.estado_validacion !== 'autorizado' && (
+            <button className="btn btn-exito" onClick={() => setExcepcion(true)}><Clock size={15} /> Autorizar por excepción</button>
+          )}
+          {puede('padron:gestionar') && d.placa && !d.autorizado && !d.alerta && (
             <button className="btn btn-secondary" onClick={() => setLista('autorizados')}><ShieldCheck size={15} /> Autorizar vehículo</button>
           )}
-          {tieneRol('Admin', 'Supervisor') && d.placa && !d.alerta && (
+          {!puede('padron:gestionar') && puede('solicitudes:crear') && d.placa && !d.alerta && d.estado_validacion !== 'autorizado' && (
+            <button className="btn btn-secondary" onClick={() => setSolicitar(true)}><FileCheck2 size={15} /> Solicitar autorización</button>
+          )}
+          {puede('alertas:gestionar') && d.placa && !d.alerta && (
             <button className="btn btn-secondary" onClick={() => setLista('alertas')}><ShieldAlert size={15} /> Agregar alerta</button>
           )}
-          {tieneRol('Admin') && d.placa && <button className="btn btn-secondary" onClick={() => setPropietario(true)}><UserSearch size={15} /> Propietario</button>}
-          {tieneRol('Admin') && <button className="btn btn-danger" onClick={() => setEliminar(true)}><Trash2 size={15} /> Eliminar</button>}
+          {puede('propietario:consultar') && d.placa && <button className="btn btn-secondary" onClick={() => setPropietario(true)}><UserSearch size={15} /> Propietario</button>}
+          {puede('detecciones:eliminar') && <button className="btn btn-danger" onClick={() => setEliminar(true)}><Trash2 size={15} /> Eliminar</button>}
         </div>
       </div>
 
@@ -207,6 +216,7 @@ const DetalleDeteccion: React.FC = () => {
                 <dt>Tipo de vehículo</dt><dd>{d.tipo_vehiculo ?? '—'}</dd>
                 <dt>Vehículo observado</dt><dd>{describirVehiculo(d)}</dd>
                 {d.autorizado && <><dt>Titular (padrón)</dt><dd>{d.autorizado.propietario}{d.autorizado.departamento && <span className="secundario texto-secundario"> · {d.autorizado.departamento}</span>}</dd></>}
+                {d.restriccion_acceso && <><dt>Restricción del permiso</dt><dd><span className="insignia no_reconocido"><Clock size={12} /> {d.restriccion_acceso === 'fuera_horario' ? 'Fuera de horario' : d.restriccion_acceso === 'no_iniciada' ? 'Aún no vigente' : 'Vencido'}</span></dd></>}
                 <dt>Validación</dt><dd>{d.validacion ? `${d.validacion.usuario?.nombre ?? 'Personal'} · ${fechaHora(d.validacion.fecha)}` : 'Automática'}</dd>
                 <dt>Registro</dt><dd className="mono" style={{ fontSize: 12 }}>#{d.id}{d.tracking_id && d.tracking_id > 0 ? ` · track ${d.tracking_id}` : ''}</dd>
               </dl>
@@ -226,6 +236,11 @@ const DetalleDeteccion: React.FC = () => {
       </div>
 
       {validar && <ValidarModal d={d} onCerrar={() => setValidar(false)} onValidada={() => recargar(true)} />}
+      {excepcion && <ValidarModal d={d} excepcion onCerrar={() => setExcepcion(false)} onValidada={() => recargar(true)} />}
+      {solicitar && d.placa && (
+        <FormularioSolicitud inicial={{ placa: d.placa, marca: d.vehiculo.marca, modelo: d.vehiculo.modelo, color: d.vehiculo.color, tipo_vehiculo: d.tipo_vehiculo, deteccion_id: d.id }}
+          onCerrar={() => setSolicitar(false)} onEnviada={s => { setSolicitar(false); notificar('exito', `Solicitud #${s.id} enviada`, 'El gestor de accesos fue notificado.'); }} />
+      )}
       {propietario && <ConsultaPropietario d={d} onCerrar={() => setPropietario(false)} />}
       {lista && d.placa && <FormularioLista tipo={lista} inicial={{ placa: d.placa, marca: d.vehiculo.marca, modelo: d.vehiculo.modelo, color: d.vehiculo.color, tipo_vehiculo: d.tipo_vehiculo }}
         onCerrar={() => setLista(null)} onGuardado={() => { setLista(null); notificar('exito', lista === 'autorizados' ? 'Vehículo autorizado' : 'Alerta registrada', 'Aplica a los próximos ingresos de la placa.'); }} />}
