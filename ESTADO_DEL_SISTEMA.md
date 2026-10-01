@@ -1,4 +1,9 @@
-/# Arquitectura y Estado Actual del Sistema ANPR — ECU 911 Zona 3
+> **Documento histórico (fase 0).** La arquitectura vigente, los hallazgos del análisis de código y el
+> protocolo de evaluación están en [docs/ANALISIS_ARQUITECTURA.md](docs/ANALISIS_ARQUITECTURA.md);
+> roles y permisos en [docs/ROLES_Y_PERMISOS.md](docs/ROLES_Y_PERMISOS.md) y alarmas en
+> [docs/NOTIFICACIONES.md](docs/NOTIFICACIONES.md).
+
+# Arquitectura y Estado Actual del Sistema ANPR — ECU 911 Zona 3
 
 Este documento detalla la arquitectura técnica, los modelos de Inteligencia Artificial utilizados, el flujo de datos en dos fases y la integración de microservicios desarrollada para el proyecto de titulación.
 

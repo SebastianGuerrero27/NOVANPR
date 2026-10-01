@@ -1,7 +1,9 @@
 import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
 import api, { EVENTO_SESION_EXPIRADA, guardarToken, leerToken } from '../services/api';
+import type { Permiso, Rol } from '../lib/permisos';
+import { desvincularPush } from '../lib/push';
 
-export type Rol = 'Admin' | 'Supervisor' | 'Operador';
+export type { Permiso, Rol };
 
 export interface User {
   id: number;
@@ -11,6 +13,8 @@ export interface User {
   cargo?: string | null;
   rol: Rol;
   rol_nombre?: string;
+  /** Permisos del rol entregados por el backend (fuente de verdad de la matriz RBAC) */
+  permisos?: Permiso[];
   fecha_ultimo_acceso?: string | null;
   fecha_creacion?: string;
 }
@@ -36,6 +40,8 @@ interface AuthContextType {
   logout: (motivo?: string) => void;
   refrescarUsuario: () => Promise<void>;
   tieneRol: (...roles: Rol[]) => boolean;
+  /** ¿La sesión tiene TODOS los permisos indicados? */
+  puede: (...permisos: Permiso[]) => boolean;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -60,6 +66,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const logout = useCallback((motivo?: string) => {
     window.clearTimeout(temporizador.current);
+    // Puesto compartido: este navegador deja de recibir los push de la cuenta que sale
+    void desvincularPush(leerToken());
     guardarToken(null);
     setToken(null);
     setUser(null);
@@ -130,9 +138,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   const tieneRol = (...roles: Rol[]) => !!user && roles.includes(user.rol);
+  const puede = useCallback((...permisos: Permiso[]) => !!user?.permisos && permisos.every(p => user.permisos!.includes(p)), [user]);
 
   return (
-    <AuthContext.Provider value={{ user, token, loading, expira, motivoCierre, login, establecerSesion, logout, refrescarUsuario, tieneRol }}>
+    <AuthContext.Provider value={{ user, token, loading, expira, motivoCierre, login, establecerSesion, logout, refrescarUsuario, tieneRol, puede }}>
       {children}
     </AuthContext.Provider>
   );

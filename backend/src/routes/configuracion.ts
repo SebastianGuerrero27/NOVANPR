@@ -1,6 +1,6 @@
 import { Router, Request, Response } from 'express';
 import { getDB } from '../config/db';
-import { authMiddleware, soloAdmin } from '../middlewares/auth';
+import { authMiddleware, requierePermiso } from '../middlewares/auth';
 import { cargarConfiguracion, guardarValor, listarConfiguracion, validarValor } from '../services/configuracion';
 import { emailService } from '../services/emailService';
 import { auditarOperacion } from '../services/seguridad';
@@ -14,7 +14,7 @@ import { ZONA_HORARIA } from '../services/tiempo';
  *   PUT /api/configuracion   { valores: { clave: valor } } — se validan todos antes de guardar
  */
 const router = Router();
-router.use(authMiddleware, soloAdmin);
+router.use(authMiddleware, requierePermiso('configuracion:gestionar'));
 
 router.get('/', async (_req: Request, res: Response) => {
   const anpr = await estadoServicioAnpr();

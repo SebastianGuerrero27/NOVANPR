@@ -1,7 +1,7 @@
 import { Router, Request, Response } from 'express';
 import sql from 'mssql';
 import { getDB } from '../config/db';
-import { authMiddleware, roleMiddleware } from '../middlewares/auth';
+import { authMiddleware, requierePermiso } from '../middlewares/auth';
 import { crearProveedorPropietario, enmascararIdentificacion } from '../services/consultaPropietario';
 import { normalizePlate } from '../services/plateMatching';
 
@@ -33,7 +33,7 @@ async function auditar(db: sql.ConnectionPool, req: Request, placa: string, moti
     `);
 }
 
-router.post('/consulta', authMiddleware, roleMiddleware(['Admin']), async (req: Request, res: Response) => {
+router.post('/consulta', authMiddleware, requierePermiso('propietario:consultar'), async (req: Request, res: Response) => {
   const placa = normalizePlate(req.body?.placa);
   const motivo = String(req.body?.motivo ?? '').trim();
   const detId = Number.isInteger(req.body?.deteccion_id) ? req.body.deteccion_id : null;
@@ -74,7 +74,7 @@ router.post('/consulta', authMiddleware, roleMiddleware(['Admin']), async (req: 
   }
 });
 
-router.get('/auditoria', authMiddleware, roleMiddleware(['Admin']), async (_req: Request, res: Response) => {
+router.get('/auditoria', authMiddleware, requierePermiso('propietario:consultar'), async (_req: Request, res: Response) => {
   try {
     const r = await getDB().request().query(`
       SELECT TOP 200 id, usuario_nombre, placa, motivo, deteccion_id, proveedor, resultado, fecha

@@ -187,6 +187,20 @@ export const emailService = {
     });
   },
 
+  alarmaEscalada(email: string, nombre: string, titulo: string, mensaje: string, enlace: string) {
+    return enviar(email, `Alarma sin atender · ${titulo.substring(0, 80)} · Sistema ANPR ECU 911`, {
+      etiqueta: 'Alarma escalada',
+      titulo,
+      parrafos: [
+        `Estimado/a <strong>${escapar(nombre)}</strong>:`,
+        escapar(mensaje),
+        'La alarma no fue reconocida por el personal en el tiempo configurado. Revísela y regístrela como atendida.',
+      ],
+      boton: { texto: 'Abrir en el sistema', url: enlace },
+      aviso: 'Este correo se envía porque su rol recibe las alarmas escaladas del sistema ANPR.',
+    });
+  },
+
   cuentaBloqueada(email: string, nombre: string, minutos: number) {
     return enviar(email, 'Cuenta bloqueada temporalmente · Sistema ANPR ECU 911', {
       etiqueta: 'Notificación de seguridad',

@@ -13,6 +13,7 @@ import { diaCorto, fechaHora, numero, relativo, ROLES, SERIES_ESTADO } from '../
 import { Aviso, Cargando, Kpi, Tarjeta, Vacio } from '../components/ui';
 import { BarraDistribucion, BarrasApiladas, Leyenda } from '../components/Graficos';
 import { RegistroManualModal, TarjetaDeteccion, ValidarModal } from '../components/deteccion';
+import PanelAccesos from './PanelAccesos';
 
 function saludo(): string {
   const h = Number(new Intl.DateTimeFormat('es-EC', { timeZone: 'America/Guayaquil', hour: 'numeric', hour12: false }).format(new Date()));
@@ -155,7 +156,7 @@ const PanelOperador: React.FC = () => {
   );
 };
 
-/* ─────────────── Panel de gestión (Administrador y Supervisor) ─────────────── */
+/* ─────────────── Panel de gestión (permiso alertas:gestionar: Administrador y Supervisor) ─────────────── */
 
 const Tendencia: React.FC<{ r: ResumenPanel }> = ({ r }) => (
   <Tarjeta titulo="Últimos 7 días" subtitulo="Ingresos diarios por estado" acciones={<Leyenda series={SERIES_ESTADO} />}>
@@ -211,7 +212,7 @@ const Administracion: React.FC = () => {
     <>
       <div className="grid-kpi">
         <Kpi etiqueta="Usuarios activos" valor={numero(a.usuarios.activos)} icono={<UserCheck size={17} />} color="var(--autorizado)" fondo="var(--autorizado-bg)"
-          pie={`${a.usuarios.por_rol.Admin} admin · ${a.usuarios.por_rol.Supervisor} supervisores · ${a.usuarios.por_rol.Operador} operadores`} />
+          pie={`${a.usuarios.por_rol.Admin ?? 0} admin · ${a.usuarios.por_rol.Supervisor ?? 0} supervisores · ${a.usuarios.por_rol.GestorAccesos ?? 0} gestores · ${a.usuarios.por_rol.Operador ?? 0} operadores`} />
         <Kpi etiqueta="Cuentas por verificar" valor={numero(a.usuarios.pendientes)} icono={<Mail size={17} />} color="var(--pendiente)" fondo="var(--pendiente-bg)" pie="Registro sin confirmar el correo" />
         <Kpi etiqueta="Cuentas bloqueadas" valor={numero(a.usuarios.bloqueados)} icono={<KeyRound size={17} />} color="var(--alerta)" fondo="var(--alerta-bg)" pie="Administrativo o por intentos" />
         <Kpi etiqueta="Accesos fallidos (24 h)" valor={numero(a.accesos_24h.fallidos)} icono={<ShieldAlert size={17} />} color="var(--no-registrado)" fondo="var(--no-registrado-bg)"
@@ -250,7 +251,7 @@ const Administracion: React.FC = () => {
 };
 
 const PanelGestion: React.FC = () => {
-  const { user, tieneRol } = useAuth();
+  const { user, puede } = useAuth();
   const { datos: r, cargando, error } = useResumen();
   return (
     <div className="pagina">
@@ -282,7 +283,7 @@ const PanelGestion: React.FC = () => {
             <div className="grid-principal"><EstadoCamaras r={r} /><UltimasAlertas r={r} /></div>
           </>
         )}
-        {tieneRol('Admin') && <>
+        {puede('usuarios:gestionar') && <>
           <h3 style={{ fontSize: 15, fontWeight: 700, marginTop: 8 }}>Administración del sistema</h3>
           <Administracion />
         </>}
@@ -291,10 +292,15 @@ const PanelGestion: React.FC = () => {
   );
 };
 
-/** Inicio según el rol: el operador ve su turno; administración y supervisión, la gestión. */
+/**
+ * Inicio según los permisos: quien supervisa (reportes y alertas) ve la gestión; el gestor de
+ * accesos, su panel de permisos y solicitudes; el operador, su turno.
+ */
 const Inicio: React.FC = () => {
-  const { tieneRol } = useAuth();
-  return tieneRol('Admin', 'Supervisor') ? <PanelGestion /> : <PanelOperador />;
+  const { puede } = useAuth();
+  if (puede('alertas:gestionar')) return <PanelGestion />;
+  if (puede('padron:gestionar')) return <PanelAccesos />;
+  return <PanelOperador />;
 };
 
 export default Inicio;

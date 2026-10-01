@@ -1,7 +1,8 @@
 import { Router, Request, Response } from 'express';
 import sql from 'mssql';
 import { getDB } from '../config/db';
-import { adminOSupervisor, authMiddleware } from '../middlewares/auth';
+import { authMiddleware, requierePermiso } from '../middlewares/auth';
+import { tienePermiso } from '../dominio/permisos';
 import { cambiarCamaraAnpr, estadoServicioAnpr, urlPublicaAnpr } from '../services/servicioAnpr';
 import { emitirTicket, rutaCamara, urlLecturaMotor, urlWebrtcPublica } from '../services/medios';
 import { auditarOperacion } from '../services/seguridad';
@@ -13,7 +14,7 @@ import { emitEvent } from '../services/socket';
  * Monitoreo en vivo.
  *
  *   GET  /estado         estado del motor ANPR y cámara que está procesando
- *   POST /camara-activa  cambia la cámara que procesa el motor (Administrador / Supervisor)
+ *   POST /camara-activa  cambia la cámara que procesa el motor (permiso camaras:operar)
  *   POST /ticket         credencial de 60 s para el video (WebRTC de MediaMTX o WebSocket del motor)
  */
 const router = Router();
@@ -32,7 +33,7 @@ router.get('/estado', async (_req: Request, res: Response) => {
   });
 });
 
-router.post('/camara-activa', adminOSupervisor, async (req: Request, res: Response) => {
+router.post('/camara-activa', requierePermiso('camaras:operar'), async (req: Request, res: Response) => {
   const id = Number(req.body?.camara_id);
   if (!Number.isInteger(id)) return res.status(400).json({ error: 'Seleccione una cámara.' });
   try {
@@ -55,7 +56,7 @@ router.post('/camara-activa', adminOSupervisor, async (req: Request, res: Respon
 router.post('/ticket', (req: Request, res: Response) => {
   const alcance = req.body?.alcance === 'webcam' ? 'webcam' : 'stream';
   // Enviar la webcam del navegador al motor es un modo de prueba: solo Administrador
-  if (alcance === 'webcam' && req.user!.rol !== 'Admin') {
+  if (alcance === 'webcam' && !tienePermiso(req.user!.rol, 'camaras:gestionar')) {
     return res.status(403).json({ error: 'Solo el administrador puede usar la webcam como fuente de prueba.' });
   }
   return res.json({ ticket: emitirTicket(req.user!.id, alcance), url: urlPublicaAnpr(), webrtc: urlWebrtcPublica() });

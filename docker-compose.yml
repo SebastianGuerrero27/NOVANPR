@@ -22,7 +22,8 @@ services:
     image: redis:7-alpine
     container_name: anpr-redis
     ports:
-      - "6379:6379"
+      # Solo en el equipo anfitrión: Redis no tiene contraseña y no debe exponerse a la red
+      - "127.0.0.1:6379:6379"
     volumes:
       - redis_data:/data
     command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
@@ -123,6 +124,11 @@ services:
       - REDIS_PASSWORD=
       - ENABLE_REDIS_CACHE=true
       - CACHE_TTL_SECONDS=3600
+      # Centro de notificaciones: Socket.IO con adaptador Redis (varias instancias) y Web Push
+      - SOCKET_REDIS_ADAPTER=true
+      - VAPID_PUBLIC_KEY=${VAPID_PUBLIC_KEY:-}
+      - VAPID_PRIVATE_KEY=${VAPID_PRIVATE_KEY:-}
+      - VAPID_SUBJECT=${VAPID_SUBJECT:-mailto:anpr@ecu911.gob.ec}
     volumes:
       - ./backend:/app
       - /app/node_modules

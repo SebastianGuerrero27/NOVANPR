@@ -4,6 +4,7 @@ import net from 'net';
 import sql from 'mssql';
 import { getDB } from '../config/db';
 import { emitEvent } from './socket';
+import { notificar } from './notificaciones';
 
 /**
  * Diagnóstico de cámaras con el propio protocolo RTSP: se envía un DESCRIBE a la URL
@@ -134,6 +135,19 @@ export async function registrarConexion(camaraId: number, r: ResultadoConexion, 
   const p = prev.recordset[0];
   if (forzarAviso || p?.estado !== estado || p?.mensaje_ping !== r.mensaje) {
     emitEvent('camara:estado', { id: camaraId, estado, tiempo_respuesta_ms: r.tiempo_ms, mensaje_ping: r.mensaje, ultimo_ping: new Date() });
+  }
+  // Transición EN_LINEA → SIN_CONEXION: un acceso sin cámara es un punto ciego del control
+  if (p?.estado === 'EN_LINEA' && estado === 'SIN_CONEXION') {
+    const c = await db.request().input('id', sql.Int, camaraId).query('SELECT nombre, ubicacion FROM Camaras WHERE id = @id');
+    const cam = c.recordset[0];
+    void notificar({
+      tipo: 'sistema.camara',
+      titulo: `Cámara sin conexión · ${cam?.nombre ?? `#${camaraId}`}`,
+      mensaje: `${cam?.ubicacion ?? 'Acceso'} · ${r.mensaje}. Los pasos por este acceso no se están registrando.`,
+      enlace: '/camaras',
+      claveDedup: `camara:${camaraId}`,
+      datos: { camara_id: camaraId },
+    });
   }
 }
 

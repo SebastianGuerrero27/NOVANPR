@@ -1,7 +1,8 @@
 import { Router, Request, Response } from 'express';
 import sql from 'mssql';
 import { getDB } from '../config/db';
-import { authMiddleware, soloAdmin } from '../middlewares/auth';
+import { authMiddleware, requierePermiso } from '../middlewares/auth';
+import { ROL_POR_CODIGO, ROLES } from '../dominio/permisos';
 import { config } from '../services/configuracion';
 import { emailService } from '../services/emailService';
 import { estadoServicioAnpr } from '../services/servicioAnpr';
@@ -13,6 +14,7 @@ import { mapearDeteccion } from './detecciones';
  * hay detecciones, los indicadores valen cero (no hay datos de relleno).
  *
  *   GET /api/panel/resumen          operación (todos los roles)
+ *   GET /api/panel/accesos          solicitudes, padrón, denegados y reincidentes (Gestor de accesos)
  *   GET /api/panel/administracion   cuentas, accesos, actividad y estado de servicios (Administrador)
  */
 const router = Router();
@@ -108,7 +110,74 @@ router.get('/resumen', authMiddleware, async (_req: Request, res: Response) => {
   }
 });
 
-router.get('/administracion', authMiddleware, soloAdmin, async (_req: Request, res: Response) => {
+/**
+ * Panel del Gestor de accesos: solicitudes, estado del padrón, accesos denegados y
+ * restringidos de hoy y placas reincidentes (base para registrar o investigar).
+ */
+router.get('/accesos', authMiddleware, requierePermiso('padron:gestionar'), async (req: Request, res: Response) => {
+  try {
+    const db = getDB();
+    const ahora = new Date();
+    const hoy = inicioDiaLocal(ahora);
+    const hace7 = inicioDiaLocal(ahora, -6);
+    const diasAviso = config.entero('aviso_vencimiento_dias');
+    const p = () => db.request().input('hoy', sql.DateTime, hoy).input('hace7', sql.DateTime, hace7).input('dias', sql.Int, diasAviso)
+      .input('uid', sql.Int, req.user!.id);
+    const h = hoyLocalSql();
+    const [solicitudes, padron, categorias, denegados, reincidentes, recientes] = await Promise.all([
+      p().query(`
+        SELECT TOP 5 s.id, s.placa, s.propietario, s.categoria, s.motivo, s.fecha_solicitud, u.nombre_completo AS solicitante,
+               (SELECT COUNT(*) FROM SolicitudesAcceso WHERE estado = 'pendiente' AND solicitado_por <> @uid) AS total
+        FROM SolicitudesAcceso s JOIN Usuarios u ON u.id = s.solicitado_por
+        -- Separación de funciones: las solicitudes propias no son trabajo pendiente de quien las registró
+        WHERE s.estado = 'pendiente' AND s.solicitado_por <> @uid ORDER BY s.fecha_solicitud`),
+      p().query(`
+        SELECT
+          SUM(CASE WHEN (fecha_vencimiento IS NULL OR fecha_vencimiento >= ${h}) AND (fecha_inicio IS NULL OR fecha_inicio <= ${h}) THEN 1 ELSE 0 END) AS vigentes,
+          SUM(CASE WHEN fecha_vencimiento >= ${h} AND fecha_vencimiento <= DATEADD(DAY, @dias, ${h}) THEN 1 ELSE 0 END) AS por_vencer,
+          SUM(CASE WHEN fecha_vencimiento < ${h} THEN 1 ELSE 0 END) AS vencidos,
+          SUM(CASE WHEN fecha_inicio > ${h} THEN 1 ELSE 0 END) AS por_iniciar,
+          SUM(CASE WHEN horario IS NOT NULL THEN 1 ELSE 0 END) AS con_horario
+        FROM VehiculosAutorizados WHERE activo = 1`),
+      p().query(`SELECT categoria, COUNT(*) AS n FROM VehiculosAutorizados WHERE activo = 1 GROUP BY categoria`),
+      p().query(`
+        SELECT SUM(CASE WHEN restriccion_acceso IS NULL THEN 1 ELSE 0 END) AS sin_permiso,
+               SUM(CASE WHEN restriccion_acceso IS NOT NULL THEN 1 ELSE 0 END) AS restringidos
+        FROM DeteccionVehiculo WHERE estado_validacion = 'no_reconocido' AND fecha_hora_ingreso >= @hoy`),
+      p().query(`
+        SELECT TOP 5 REPLACE(COALESCE(placa_validada, placa_reconocida), '-', '') AS placa, COUNT(*) AS intentos,
+               MAX(fecha_hora_ingreso) AS ultimo
+        FROM DeteccionVehiculo
+        WHERE estado_validacion = 'no_reconocido' AND restriccion_acceso IS NULL AND fecha_hora_ingreso >= @hace7
+          AND COALESCE(placa_validada, placa_reconocida) IS NOT NULL
+        GROUP BY REPLACE(COALESCE(placa_validada, placa_reconocida), '-', '')
+        HAVING COUNT(*) >= 2 ORDER BY COUNT(*) DESC, MAX(fecha_hora_ingreso) DESC`),
+      p().query(`
+        SELECT TOP 8 d.*, c.nombre AS camara_nombre, c.ubicacion AS camara_ubicacion,
+               v.propietario, v.departamento, v.categoria AS autorizado_categoria, v.horario AS autorizado_horario,
+               v.fecha_inicio AS autorizado_inicio, v.fecha_vencimiento AS autorizado_vence
+        FROM DeteccionVehiculo d LEFT JOIN Camaras c ON c.id = d.camara_id
+        LEFT JOIN VehiculosAutorizados v ON v.id = d.vehiculo_autorizado_id
+        WHERE d.estado_validacion = 'no_reconocido' AND d.fecha_hora_ingreso >= @hace7
+        ORDER BY d.fecha_hora_ingreso DESC`),
+    ]);
+    const sol = solicitudes.recordset;
+    return res.json({
+      generado: ahora,
+      solicitudes: { pendientes: Number(sol[0]?.total ?? 0), ultimas: sol.map(({ total: _t, ...x }) => x) },
+      padron: { ...cero(padron.recordset[0]), dias_aviso: diasAviso },
+      categorias: Object.fromEntries(categorias.recordset.map(c => [c.categoria, Number(c.n)])),
+      hoy: cero(denegados.recordset[0]),
+      reincidentes: reincidentes.recordset.map(r => ({ placa: r.placa, intentos: Number(r.intentos), ultimo: r.ultimo })),
+      denegados_recientes: recientes.recordset.map(d => mapearDeteccion(d)),
+    });
+  } catch (e: any) {
+    console.error('[PANEL] accesos:', e.message);
+    return res.status(500).json({ error: 'No se pudo obtener el panel de accesos.' });
+  }
+});
+
+router.get('/administracion', authMiddleware, requierePermiso('usuarios:gestionar'), async (_req: Request, res: Response) => {
   try {
     const db = getDB();
     const [usuarios, accesos, fallidos, actividad, anpr] = await Promise.all([
@@ -132,15 +201,15 @@ router.get('/administracion', authMiddleware, soloAdmin, async (_req: Request, r
       estadoServicioAnpr(),
     ]);
 
-    const u = { total: 0, activos: 0, pendientes: 0, inactivos: 0, bloqueados: 0, por_rol: { Admin: 0, Supervisor: 0, Operador: 0 } as Record<string, number> };
-    const rol: Record<string, string> = { ADMIN: 'Admin', SUPERVISOR: 'Supervisor', OPERADOR: 'Operador' };
+    const porRol = Object.fromEntries(ROLES.map(r => [r, 0])) as Record<string, number>;
+    const u = { total: 0, activos: 0, pendientes: 0, inactivos: 0, bloqueados: 0, por_rol: porRol };
     for (const f of usuarios.recordset) {
       u.total += f.n;
       if (f.bloqueado || f.bloqueo_temporal) u.bloqueados += f.n;
       else if (f.estado === 'activo') u.activos += f.n;
       else if (f.estado === 'pendiente') u.pendientes += f.n;
       else u.inactivos += f.n;
-      u.por_rol[rol[f.codigo]] += f.n;
+      if (ROL_POR_CODIGO[f.codigo]) u.por_rol[ROL_POR_CODIGO[f.codigo]] += f.n;
     }
     return res.json({
       usuarios: u,

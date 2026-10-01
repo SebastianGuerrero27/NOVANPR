@@ -8,7 +8,10 @@
 --   * Solo se precarga el catálogo de roles, sin el cual el sistema no funciona.
 --   * Trazabilidad: quién registró / validó cada dato y auditoría de accesos.
 --
--- Las bases existentes se actualizan con db/migration_v2_seguridad.sql (idempotente).
+-- Las bases existentes se actualizan con las migraciones db/migration_*.sql (idempotentes), que el
+-- backend aplica al arrancar en el orden de backend/src/config/db.ts (MIGRACIONES) y registra en
+-- SchemaMigraciones. La v5 agrega el rol Gestor de accesos, los permisos de placa con horario, las
+-- solicitudes de acceso y el centro de notificaciones.
 -- =============================================================================
 
 IF NOT EXISTS (SELECT * FROM sys.databases WHERE name = 'ANPR_ECU911')
@@ -29,7 +32,8 @@ IF NOT EXISTS (SELECT * FROM sys.tables WHERE name = 'Roles')
 BEGIN
     CREATE TABLE Roles (
         id           INT IDENTITY(1,1) PRIMARY KEY,
-        codigo       VARCHAR(20)   NOT NULL UNIQUE CHECK (codigo IN ('ADMIN', 'SUPERVISOR', 'OPERADOR')),
+        -- Códigos válidos: los de backend/src/dominio/permisos.ts (ROL_POR_CODIGO)
+        codigo       VARCHAR(20)   NOT NULL UNIQUE,
         nombre       NVARCHAR(50)  NOT NULL,
         descripcion  NVARCHAR(255) NULL
     );
@@ -42,6 +46,8 @@ IF NOT EXISTS (SELECT 1 FROM Roles WHERE codigo = 'SUPERVISOR')
 IF NOT EXISTS (SELECT 1 FROM Roles WHERE codigo = 'OPERADOR')
     INSERT INTO Roles (codigo, nombre, descripcion) VALUES ('OPERADOR', N'Operador', N'Monitoreo en vivo y validación de ingresos vehiculares.');
 GO
+-- El rol GESTOR_ACCESOS (permisos de placa y solicitudes) lo agrega migration_v5_accesos_notificaciones.sql
+
 
 IF NOT EXISTS (SELECT * FROM sys.tables WHERE name = 'Usuarios')
 BEGIN

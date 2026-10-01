@@ -107,3 +107,23 @@ export function detenerSonido() {
   reproduciendo?.pause();
   reproduciendo = null;
 }
+
+/** Aviso breve de dos tonos para notificaciones importantes fuera de la garita (gestor, supervisor). */
+export function sonarAviso() {
+  if (!sonidoActivo()) return;
+  const ctx = audio();
+  if (!ctx) return;
+  const t = ctx.currentTime;
+  [{ f: 880, ini: 0 }, { f: 660, ini: 0.18 }].forEach(n => {
+    const o = ctx.createOscillator();
+    const g = ctx.createGain();
+    o.type = 'triangle';
+    o.frequency.setValueAtTime(n.f, t + n.ini);
+    g.gain.setValueAtTime(0.001, t + n.ini);
+    g.gain.linearRampToValueAtTime(0.18, t + n.ini + 0.02);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + n.ini + 0.35);
+    o.connect(g).connect(ctx.destination);
+    o.start(t + n.ini);
+    o.stop(t + n.ini + 0.4);
+  });
+}

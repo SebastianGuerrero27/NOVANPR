@@ -1,12 +1,12 @@
 import React, { useMemo, useState } from 'react';
-import { Link, useNavigate, useParams } from 'react-router-dom';
-import { Download, Edit3, History, Plus, Search, ShieldAlert, ShieldCheck, Trash2 } from 'lucide-react';
+import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
+import { Clock, Download, Edit3, History, Plus, Search, ShieldAlert, ShieldCheck, Trash2 } from 'lucide-react';
 import api, { mensajeError } from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import { useEvento } from '../lib/tiempoReal';
 import { useConsulta, useDiferido } from '../lib/hooks';
 import type { RegistroLista } from '../lib/tipos';
-import { descargarBlob, fecha, fechaIsoLocal, NIVELES_ALERTA, numero } from '../lib/formato';
+import { CATEGORIAS_PERMISO, descargarBlob, fecha, fechaIsoLocal, NIVELES_ALERTA, numero } from '../lib/formato';
 import { Aviso, Confirmar, FilasEsqueleto, Pestanas, Placa, Segmentado, Tarjeta, Vacio } from '../components/ui';
 import { FormularioLista, RUTA_API, TipoLista } from '../components/FormularioLista';
 import { useNotificar } from '../components/Notificaciones';
@@ -22,6 +22,7 @@ function vigenciaDe(r: RegistroLista): Exclude<Vigencia, 'todas'> {
 const InsigniaVigencia: React.FC<{ r: RegistroLista }> = ({ r }) => {
   const v = vigenciaDe(r);
   if (v === 'vencidas') return <span className="insignia neutro">Vencida · {fecha(r.fecha_vencimiento)}</span>;
+  if (r.pendiente_inicio) return <span className="insignia info">Desde {fecha(r.fecha_inicio)}</span>;
   if (!r.fecha_vencimiento) return <span className="insignia autorizado">Permanente</span>;
   return <span className={`insignia ${v === 'por_vencer' ? 'no_reconocido' : 'autorizado'}`}>Hasta {fecha(r.fecha_vencimiento)}</span>;
 };
@@ -29,10 +30,11 @@ const InsigniaVigencia: React.FC<{ r: RegistroLista }> = ({ r }) => {
 function aCsv(tipo: TipoLista, filas: RegistroLista[]): Blob {
   const c = (v: unknown) => `"${String(v ?? '').replace(/"/g, '""')}"`;
   const cab = tipo === 'autorizados'
-    ? ['Placa', 'Propietario', 'Departamento', 'Tipo', 'Marca', 'Modelo', 'Color', 'Vigente hasta', 'Observaciones', 'Ingresos', 'Registrado por', 'Fecha de registro']
+    ? ['Placa', 'Propietario', 'Departamento', 'Categoría', 'Tipo', 'Marca', 'Modelo', 'Color', 'Vigente desde', 'Vigente hasta', 'Horario', 'Observaciones', 'Ingresos', 'Registrado por', 'Fecha de registro']
     : ['Placa', 'Motivo', 'Nivel', 'Marca', 'Modelo', 'Color', 'Vigente hasta', 'Observaciones', 'Detecciones', 'Registrado por', 'Fecha de registro'];
   const lineas = filas.map(r => (tipo === 'autorizados'
-    ? [r.placa, r.propietario, r.departamento, r.tipo_vehiculo, r.marca, r.modelo, r.color, r.fecha_vencimiento?.slice(0, 10), r.observaciones, r.ingresos, r.registrado_por_email, fecha(r.fecha_registro)]
+    ? [r.placa, r.propietario, r.departamento, CATEGORIAS_PERMISO[r.categoria ?? ''] ?? r.categoria, r.tipo_vehiculo, r.marca, r.modelo, r.color,
+      r.fecha_inicio?.slice(0, 10), r.fecha_vencimiento?.slice(0, 10), r.horario_texto, r.observaciones, r.ingresos, r.registrado_por_email, fecha(r.fecha_registro)]
     : [r.placa, r.motivo, r.nivel_alerta, r.marca, r.modelo, r.color, r.fecha_vencimiento?.slice(0, 10), r.observaciones, r.ingresos, r.registrado_por_email, fecha(r.fecha_registro)]
   ).map(c).join(','));
   return new Blob(['﻿' + [cab.map(c).join(','), ...lineas].join('\n')], { type: 'text/csv;charset=utf-8' });
@@ -41,12 +43,18 @@ function aCsv(tipo: TipoLista, filas: RegistroLista[]): Blob {
 const Listas: React.FC = () => {
   const { tipo: tipoRuta } = useParams();
   const tipo: TipoLista = tipoRuta === 'alertas' ? 'alertas' : 'autorizados';
-  const { tieneRol } = useAuth();
+  const { puede } = useAuth();
   const navigate = useNavigate();
   const notificar = useNotificar();
-  const puedeEditar = tieneRol('Admin', 'Supervisor');
+  const [params] = useSearchParams();
+  // Cada lista tiene su propio permiso de edición (matriz RBAC): el gestor de accesos edita el
+  // padrón pero no la lista de alertas
+  const puedeEditar = puede(tipo === 'autorizados' ? 'padron:gestionar' : 'alertas:gestionar');
   const [busqueda, setBusqueda] = useState('');
-  const [vigencia, setVigencia] = useState<Vigencia>('todas');
+  const [vigencia, setVigencia] = useState<Vigencia>(() => {
+    const v = params.get('vigencia');
+    return v === 'vigentes' || v === 'por_vencer' || v === 'vencidas' ? v : 'todas';
+  });
   const [editando, setEditando] = useState<RegistroLista | 'nuevo' | null>(null);
   const [retirando, setRetirando] = useState<RegistroLista | null>(null);
 
@@ -77,13 +85,15 @@ const Listas: React.FC = () => {
             { valor: 'alertas', etiqueta: 'Lista de alertas', icono: <ShieldAlert size={15} /> },
           ]} />
 
-        {!puedeEditar && <Aviso tipo="info">Consulta de solo lectura. Las altas y cambios los realizan el administrador o el supervisor.</Aviso>}
+        {!puedeEditar && <Aviso tipo="info">Consulta de solo lectura. {tipo === 'autorizados'
+          ? <>Los permisos los gestiona el gestor de accesos; para autorizar un vehículo, <Link to="/solicitudes">envíe una solicitud de acceso</Link>.</>
+          : 'Las altas y cambios los realizan el supervisor o el administrador.'}</Aviso>}
         {error && <Aviso tipo="error">{error}</Aviso>}
 
         <Tarjeta
           titulo={tipo === 'autorizados' ? 'Padrón de vehículos autorizados' : 'Placas con alerta de seguridad'}
           subtitulo={tipo === 'autorizados'
-            ? 'Solo una coincidencia exacta de placa vigente concede el ingreso automático.'
+            ? 'Solo una coincidencia exacta de un permiso vigente, dentro de su horario, concede el ingreso automático.'
             : 'Se alerta incluso ante lecturas aproximadas (confusiones típicas del OCR como 0/O u 8/B).'}
           acciones={<>
             <button className="btn btn-secondary btn-sm" disabled={!filas.length} onClick={() => descargarBlob(aCsv(tipo, filas), `${tipo === 'autorizados' ? 'vehiculos_autorizados' : 'lista_alertas'}_${fechaIsoLocal()}.csv`)}>
@@ -119,7 +129,9 @@ const Listas: React.FC = () => {
                     <td><Placa valor={r.placa} /></td>
                     {tipo === 'autorizados' ? (
                       <>
-                        <td><strong style={{ color: 'var(--text)', fontWeight: 600 }}>{r.propietario}</strong>{(r.departamento || r.observaciones) && <span className="secundario truncar" style={{ maxWidth: 280 }} title={r.observaciones ?? ''}>{[r.departamento, r.observaciones].filter(Boolean).join(' · ')}</span>}</td>
+                        <td><strong style={{ color: 'var(--text)', fontWeight: 600 }}>{r.propietario}</strong>
+                          <span className="secundario truncar" style={{ maxWidth: 280 }} title={r.observaciones ?? ''}>{[CATEGORIAS_PERMISO[r.categoria ?? ''] ?? r.categoria, r.departamento, r.observaciones].filter(Boolean).join(' · ')}</span>
+                          {r.horario && <span className="secundario" title="Horario de acceso"><Clock size={11} style={{ verticalAlign: -1 }} /> {r.horario_texto}</span>}</td>
                         <td className="ocultar-movil">{[r.tipo_vehiculo, [r.marca, r.modelo].filter(Boolean).join(' '), r.color].filter(Boolean).join(' · ') || '—'}</td>
                       </>
                     ) : (

@@ -1,18 +1,18 @@
 import { Router, Request, Response } from 'express';
 import sql from 'mssql';
 import { getDB } from '../config/db';
-import { adminOSupervisor, authMiddleware } from '../middlewares/auth';
+import { authMiddleware, requierePermiso } from '../middlewares/auth';
 import { desfaseMinutos, inicioDiaLocal } from '../services/tiempo';
 
 /**
- * Reporte consolidado de un período (Administrador / Supervisor).
+ * Reporte consolidado de un período (permiso reportes:ver).
  *
  *   GET /api/reportes?desde=ISO&hasta=ISO&camara=id
  *
  * Por omisión, los últimos 7 días locales. Máximo 366 días por consulta.
  */
 const router = Router();
-router.use(authMiddleware, adminOSupervisor);
+router.use(authMiddleware, requierePermiso('reportes:ver'));
 
 const CONTEOS = `
   COUNT(*) AS total,

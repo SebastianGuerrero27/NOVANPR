@@ -85,17 +85,22 @@ export async function findBlacklistMatch(db: sql.ConnectionPool, placa: string):
   return aproximada;
 }
 
-/** Busca la placa en Vehículos Autorizados activos con coincidencia exacta normalizada. */
-export async function findAuthorizedExact(db: sql.ConnectionPool, placa: string): Promise<any | null> {
+/**
+ * Permiso de la placa en el padrón (registro activo, coincidencia EXACTA normalizada), sin
+ * filtrar por fechas ni horario: la vigencia temporal la evalúa la política de acceso
+ * (dominio/horario.ts → evaluarVigencia) para poder explicar POR QUÉ un permiso existente no
+ * concede el paso (fuera de horario, aún no vigente o vencido).
+ */
+export async function findPermisoExacto(db: sql.ConnectionPool, placa: string): Promise<any | null> {
   const clean = normalizePlate(placa);
   if (!clean) return null;
   const result = await db.request()
     .input('placa', sql.VarChar(20), clean)
     .query(`
-      SELECT TOP 1 id, placa, propietario, departamento, tipo_vehiculo, marca, modelo, color
+      SELECT TOP 1 id, placa, propietario, departamento, tipo_vehiculo, marca, modelo, color,
+             categoria, fecha_inicio, fecha_vencimiento, horario
       FROM VehiculosAutorizados
       WHERE activo = 1 AND REPLACE(REPLACE(placa, '-', ''), ' ', '') = @placa
-        AND (fecha_vencimiento IS NULL OR fecha_vencimiento >= ${hoyLocalSql()})
     `);
   return result.recordset[0] ?? null;
 }

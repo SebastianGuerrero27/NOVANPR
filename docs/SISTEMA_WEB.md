@@ -8,23 +8,27 @@ valores de relleno (un indicador sin registros vale cero y cada pantalla tiene s
 
 | Rol | Puede |
 |---|---|
-| **Operador** | Inicio operativo, monitoreo en vivo, registro de ingresos, validar/corregir lecturas, registro manual, consultar listas |
-| **Supervisor** | Todo lo del operador + alta/edición/retiro en las listas, reportes, evaluación del sistema, cambiar la cámara que procesa el motor |
+| **Operador** | Inicio operativo, monitoreo en vivo, registro de ingresos, validar/corregir lecturas, registro manual, consultar listas, **solicitar autorizaciones**. Recibe el aviso de garita con protocolo |
+| **Gestor de accesos** | Permisos de placa (categoría, vigencia, **franjas horarias**), **resolver solicitudes de acceso**, autorizar **excepciones**, reportes. Recibe alertas de accesos denegados/fuera de horario, solicitudes y reincidencias |
+| **Supervisor** | Todo lo del operador + ambas listas, solicitudes, excepciones, reportes, evaluación, cámara del motor; recibe alarmas escaladas |
 | **Administrador** | Todo + usuarios, auditoría, cámaras, configuración, eliminar ingresos, consulta de propietario (convenio) y webcam de prueba |
 
-El menú lateral se arma por rol (`frontend/src/layout/navegacion.tsx`) y la API aplica el mismo
-control en cada endpoint (`authMiddleware`, `adminOSupervisor`, `soloAdmin`).
+La autorización es **por permisos** (matriz única en `backend/src/dominio/permisos.ts`, detalle en
+[ROLES_Y_PERMISOS.md](ROLES_Y_PERMISOS.md)): la API exige `requierePermiso(...)` en cada endpoint y el
+frontend arma el menú, las rutas y las acciones con `puede(...)` a partir de los permisos de la sesión.
 
 ## Pantallas
 
 | Ruta | Pantalla |
 |---|---|
 | `/login`, `/registro`, `/configuracion-inicial`, `/verificar-email`, `/restablecer-password` | Acceso y ciclo de vida de la cuenta |
-| `/` | Inicio: panel del operador (su turno, cola de validación, alertas) o panel de gestión (indicadores, ingresos por hora, 7 días, distribución, listas, exactitud de lectura, cámaras; el administrador ve además cuentas, accesos fallidos, actividad y servicios) |
+| `/` | Inicio: panel del operador (su turno, cola de validación, alertas), panel del **gestor de accesos** (solicitudes, permisos por vencer, denegados de hoy, reincidentes) o panel de gestión (indicadores, ingresos por hora, 7 días, distribución, listas, exactitud de lectura, cámaras; el administrador ve además cuentas, accesos fallidos, actividad y servicios) |
 | `/monitoreo` | Video en vivo, último paso destacado, feed en tiempo real, aviso de alerta con sonido, consulta de placa, ingreso manual |
 | `/detecciones` | Registro de ingresos paginado con filtros en la URL, exportación CSV |
 | `/detecciones/:id` | Detalle: evidencia, lectura automática vs. confirmada, validez de la lectura (evidencias del motor), condiciones de captura, pasos anteriores, trazabilidad, acciones |
-| `/listas/autorizados`, `/listas/alertas` | Listas de control con vigencia (vigentes / por vencer / vencidas) y observaciones |
+| `/listas/autorizados`, `/listas/alertas` | Permisos de placa (categoría, vigencia desde/hasta, horario) y lista de alertas, con filtro de vigencia |
+| `/solicitudes` | Solicitudes de acceso: crear, aprobar con ajustes de vigencia/horario, rechazar, cancelar |
+| `/notificaciones` | Bandeja de alarmas (sin leer / pendientes de atención), activación de Web Push en el equipo y avisos que recibe el rol |
 | `/reportes` | Reporte por período y cámara, impresión y exportación |
 | `/evaluacion` | Métricas científicas del reconocimiento |
 | `/usuarios`, `/auditoria`, `/camaras`, `/configuracion` | Administración (en Cámaras, **Área** dibuja la región de interés sobre el video) |
@@ -41,10 +45,14 @@ Método, regla de decisión y protocolo de evaluación: [METODO_VERIFICACION_LEC
 
 - **Carga diferida:** cada pantalla es un módulo aparte (2–8 kB gzip); el acceso no descarga el
   panel ni el video. Base común ≈ 93 kB gzip (React, router, axios, socket.io).
-- **Tiempo real sin sondeo:** una sola conexión Socket.IO autenticada por sesión. Eventos:
+- **Tiempo real sin sondeo:** una sola conexión Socket.IO autenticada por sesión (salas
+  `usuario:{id}` y `rol:{rol}`, adaptador Redis para varias instancias). Eventos:
   `deteccion:nueva | actualizada | alerta | eliminada`, `camara:estado | actualizada | eliminada`,
-  `listas:actualizadas`, `monitoreo:camara`. Los paneles agrupan recargas (5 s) y, con la pestaña
+  `listas:actualizadas`, `monitoreo:camara`, `solicitudes:actualizadas`,
+  `notificacion:nueva | actualizada`. Los paneles agrupan recargas (5 s) y, con la pestaña
   oculta, esperan a que vuelva a ser visible.
+- **Centro de notificaciones:** bandeja persistente con reconocimiento (ACK), escalamiento y Web Push
+  para la pestaña cerrada ([NOTIFICACIONES.md](NOTIFICACIONES.md)).
 - **Video en vivo (WebRTC):** cámara → MediaMTX → navegador por WebRTC (WHEP), sin
   transcodificar: el H.264 de la cámara llega tal cual y el navegador lo decodifica por hardware,
   con búfer de reproducción mínimo. Retardo típico en red local: 0,2–0,5 s (se muestra en el
