@@ -99,3 +99,7 @@ dataset/preds/
 
 # Respaldos de la base de datos (datos operativos, no versionar)
 backups/
+# Dataset público Open Images (scripts/prepare_openimages_plates.py) y corridas de entrenamiento
+dataset/openimages_plates/
+dataset/openimages_cache/
+dataset/runs/

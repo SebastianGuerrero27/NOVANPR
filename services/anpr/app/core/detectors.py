@@ -30,8 +30,34 @@ class BaseDetector(ABC):
         pass
 
 
+def identificar_arquitectura(red: Any) -> str:
+    """
+    Identifica la familia YOLO de una red de Ultralytics por su estructura, no por el nombre del
+    archivo (un modelo afinado puede llamarse de cualquier forma):
+
+      - YOLO26: bloques C3k2 + C2PSA y cabeza Detect sin DFL (reg_max = 1, sin NMS).
+      - YOLO11: bloques C3k2 + C2PSA y cabeza Detect con DFL (reg_max = 16).
+      - YOLOv8: bloques C2f.
+
+    Recibe el nn.Module (``YOLO(...).model``). Devuelve "yolo26", "yolo11", "yolov8" o "desconocida".
+    """
+    capas = list(getattr(red, "model", None) or [])
+    if not capas:
+        return "desconocida"
+    tipos = {type(capa).__name__ for capa in capas}
+    reg_max = getattr(capas[-1], "reg_max", None)
+    if "C2f" in tipos:
+        return "yolov8"
+    if "C3k2" in tipos:
+        if reg_max == 1:
+            return "yolo26"
+        if reg_max == 16:
+            return "yolo11"
+    return "desconocida"
+
+
 class YoloDetector(BaseDetector):
-    """Detector de objetos basado en Ultralytics YOLO (v8, v11, etc.)."""
+    """Detector de objetos basado en Ultralytics YOLO (YOLO26 en producción; también v8/11)."""
 
     def __init__(
         self,
@@ -58,6 +84,9 @@ class YoloDetector(BaseDetector):
         try:
             from ultralytics import YOLO
             self.model = YOLO(model_path)
+            self.arquitectura = identificar_arquitectura(getattr(self.model, "model", None))
+            logger.info("Arquitectura del detector %s: %s (clases: %s)",
+                        os.path.basename(model_path), self.arquitectura, getattr(self.model, "names", {}))
             # Mapear nombres de clases a IDs si se pasaron strings
             self.class_filter_ids = self._resolve_class_ids()
         except Exception as e:
