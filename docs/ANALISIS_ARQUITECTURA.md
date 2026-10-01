@@ -86,6 +86,7 @@ Severidad: **A** alta (correctitud/seguridad), **M** media (mantenibilidad/opera
 | H13 | M | Un cambio de rol o un bloqueo no afectaba a las conexiones Socket.IO abiertas (salas por rol obsoletas). | `alInvalidarCuenta()` cierra las conexiones de la cuenta. |
 | H14 | M | Tiempo real solo por difusión global: sin salas por usuario ni reparto entre instancias. | Salas `usuario:{id}` y adaptador Redis (verificado con dos instancias). |
 | H15 | B | Fechas de vigencia interpretadas en la hora local del contenedor (`T00:00:00`). | Interpretación explícita en UTC para columnas `DATE`. |
+| H17 | A | Trivy reportaba 12 vulnerabilidades altas con corrección disponible: axios 1.19.0 (frontend; SSRF y DoS), engine.io 6.6.9 (backend; DoS), python-multipart 0.0.20 (motor; escritura arbitraria por *path traversal* y DoS) y python-socketio 5.13.0 (motor; DoS). | axios 1.20.0, engine.io 6.6.11, python-multipart 0.0.30, python-socketio 5.16.2; Trivy: 0 altas/críticas. Verificado: 191 pruebas del backend, build del frontend, 63 pruebas del motor y subida `UploadFile` de FastAPI. |
 | H16 | M | CI en rojo en `main`: (a) `upload-sarif` sin permisos y sin GitHub Advanced Security (repositorio privado); (b) `tests/archive/` sin paquete interrumpía la recolección de las 63 pruebas del motor; (c) una prueba del validador contradecía su contrato documentado (`sanitize` elimina símbolos); (d) imágenes Docker etiquetadas con un secreto inexistente. | Permisos del job y umbral propio de Trivy (falla ante vulnerabilidades críticas corregibles; informe SARIF como artefacto); `services/anpr/pytest.ini`; prueba alineada al contrato; prefijo por omisión y publicación solo con credenciales. |
 
 ### 3.2 Recomendaciones (no aplicadas; justificación)
@@ -103,7 +104,6 @@ Severidad: **A** alta (correctitud/seguridad), **M** media (mantenibilidad/opera
 | R9 | M | JWT en `sessionStorage`, accesible ante un XSS. | Cookie `httpOnly`+`SameSite=Strict` con token anti-CSRF y CSP estricta. |
 | R10 | B | Caché de cuentas de 20 s por instancia (`middlewares/auth.ts:43`): con varias instancias, un bloqueo tarda hasta 20 s en las demás. | Invalidación por Redis pub/sub. |
 | R11 | B | CI: `eslint` sin configuración (el paso siempre se omite); las pruebas Python requieren todas las dependencias de visión; el workflow de CD apunta a secretos de Kubernetes y a una carpeta `k8s/` inexistentes. | Configurar ESLint; marcar pruebas puras para ejecutarlas sin modelos; definir el despliegue real o desactivar el CD. |
-| R13 | M | Trivy reporta 12 vulnerabilidades altas corregibles (axios en el frontend; engine.io en el backend; python-multipart y python-socketio en el motor). | Actualizar esas dependencias y probar el motor (python-socketio) antes de subir el umbral del CI a `HIGH`. |
 | R12 | B | 80 bloques `except Exception` en el motor. | Capturar excepciones específicas y contarlas en Prometheus. |
 
 ## 4. Decisiones de diseño (registro de decisiones)
