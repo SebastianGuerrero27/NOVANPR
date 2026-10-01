@@ -1193,6 +1193,7 @@ def _model_info() -> dict:
     verifier = get_verifier() if _running else None
     return {
         "detector": os.path.basename(getattr(getattr(_pipeline, "detector", None), "model_path", "") or "") or None,
+        "detector_arquitectura": getattr(getattr(_pipeline, "detector", None), "arquitectura", None),
         "ocr_engine": f"{getattr(ocr, 'engine_name', '?')} ({getattr(ocr, 'model_id', '?')})" if ocr else None,
         "ocr_verifier": verifier.description if verifier else None,
     }

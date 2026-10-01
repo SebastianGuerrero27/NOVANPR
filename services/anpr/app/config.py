@@ -37,7 +37,7 @@ FRAME_HEIGHT: int = int(os.getenv("FRAME_HEIGHT", "720"))
 # =============================================================================
 # Modelo YOLO
 # =============================================================================
-YOLO_MODEL_PATH: str = os.getenv("YOLO_MODEL_PATH", "yolo11n.pt")
+YOLO_MODEL_PATH: str = os.getenv("YOLO_MODEL_PATH", "yolo26n.pt")
 PLATE_MODEL_PATH: str = os.getenv("PLATE_MODEL_PATH", "models/license_plate_detector.pt")
 YOLO_CONFIDENCE_THRESHOLD: float = float(os.getenv("YOLO_CONFIDENCE_THRESHOLD", "0.45"))
 PLATE_CONFIDENCE_THRESHOLD: float = float(os.getenv("PLATE_CONFIDENCE_THRESHOLD", "0.22"))
@@ -105,8 +105,11 @@ VEHICLE_CLIP_PRETRAINED: str = os.getenv("VEHICLE_CLIP_PRETRAINED", "laion2b_s34
 # Probabilidad mínima para aceptar un atributo; por debajo se reporta como desconocido
 VEHICLE_ATTR_MIN_CONF: float = float(os.getenv("VEHICLE_ATTR_MIN_CONF", "0.35"))
 
-# Detector de placas: "yolo" (YOLOv8/YOLO11/YOLO26 vía Ultralytics) o "rfdetr" (RF-DETR)
+# Detector de placas: "yolo" (YOLO26 vía Ultralytics) o "rfdetr" (RF-DETR, experimental)
 DETECTOR_BACKEND: str = os.getenv("DETECTOR_BACKEND", "yolo").lower()
+# Arquitectura que debe tener el detector de placas cargado (se verifica al arrancar y se
+# publica en /status). Ver models/MODEL_CARD.md.
+PLATE_DETECTOR_ARCH: str = os.getenv("PLATE_DETECTOR_ARCH", "yolo26").lower()
 
 # =============================================================================
 # Tracking y Deduplicación

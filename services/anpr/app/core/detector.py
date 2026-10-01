@@ -1472,8 +1472,8 @@ def create_detection_pipeline(
 
     from app.config import (
         DETECTOR_BACKEND,
+        PLATE_DETECTOR_ARCH,
         PLATE_MODEL_PATH,
-        YOLO_MODEL_PATH,
         PLATE_CONFIDENCE_THRESHOLD,
     )
     import torch
@@ -1497,10 +1497,13 @@ def create_detection_pipeline(
     ]
     model_path = next((p for p in candidates if p and os.path.exists(p)), None)
     if not model_path:
-        logger.warning("No se encontró license_plate_detector.pt, usando fallback: %s", YOLO_MODEL_PATH)
-        model_path = YOLO_MODEL_PATH
-    else:
-        logger.info("Modelo de placas detectado correctamente en: %s", model_path)
+        # Sin respaldo a un modelo COCO genérico: no tiene la clase placa y "detectaría" vehículos,
+        # personas, etc. como placas sin que nadie lo note.
+        raise FileNotFoundError(
+            f"No se encontró el detector de placas ({PLATE_MODEL_PATH}). "
+            "Restaure models/license_plate_detector.pt (ver models/MODEL_CARD.md)."
+        )
+    logger.info("Modelo de placas detectado correctamente en: %s", model_path)
 
     _, raw_thresh = byte_track_thresholds()
     browser_conf = raw_thresh
@@ -1512,6 +1515,12 @@ def create_detection_pipeline(
         model_path, model_type=model_type, confidence=raw_thresh, device=device, imgsz=512
     )
     rtsp_det.warmup()
+    arquitectura = getattr(rtsp_det, "arquitectura", None)
+    if arquitectura and arquitectura != PLATE_DETECTOR_ARCH:
+        logger.error(
+            "El detector de placas cargado es %s, pero se esperaba %s (PLATE_DETECTOR_ARCH). "
+            "Revise PLATE_MODEL_PATH y models/MODEL_CARD.md.", arquitectura, PLATE_DETECTOR_ARCH,
+        )
 
     # Detector browser (@ 512px para máxima agudeza visual a distancias largas)
     browser_det = rtsp_det if model_type.startswith("rfdetr") else create_detector(
