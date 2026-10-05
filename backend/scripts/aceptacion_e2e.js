@@ -1,14 +1,23 @@
 #!/usr/bin/env node
 /**
- * Prueba de aceptación de extremo a extremo: rol Gestor de accesos, permisos de placa con horario,
- * política de decisión R1–R7, centro de notificaciones (Socket.IO, ACK, escalamiento, Web Push),
- * solicitudes de acceso con separación de funciones y métricas.
+ * Prueba de aceptación de extremo a extremo con la API real y SQL Server: tres roles (Administrador,
+ * Guardia, Gestor de permisos), permisos de placa con horario, política de decisión R1–R7, centro de
+ * notificaciones (Socket.IO, ACK, escalamiento, Web Push), solicitudes de acceso con separación de
+ * funciones y control de concurrencia optimista, CRUD de usuarios, auditoría inmutable (consulta,
+ * detalle, exportación CSV y retención transaccional), validación de datos y métricas.
  *
  * Requisitos: base de datos VACÍA (sin administrador), backend en modo desarrollo SIN SMTP (los
  * enlaces para definir contraseña se escriben en su salida estándar, que este script lee) y
  * NOTIF_ESCALAMIENTO_SEGUNDOS=20 para comprobar el escalamiento en menos de un minuto.
  *
  *   node scripts/aceptacion_e2e.js --api http://localhost:5000 --servicio <ANPR_SERVICE_TOKEN> --log backend.log
+ *
+ * Ejecución aislada (sin tocar el entorno de desarrollo): un segundo backend con su propia base,
+ * que se crea vacía y se migra al arrancar, y sin conexión con Redis, MediaMTX ni el motor ANPR:
+ *   DB_NAME=ANPR_ACEPTACION PORT=5050 NODE_ENV=development SMTP_HOST= SOCKET_REDIS_ADAPTER=false
+ *   ANPR_SERVICE_URL=http://127.0.0.1:9 MEDIAMTX_API_URL=http://127.0.0.1:9 NOTIF_ESCALAMIENTO_SEGUNDOS=20
+ *   ALLOWED_EMAIL_DOMAINS=ecu911.gob.ec npx ts-node --transpile-only src/index.ts > backend.log
+ * y al terminar se elimina la base ANPR_ACEPTACION.
  */
 const { io } = require('socket.io-client');
 const fs = require('fs');
@@ -28,6 +37,8 @@ async function pedir(metodo, url, cuerpo, opciones = {}) {
 const axios = {
   get: (url, o) => pedir('GET', url, undefined, o),
   post: (url, c, o) => pedir('POST', url, c ?? {}, o),
+  put: (url, c, o) => pedir('PUT', url, c ?? {}, o),
+  delete: (url, o = {}) => pedir('DELETE', url, o.data ?? {}, o),
 };
 const SRV = { headers: { 'X-Servicio-Token': args.servicio } };
 const h = t => ({ headers: t ? { Authorization: `Bearer ${t}` } : {} });
@@ -96,7 +107,7 @@ async function paso(placa, tid, extra = {}) {
   ok(!!otorgado && /Se ha otorgado permiso a Funcionaria Permanente/.test(otorgado.n.mensaje) && otorgado.n.enlace === '/listas/autorizados?q=XYZ9876',
     `guardia notificado del permiso otorgado: ${otorgado?.n.mensaje} → ${otorgado?.n.enlace}`);
   ok(!recibidas.ge.some(x => x.n.tipo === 'padron.permiso_otorgado'), 'quien otorga el permiso no se lo notifica a sí mismo');
-  r = await axios.post(`${B}/vehiculos-autorizados`, { placa: 'BAD0001', propietario: 'x', horario: [{ dias: [9], desde: '25:00', hasta: '1' }] }, h(gestor.token));
+  r = await axios.post(`${B}/vehiculos-autorizados`, { placa: 'BAD0001', propietario: 'Persona Valida', horario: [{ dias: [9], desde: '25:00', hasta: '1' }] }, h(gestor.token));
   ok(r.status === 400, `horario inválido rechazado (${r.data.error})`);
 
   // 5. Pasos vehiculares simulados por el motor ANPR
@@ -131,7 +142,7 @@ async function paso(placa, tid, extra = {}) {
   r = await axios.post(`${B}/solicitudes-acceso`, { placa: 'QWE1111', propietario: 'Proveedor de radios', motivo: 'Entrega de equipos de radio', categoria: 'PROVEEDOR', deteccion_id: sinPermiso.id, horario: [{ dias: [1, 2, 3, 4, 5, 6, 7], desde: '00:00', hasta: '23:59' }] }, h(operador.token));
   ok(r.status === 201, `guardia crea solicitud #${r.data.solicitud?.id}`);
   const sol = r.data.solicitud;
-  r = await axios.post(`${B}/solicitudes-acceso`, { placa: 'QWE1111', propietario: 'x', motivo: 'duplicada' }, h(operador.token));
+  r = await axios.post(`${B}/solicitudes-acceso`, { placa: 'QWE1111', propietario: 'Proveedor de radios', motivo: 'Entrega duplicada de equipos' }, h(operador.token));
   ok(r.status === 409, 'una sola solicitud pendiente por placa');
   await espera(800);
   ok(tipos('ge').includes('solicitud.nueva') && !tipos('op').includes('solicitud.nueva'), 'el gestor recibe la solicitud; el solicitante no');
@@ -141,11 +152,11 @@ async function paso(placa, tid, extra = {}) {
   ok(r.status === 403, `el gestor no crea solicitudes: otorga el permiso directamente (HTTP ${r.status})`);
   r = await axios.post(`${B}/solicitudes-acceso`, { placa: 'GGG7777', propietario: 'Familiar', motivo: 'Visita propia del administrador' }, h(admin));
   const propia = r.data.solicitud;
-  r = await axios.post(`${B}/solicitudes-acceso/${propia.id}/aprobar`, {}, h(admin));
+  r = await axios.post(`${B}/solicitudes-acceso/${propia.id}/aprobar`, { version: propia.version }, h(admin));
   ok(r.status === 403 && /Separación de funciones/.test(r.data.error), `SoD: nadie aprueba su propia solicitud (${r.status})`);
-  r = await axios.post(`${B}/solicitudes-acceso/${sol.id}/aprobar`, { comentario: 'Autorizado por una semana', ajustes: { fecha_fin: new Date(Date.now() + 7 * 864e5).toISOString().slice(0, 10) } }, h(gestor.token));
+  r = await axios.post(`${B}/solicitudes-acceso/${sol.id}/aprobar`, { version: sol.version, comentario: 'Autorizado por una semana', ajustes: { fecha_fin: new Date(Date.now() + 7 * 864e5).toISOString().slice(0, 10) } }, h(gestor.token));
   ok(r.status === 200 && r.data.permiso?.placa === 'QWE1111', `gestor aprueba: ${r.data.message}`);
-  r = await axios.post(`${B}/solicitudes-acceso/${sol.id}/aprobar`, {}, h(gestor.token));
+  r = await axios.post(`${B}/solicitudes-acceso/${sol.id}/aprobar`, { version: sol.version }, h(gestor.token));
   ok(r.status === 409, 'no se aprueba dos veces');
   await espera(800);
   ok(tipos('op').includes('solicitud.resuelta'), 'el guardia recibe la resolución');
@@ -186,6 +197,71 @@ async function paso(placa, tid, extra = {}) {
   if (lat) console.log(`  latencia media captura→notificación (no_registrado): ${(Number(lat[1]) / Number(lat[2]) * 1000).toFixed(0)} ms`);
   r = await axios.get(`${B}/notificaciones`, h(gestor.token));
   ok(r.data.items.length > 0 && typeof r.data.no_leidas === 'number', `bandeja del gestor: ${r.data.items.length} notificaciones, ${r.data.no_leidas} sin leer`);
+
+  // 12. Concurrencia optimista: no se aprueba lo que el solicitante editó mientras el gestor revisaba
+  r = await axios.post(`${B}/solicitudes-acceso`, { placa: 'PQR4567', propietario: 'Tecnico de Mantenimiento', motivo: 'Mantenimiento del generador' }, h(operador.token));
+  const revisada = r.data.solicitud;
+  ok(r.status === 201 && revisada.version === 1, `solicitud nueva en versión ${revisada?.version}`);
+  r = await axios.put(`${B}/solicitudes-acceso/${revisada.id}`, { placa: 'PQR4568', propietario: 'Tecnico de Mantenimiento', motivo: 'Mantenimiento del generador principal' }, h(operador.token));
+  ok(r.status === 200 && r.data.solicitud.version === 2 && r.data.solicitud.placa === 'PQR4568', `edición del solicitante → versión ${r.data.solicitud?.version}`);
+  r = await axios.put(`${B}/solicitudes-acceso/${revisada.id}`, { placa: 'PQR4568', propietario: 'Otro', motivo: 'Intento ajeno' }, h(admin));
+  ok(r.status === 403, `solo quien la registró la edita (HTTP ${r.status})`);
+  r = await axios.post(`${B}/solicitudes-acceso/${revisada.id}/aprobar`, { version: 1 }, h(gestor.token));
+  ok(r.status === 409 && /cambió mientras la revisaba/.test(r.data.error), `aprobación con versión vieja rechazada (${r.status})`);
+  r = await axios.post(`${B}/solicitudes-acceso/${revisada.id}/aprobar`, { version: 2 }, h(gestor.token));
+  ok(r.status === 200 && r.data.permiso?.placa === 'PQR4568', `aprobación de la versión vigente concede ${r.data.permiso?.placa}`);
+
+  // 13. Validación de lo que escribe una persona (placa ANT, nombres, motivos)
+  r = await axios.post(`${B}/vehiculos-autorizados`, { placa: 'ABC123', propietario: 'Persona Valida' }, h(gestor.token));
+  ok(r.status === 400 && /Placa inválida/.test(r.data.error), `placa fuera del formato ANT rechazada: ${r.data.error}`);
+  r = await axios.post(`${B}/vehiculos-autorizados`, { placa: 'AB-123C', propietario: 'Motociclista Mensajero' }, h(gestor.token));
+  ok(r.status === 201 && r.data.item?.placa === 'AB123C', `placa de motocicleta AB-123C aceptada (${r.data.item?.placa})`);
+  r = await axios.post(`${B}/vehiculos-autorizados`, { placa: 'TTT1234', propietario: 'Juan 23' }, h(gestor.token));
+  ok(r.status === 400, `nombre con dígitos rechazado: ${r.data.error}`);
+  r = await axios.get(`${B}/detecciones?camara=abc`, h(admin));
+  ok(r.status === 400, `filtro inválido responde 400 (${r.data.error})`);
+
+  // 14. CRUD de usuarios: detalle y baja lógica
+  r = await axios.post(`${B}/usuarios`, { email: 'temporal@ecu911.gob.ec', nombre_completo: 'Usuario Temporal', rol: 'Guardia' }, h(admin));
+  const temporal = r.data.usuario;
+  ok(r.status === 201 && !!temporal?.id, 'alta de usuario');
+  r = await axios.get(`${B}/usuarios/${temporal.id}`, h(admin));
+  ok(r.status === 200 && r.data.email === 'temporal@ecu911.gob.ec' && !('password_hash' in r.data), 'detalle de usuario sin el hash de la contraseña');
+  r = await axios.delete(`${B}/usuarios/${temporal.id}`, { headers: { Authorization: `Bearer ${admin}` }, data: { motivo: 'no' } });
+  ok(r.status === 400, `la baja exige un motivo de 5 a 300 caracteres (${r.data.error})`);
+  r = await axios.delete(`${B}/usuarios/${temporal.id}`, { headers: { Authorization: `Bearer ${admin}` }, data: { motivo: 'Fin del contrato temporal' } });
+  ok(r.status === 200 && r.data.usuario?.estado === 'inactivo', `baja lógica: ${r.data.message}`);
+  const yo = (await axios.get(`${B}/auth/me`, h(admin))).data.user;
+  r = await axios.delete(`${B}/usuarios/${yo.id}`, { headers: { Authorization: `Bearer ${admin}` }, data: { motivo: 'Intento de autobaja' } });
+  ok(r.status === 403, `nadie se da de baja a sí mismo (HTTP ${r.status})`);
+
+  // 15. Auditoría inmutable: consulta, detalle, exportación CSV y retención transaccional
+  r = await axios.get(`${B}/auditoria?fuente=operaciones&tamano=10`, h(admin));
+  ok(r.status === 200 && r.data.total > 0, `auditoría de operaciones: ${r.data.total} registros`);
+  const registro = r.data.items[0];
+  r = await axios.get(`${B}/auditoria/operaciones/${registro.id}`, h(admin));
+  ok(r.status === 200 && r.data.id === registro.id && 'ip' in r.data, `detalle del registro #${registro.id} (${r.data.accion})`);
+  // Bytes crudos: fetch().text() descarta el BOM al decodificar UTF-8, así que se comprueba en binario
+  const csv = await fetch(`${B}/auditoria/exportar?fuente=cuentas`, h(admin));
+  const bytes = new Uint8Array(await csv.arrayBuffer());
+  ok(csv.status === 200 && /text\/csv/.test(csv.headers.get('content-type')) && bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf
+    && new TextDecoder().decode(bytes).includes('"accion"'), `exportación CSV con BOM y encabezado (${csv.headers.get('content-disposition')})`);
+  r = await axios.post(`${B}/auditoria/retencion`, { dias: 100 }, h(admin));
+  ok(r.status === 400, 'la retención exige al menos 365 días');
+  r = await axios.post(`${B}/auditoria/retencion`, { dias: 365 }, h(admin));
+  ok(r.status === 200 && typeof r.data.archivados?.operaciones === 'number', `retención transaccional: ${JSON.stringify(r.data.archivados)}`);
+  r = await axios.get(`${B}/auditoria?fuente=operaciones&tamano=10`, h(admin));
+  ok(r.data.items.some(x => x.accion === 'AUDITORIA_RETENCION'), 'la retención queda registrada en la auditoría');
+  r = await axios.get(`${B}/auditoria`, h(gestor.token));
+  ok(r.status === 403, 'solo el administrador consulta la auditoría');
+
+  // 16. Consultas del administrador
+  r = await axios.get(`${B}/configuracion`, h(admin));
+  ok(r.status === 200 && Array.isArray(r.data.parametros), 'configuración del sistema');
+  r = await axios.get(`${B}/reportes`, h(admin));
+  ok(r.status === 200 && r.data.totales.total >= 5, `reporte consolidado: ${r.data.totales.total} pasos`);
+  r = await axios.get(`${B}/evaluacion/resumen`, h(admin));
+  ok(r.status === 200 && typeof r.data.total_registros === 'number', `evaluación del reconocimiento: ${r.data.total_registros} pasos, ${r.data.validados} validados`);
 
   [sOp, sGe, sAdm].forEach(s => s.disconnect());
   console.log(process.exitCode ? 'E2E CON FALLAS' : 'E2E OK');
