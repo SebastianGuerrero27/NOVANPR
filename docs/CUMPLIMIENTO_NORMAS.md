@@ -43,7 +43,7 @@ fila indica **dónde** está la evidencia; lo que aún no se cumple se declara e
 | Adaptadores | `backend/src/tests/infraestructura/` — repositorios SQL, migraciones, notificaciones, métricas |
 | Aceptación extremo a extremo | `backend/scripts/aceptacion_e2e.js` — flujo completo con la API real |
 | Servicio ANPR | `services/anpr/tests/` (pytest) |
-| Resultado (2026-10-05) | Backend: 38 suites, 646 pruebas en verde; servicio ANPR: 74 pruebas en verde; compilación TypeScript sin errores en backend y frontend; pruebas de aptitud de la arquitectura en verde en los tres componentes |
+| Resultado (2026-10-05) | Backend: 38 suites, 646 pruebas en verde; servicio ANPR: 101 pruebas en verde (incluidas 22 de contrato del motor y del servidor); compilación TypeScript sin errores en backend y frontend; pruebas de aptitud de la arquitectura en verde en los tres componentes |
 | Evaluación del reconocimiento | `services/anpr/scripts/evaluate_detectors.py`, `benchmark_ocr.py`, `estadistica.py` (IC 95 %, McNemar, bootstrap) |
 
 ## 4. Seguridad de aplicaciones — OWASP ASVS 4.0.3 (nivel 2)
@@ -98,7 +98,3 @@ fila indica **dónde** está la evidencia; lo que aún no se cumple se declara e
    vehículo y día (ver `MODEL_CARD.md`).
 2. **Dependencias con vulnerabilidades conocidas en herramientas de desarrollo** (`jest` 29,
    `ts-node-dev`) y moderadas en `mssql` 10: su corrección exige actualizaciones mayores.
-3. **Separación del núcleo en tiempo real del motor ANPR:** backend, frontend y motor están organizados
-   en capas con pruebas de aptitud que impiden su degradación; falta dividir `services/anpr/app/main.py`
-   (servidor y estado del motor en un mismo módulo), lo que exige el conjunto de regresión del
-   experimento para demostrar que no cambian la exactitud ni la latencia (riesgo R1).

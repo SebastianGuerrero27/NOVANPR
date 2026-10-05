@@ -335,3 +335,19 @@ def try_imshow(window_name: str, frame: np.ndarray) -> bool:
     except cv2.error:
         # No hay display disponible (Docker, headless, etc.)
         return False
+
+
+def cuadro_espera(nombre: str, width: int = 960, height: int = 540) -> np.ndarray:
+    """Pantalla de espera mientras conecta el canal. Muestra solo el nombre del canal: la URL
+    RTSP puede contener credenciales y no debe aparecer en el video."""
+    frame = np.zeros((height, width, 3), dtype=np.uint8)
+    frame[:] = (48, 23, 7)  # azul institucional #071730 (BGR)
+    cx, cy = width // 2, height // 2
+    titulo = (nombre or "Canal de video").upper()[:40]
+    (tw, _), _ = cv2.getTextSize(titulo, cv2.FONT_HERSHEY_SIMPLEX, 0.9, 2)
+    cv2.putText(frame, titulo, (cx - tw // 2, cy - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (235, 235, 235), 2, cv2.LINE_AA)
+    sub = "Conectando con la camara..."
+    (sw, _), _ = cv2.getTextSize(sub, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 1)
+    cv2.putText(frame, sub, (cx - sw // 2, cy + 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (180, 190, 205), 1, cv2.LINE_AA)
+    cv2.rectangle(frame, (0, height - 6), (width, height), (28, 28, 185), -1)  # franja roja #b91c1c
+    return frame

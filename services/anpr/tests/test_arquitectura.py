@@ -5,15 +5,17 @@ corresponde:
 
     dominio/          reglas puras: biblioteca estándar y numpy; solo importa dominio/
     infraestructura/  modelos, cámaras, red, métricas, registro y configuración; no importa aplicación
-    aplicacion/       orquestación del reconocimiento; no importa el servidor
-    main.py           raíz de composición y servidor FastAPI (el único que conoce FastAPI)
+    aplicacion/       orquestación del reconocimiento; no importa la interfaz ni FastAPI. El motor en
+                      tiempo real (motor.py) recibe todos sus adaptadores inyectados.
+    interfaz/         servidor HTTP y WebSocket (FastAPI): delega en el motor
+    main.py           raíz de composición
 """
 import ast
 import sys
 from pathlib import Path
 
 APP = Path(__file__).resolve().parent.parent / "app"
-CAPAS = ("dominio", "aplicacion", "infraestructura")
+CAPAS = ("dominio", "aplicacion", "infraestructura", "interfaz")
 SERVIDOR = {"fastapi", "starlette", "uvicorn"}
 
 
@@ -55,11 +57,23 @@ def test_dominio_es_puro():
 
 
 def test_infraestructura_no_depende_de_la_aplicacion_ni_del_servidor():
-    assert violaciones("infraestructura", lambda i: i.startswith(("app.aplicacion", "app.main")) or i.split(".")[0] in SERVIDOR) == []
+    assert violaciones("infraestructura", lambda i: i.startswith(("app.aplicacion", "app.interfaz", "app.main")) or i.split(".")[0] in SERVIDOR) == []
 
 
-def test_aplicacion_no_depende_del_servidor():
-    assert violaciones("aplicacion", lambda i: i.startswith("app.main") or i.split(".")[0] in SERVIDOR) == []
+def test_aplicacion_no_depende_de_la_interfaz_ni_del_servidor():
+    assert violaciones("aplicacion", lambda i: i.startswith(("app.interfaz", "app.main")) or i.split(".")[0] in SERVIDOR) == []
+
+
+def test_el_motor_recibe_sus_adaptadores_inyectados():
+    motor = APP / "aplicacion" / "motor.py"
+    assert [i for i in importaciones(motor) if i.startswith("app.infraestructura")] == []
+
+
+def test_solo_la_interfaz_conoce_fastapi():
+    fuera = [f"{m.relative_to(APP)} → {i}" for capa in ("dominio", "aplicacion", "infraestructura")
+             for m in modulos(capa) for i in importaciones(m) if i.split(".")[0] in SERVIDOR]
+    assert fuera == []
+    assert [i for i in importaciones(APP / "main.py") if i.split(".")[0] in SERVIDOR] == []
 
 
 def test_la_prueba_detecta_violaciones(tmp_path):

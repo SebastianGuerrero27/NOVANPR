@@ -98,7 +98,7 @@ Severidad: **A** alta (correctitud/seguridad), **M** media (mantenibilidad/opera
 
 | ID | Sev. | Hallazgo | Recomendación |
 |---|---|---|---|
-| R1 | M | `services/anpr/app/main.py` (1 339 líneas) y `core/detector.py` (1 522) concentran estado global mutable, hilos, HTTP y reglas. | Dividir en paquetes (captura, inferencia, publicación de eventos) con inyección de dependencias. Hacerlo con el conjunto de regresión de `docs/EXPERIMENTO_MODELOS.md` para no degradar la exactitud. |
+| R1 | M | `services/anpr/app/main.py` (1 339 líneas) y `core/detector.py` (1 522) concentran estado global mutable, hilos, HTTP y reglas. | Resuelto para `main.py` (2026-10-05): motor en `aplicacion/motor.py` con estado encapsulado e inyección de dependencias, servidor en `interfaz/api.py`, verificado con pruebas de caracterización de aserciones idénticas. `aplicacion/detector.py` sigue siendo extenso; dividirlo exige el conjunto de regresión de `docs/EXPERIMENTO_MODELOS.md`. |
 | R2 | M | Comparaciones no SARGables `REPLACE(REPLACE(placa,'-',''),' ','') = @placa` (`infraestructura/persistencia/deteccionesSql.ts`, `infraestructura/servicios/plateMatching.ts`, `infraestructura/persistencia/listasSql.ts`): no usan índice. | Columna calculada persistida `placa_normalizada` con índice en cada tabla. |
 | R3 | B | `findBlacklistMatch` (`infraestructura/servicios/plateMatching.ts:71`) lee toda la lista de alertas por evento (O(n)). | Aceptable con n < 10⁴; para más, caché en memoria invalidada con `listas:actualizadas`. |
 | R4 | B | Ventana de deduplicación de 35 s duplicada en el motor (`PLATE_DEBOUNCE_SECONDS`) y en el backend (`dominio/detecciones.ts`, `VENTANA_MISMO_PASO_S`). | Parámetro único configurable. |

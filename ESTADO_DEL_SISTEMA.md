@@ -111,9 +111,10 @@ de aptitud en cada uno impide que una capa interna dependa de una externa (detal
 │       └── interfaz/            # Componentes, páginas por rol y plantilla con el menú
 ├── services/anpr/               # Motor de reconocimiento: Python + FastAPI (YOLO26n afinado + OCR)
 │   ├── app/dominio/             # Validación de placas ecuatorianas y modelos (puro)
-│   ├── app/aplicacion/          # Pipeline de detección, selección de cuadros, verificación, OCR asíncrono
+│   ├── app/aplicacion/          # MotorAnpr (tiempo real), pipeline de detección, verificación, OCR asíncrono
 │   ├── app/infraestructura/     # Modelos YOLO/OCR/CLIP, cámaras, acceso al backend, métricas, config
-│   ├── app/main.py              # Servidor FastAPI y raíz de composición
+│   ├── app/interfaz/api.py      # Servidor HTTP y WebSocket (FastAPI)
+│   ├── app/main.py              # Raíz de composición
 │   ├── models/                  # Pesos y MODEL_CARD.md
 │   └── scripts/                 # Entrenamiento, evaluación y estadística (McNemar, IC 95 %)
 └── db/                          # init.sql y migraciones versionadas (v2 … v8)

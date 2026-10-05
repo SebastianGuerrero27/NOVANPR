@@ -142,24 +142,37 @@ una capa depende de otra que no le corresponde; se verificó con violaciones int
 ```
 services/anpr/app/
 ├── dominio/            Reglas puras (biblioteca estándar y numpy): validador de placas ecuatorianas,
-│                       corrección de lecturas (plate_parser), modelos de detección, memoria de pasos
-├── aplicacion/         Orquestación del reconocimiento: pipeline de detección y seguimiento, selección
-│                       del mejor cuadro, verificación de la lectura, agente de placa y trabajador de OCR
+│                       corrección de lecturas, credenciales en URLs, modelos de detección, memoria
+├── aplicacion/         motor.py: MotorAnpr, el motor en tiempo real (hilos de captura e inferencia,
+│                       compuerta de captura, anti-duplicados, registro en dos fases) con todo su
+│                       estado encapsulado y sus adaptadores inyectados; pipeline de detección,
+│                       selección del mejor cuadro, verificación de la lectura, OCR asíncrono
 ├── infraestructura/    Detectores YOLO, motores OCR y verificador, rectificador, atributos del vehículo
 │                       (CLIP), fuentes de video, acceso al backend, métricas, transmisión, registro, config
+├── interfaz/api.py     Servidor HTTP y WebSocket (FastAPI): verifica el acceso y delega en el motor
 ├── data/               Catálogo de vehículos
-└── main.py             Raíz de composición y servidor FastAPI (rutas HTTP y WebSocket, hilos del motor)
+└── main.py             Raíz de composición: crea el motor con los adaptadores reales y el servidor
 ```
 
 | Capa | Puede importar | No puede importar |
 |---|---|---|
 | `dominio/` | biblioteca estándar, numpy, `dominio/` | OpenCV, modelos, red, configuración, otras capas |
-| `infraestructura/` | `dominio/`, `infraestructura/`, bibliotecas de visión y red | `aplicacion/`, `main.py`, FastAPI |
-| `aplicacion/` | `dominio/`, `infraestructura/`, `aplicacion/` | `main.py`, FastAPI |
-| `main.py` | todo | — |
+| `infraestructura/` | `dominio/`, `infraestructura/`, bibliotecas de visión y red | `aplicacion/`, `interfaz/`, FastAPI |
+| `aplicacion/` | `dominio/`, `infraestructura/`, `aplicacion/` (el motor no importa infraestructura: la recibe inyectada) | `interfaz/`, FastAPI |
+| `interfaz/` | todas las anteriores | — (es la única capa que conoce FastAPI) |
 
-**Pendiente declarado:** `main.py` (≈1 340 líneas) concentra el servidor y el estado del motor en
-tiempo real (hilos de captura e inferencia). Separarlo en un motor con estado explícito y una capa de
-rutas exige el conjunto de regresión de [EXPERIMENTO_MODELOS.md](EXPERIMENTO_MODELOS.md) para
-demostrar que la exactitud y la latencia no cambian (riesgo R1 de
-[ANALISIS_ARQUITECTURA.md](ANALISIS_ARQUITECTURA.md)); no se hizo sin esa evidencia.
+**Separación del motor y del servidor.** El antiguo `main.py` (≈1 340 líneas) mezclaba el servidor
+con unas 25 variables globales del motor compartidas entre hilos. Se separó con este procedimiento:
+
+1. Pruebas de caracterización (`tests/test_motor_contrato.py`) escritas sobre el código anterior:
+   autenticación de cada ruta, forma de las respuestas, anti-duplicados por track y por placa,
+   verificación en dos fases, descartes auditados, cambio de cámara y enfriamiento del OCR.
+2. Refactorización a `MotorAnpr` (estado encapsulado y protegido por candados, dependencias
+   inyectadas por `DependenciasMotor`), `interfaz/api.py` y la raíz de composición.
+3. Las mismas pruebas, con aserciones idénticas (comprobado con `diff`), en verde sobre el código
+   nuevo; solo cambió el adaptador que ubica el estado. Los módulos de detección y OCR no se
+   modificaron, por lo que la exactitud del reconocimiento no cambia.
+
+Durante la separación se corrigió un defecto: las métricas Prometheus del motor (`anpr_detections_total`,
+`anpr_fps`, confianzas, tracks activos, errores) se publicaban pero nunca se registraban; ahora las
+registra el motor y lo verifican pruebas.
