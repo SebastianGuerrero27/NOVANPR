@@ -6,7 +6,7 @@ import type { Permiso, Rol } from '../../dominio/permisos';
 describe('RBAC · matriz rol → permiso', () => {
   it('cada rol tiene código de base de datos y viceversa', () => {
     for (const r of ROLES) expect(ROL_POR_CODIGO[CODIGO_POR_ROL[r]]).toBe(r);
-    expect(CODIGO_POR_ROL.GestorAccesos).toBe('GESTOR_ACCESOS');
+    expect(CODIGO_POR_ROL.GestorPermisos).toBe('GESTOR_PERMISOS');
   });
 
   it('la matriz solo usa permisos del catálogo', () => {
@@ -17,48 +17,54 @@ describe('RBAC · matriz rol → permiso', () => {
     expect(permisosDe('Admin').sort()).toEqual((Object.keys(PERMISOS) as Permiso[]).sort());
   });
 
+  it('solo existen tres roles: Administrador, Guardia y Gestor de permisos', () => {
+    expect([...ROLES].sort()).toEqual(['Admin', 'GestorPermisos', 'Guardia']);
+    expect(Object.keys(ROL_POR_CODIGO).sort()).toEqual(['ADMIN', 'GESTOR_PERMISOS', 'GUARDIA']);
+  });
+
   // Tabla de verdad de las capacidades que el sistema promete a cada rol
   const casos: [Rol, Permiso, boolean][] = [
-    ['GestorAccesos', 'padron:gestionar', true],
-    ['GestorAccesos', 'solicitudes:resolver', true],
-    ['GestorAccesos', 'accesos:excepcion', true],
-    ['GestorAccesos', 'avisos:acceso', true],
-    ['GestorAccesos', 'alertas:gestionar', false],
-    ['GestorAccesos', 'avisos:garita', false],
-    ['GestorAccesos', 'usuarios:gestionar', false],
-    ['GestorAccesos', 'evaluacion:ver', false],
-    ['Operador', 'avisos:garita', true],
-    ['Operador', 'avisos:acceso', true],
-    ['Operador', 'solicitudes:crear', true],
-    ['Operador', 'padron:gestionar', false],
-    ['Operador', 'solicitudes:resolver', false],
-    ['Operador', 'accesos:excepcion', false],
-    ['Supervisor', 'alertas:gestionar', true],
-    ['Supervisor', 'alarmas:escalamiento', true],
-    ['Supervisor', 'detecciones:eliminar', false],
-    ['Supervisor', 'configuracion:gestionar', false],
+    ['GestorPermisos', 'padron:gestionar', true],
+    ['GestorPermisos', 'solicitudes:resolver', true],
+    ['GestorPermisos', 'listas:ver', true],
+    // Una sola vista y sin avisos de monitoreo
+    ['GestorPermisos', 'operacion:monitorear', false],
+    ['GestorPermisos', 'detecciones:validar', false],
+    ['GestorPermisos', 'avisos:acceso', false],
+    ['GestorPermisos', 'avisos:garita', false],
+    ['GestorPermisos', 'avisos:padron', false],
+    ['GestorPermisos', 'alertas:gestionar', false],
+    ['GestorPermisos', 'usuarios:gestionar', false],
+    ['Guardia', 'operacion:monitorear', true],
+    ['Guardia', 'detecciones:validar', true],
+    ['Guardia', 'listas:ver', true],
+    ['Guardia', 'solicitudes:crear', true],
+    ['Guardia', 'avisos:garita', true],
+    ['Guardia', 'avisos:padron', true],
+    ['Guardia', 'padron:gestionar', false],
+    ['Guardia', 'solicitudes:resolver', false],
+    ['Guardia', 'accesos:excepcion', false],
+    ['Guardia', 'usuarios:gestionar', false],
   ];
   it.each(casos)('%s · %s → %s', (rol, permiso, esperado) => {
     expect(tienePermiso(rol, permiso)).toBe(esperado);
   });
 
-  it('todo el personal puede monitorear, validar, consultar listas y solicitar accesos', () => {
-    for (const r of ROLES) {
-      for (const p of ['operacion:monitorear', 'detecciones:validar', 'listas:ver', 'solicitudes:crear'] as Permiso[]) {
-        expect(tienePermiso(r, p)).toBe(true);
-      }
-    }
+  it('el gestor de permisos solo gestiona la lista blanca y resuelve solicitudes', () => {
+    expect(permisosDe('GestorPermisos').sort()).toEqual(['listas:ver', 'padron:gestionar', 'solicitudes:resolver']);
   });
 
   it('enruta notificaciones por permiso', () => {
-    expect(rolesCon('padron:gestionar').sort()).toEqual(['Admin', 'GestorAccesos', 'Supervisor']);
-    expect(rolesCon('avisos:acceso')).toContain('GestorAccesos');
-    expect(rolesCon('avisos:acceso')).toContain('Operador');
-    expect(rolesCon('alarmas:escalamiento').sort()).toEqual(['Admin', 'Supervisor']);
+    expect(rolesCon('padron:gestionar').sort()).toEqual(['Admin', 'GestorPermisos']);
+    expect(rolesCon('avisos:padron').sort()).toEqual(['Admin', 'Guardia']);
+    expect(rolesCon('avisos:acceso').sort()).toEqual(['Admin', 'Guardia']);
+    expect(rolesCon('alarmas:escalamiento')).toEqual(['Admin']);
   });
 
   it('rechaza roles desconocidos', () => {
-    expect(esRol('GestorAccesos')).toBe(true);
+    expect(esRol('GestorPermisos')).toBe(true);
+    expect(esRol('Supervisor')).toBe(false);
+    expect(esRol('Operador')).toBe(false);
     expect(esRol('Root')).toBe(false);
     expect(tienePermiso(undefined, 'listas:ver')).toBe(false);
     expect(tienePermiso('Root' as Rol, 'listas:ver')).toBe(false);

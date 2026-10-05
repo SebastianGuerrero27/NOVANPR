@@ -488,6 +488,9 @@ a.kpi:hover, button.kpi:hover { border-color: var(--border-strong); box-shadow: 
 .textarea { height: auto; min-height: 80px; padding: 10px 12px; resize: vertical; line-height: 1.5; }
 .input::placeholder, .textarea::placeholder { color: var(--text-4); }
 .input:focus, .select:focus, .textarea:focus { outline: none; border-color: var(--navy-700); box-shadow: 0 0 0 3px rgba(21, 49, 93, 0.12); }
+/* Dato que no cumple su regla (interfaz/componentes/campos.tsx): borde rojo y el error debajo */
+.input[aria-invalid="true"], .select[aria-invalid="true"], .textarea[aria-invalid="true"] { border-color: var(--alerta); }
+.input[aria-invalid="true"]:focus, .select[aria-invalid="true"]:focus, .textarea[aria-invalid="true"]:focus { border-color: var(--alerta); box-shadow: 0 0 0 3px rgba(185, 28, 28, 0.12); }
 .input:disabled, .select:disabled { background: var(--surface-3); color: var(--text-3); }
 .input.placa-input { font-family: var(--mono); font-weight: 700; letter-spacing: 2px; text-transform: uppercase; }
 .input-icono { position: relative; }
@@ -653,6 +656,9 @@ a.kpi:hover, button.kpi:hover { border-color: var(--border-strong); box-shadow: 
 .toast.advertencia { border-left-color: #f59e0b; }
 .toast strong { display: block; color: #fff; font-size: 13px; }
 .toast button { margin-left: auto; background: none; border: none; color: #94a3b8; cursor: pointer; padding: 2px; }
+/* Aviso con enlace: todo el texto es pulsable */
+.toast button.toast-cuerpo { margin-left: 0; flex: 1; padding: 0; text-align: left; font: inherit; color: inherit; }
+.toast button.toast-cuerpo:hover strong { text-decoration: underline; }
 
 /* Definiciones (detalle) */
 .definiciones { display: grid; grid-template-columns: minmax(130px, auto) 1fr; gap: 9px 16px; font-size: 13px; }

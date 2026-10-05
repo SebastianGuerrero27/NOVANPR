@@ -41,12 +41,13 @@ END
 GO
 IF NOT EXISTS (SELECT 1 FROM Roles WHERE codigo = 'ADMIN')
     INSERT INTO Roles (codigo, nombre, descripcion) VALUES ('ADMIN', N'Administrador', N'Gestión total: usuarios, cámaras, listas, configuración y auditoría.');
-IF NOT EXISTS (SELECT 1 FROM Roles WHERE codigo = 'SUPERVISOR')
-    INSERT INTO Roles (codigo, nombre, descripcion) VALUES ('SUPERVISOR', N'Supervisor', N'Gestión de listas, reportes, evaluación del sistema y validación de ingresos.');
-IF NOT EXISTS (SELECT 1 FROM Roles WHERE codigo = 'OPERADOR')
-    INSERT INTO Roles (codigo, nombre, descripcion) VALUES ('OPERADOR', N'Operador', N'Monitoreo en vivo y validación de ingresos vehiculares.');
+-- Tres roles: Administrador, Guardia y Gestor de permisos. Las bases anteriores (SUPERVISOR,
+-- OPERADOR, GESTOR_ACCESOS) se consolidan en migration_v6_tres_roles.sql
+IF NOT EXISTS (SELECT 1 FROM Roles WHERE codigo = 'GUARDIA') AND NOT EXISTS (SELECT 1 FROM Roles WHERE codigo = 'OPERADOR')
+    INSERT INTO Roles (codigo, nombre, descripcion) VALUES ('GUARDIA', N'Guardia', N'Monitoreo en vivo del punto de control, validación de ingresos y consulta de la lista blanca.');
+IF NOT EXISTS (SELECT 1 FROM Roles WHERE codigo = 'GESTOR_PERMISOS') AND NOT EXISTS (SELECT 1 FROM Roles WHERE codigo = 'GESTOR_ACCESOS')
+    INSERT INTO Roles (codigo, nombre, descripcion) VALUES ('GESTOR_PERMISOS', N'Gestor de permisos', N'Otorga los permisos de placa (lista blanca) y resuelve las solicitudes de acceso.');
 GO
--- El rol GESTOR_ACCESOS (permisos de placa y solicitudes) lo agrega migration_v5_accesos_notificaciones.sql
 
 
 IF NOT EXISTS (SELECT * FROM sys.tables WHERE name = 'Usuarios')

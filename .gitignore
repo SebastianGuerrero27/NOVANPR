@@ -71,6 +71,8 @@ yolo26n-pose.pt
 .env.production.local
 
 # Secretos: nunca versionar archivos .env reales (solo las plantillas .env.example)
+# Copias de respaldo de archivos .env (contienen secretos)
+**/.env.respaldo*
 .env
 **/.env
 !**/.env.example

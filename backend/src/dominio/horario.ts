@@ -131,9 +131,3 @@ export function describirHorario(valor: string | Horario | null | undefined): st
   if (!h) return 'Sin restricción horaria';
   return h.map(f => `${describirDias(f.dias)} ${f.desde}–${f.hasta}`).join('; ');
 }
-
-export const ETIQUETA_VIGENCIA: Record<Exclude<Vigencia, 'vigente'>, string> = {
-  fuera_horario: 'Fuera del horario autorizado',
-  no_iniciada: 'Permiso aún no vigente',
-  vencida: 'Permiso vencido',
-};

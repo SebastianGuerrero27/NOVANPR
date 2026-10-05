@@ -2,7 +2,7 @@
 
 SQL Server 2022, base `ANPR_ECU911`. Instalación nueva: `db/init.sql` seguido de las migraciones
 `db/migration_*.sql` (idempotentes). El backend las aplica al arrancar en el orden de
-`MIGRACIONES` (`backend/src/config/db.ts`) y registra cada una en `SchemaMigraciones` con su suma
+`MIGRACIONES` (`backend/src/infraestructura/db.ts`) y registra cada una en `SchemaMigraciones` con su suma
 SHA-256: una migración ya aplicada no se vuelve a ejecutar salvo que su archivo cambie.
 
 ## Principios

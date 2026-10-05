@@ -9,23 +9,26 @@
  * Agregar un rol o mover una capacidad es un cambio de una línea, auditable y probado
  * (src/tests/dominio/permisos.test.ts).
  *
+ * Roles: Administrador, Guardia y Gestor de permisos.
+ *
  * Separación de funciones (SoD): quien solicita el acceso de una placa no puede resolver esa
- * misma solicitud (regla dinámica aplicada en routes/solicitudesAcceso.ts).
+ * misma solicitud (regla dinámica aplicada en aplicacion/solicitudesAcceso.ts con un reclamo
+ * atómico en el repositorio).
  */
 
-export const ROLES = ['Admin', 'Supervisor', 'Operador', 'GestorAccesos'] as const;
+export const ROLES = ['Admin', 'Guardia', 'GestorPermisos'] as const;
 export type Rol = typeof ROLES[number];
 
 /** Código de la tabla Roles ↔ rol de la aplicación. */
 export const ROL_POR_CODIGO: Record<string, Rol> = {
-  ADMIN: 'Admin', SUPERVISOR: 'Supervisor', OPERADOR: 'Operador', GESTOR_ACCESOS: 'GestorAccesos',
+  ADMIN: 'Admin', GUARDIA: 'Guardia', GESTOR_PERMISOS: 'GestorPermisos',
 };
 export const CODIGO_POR_ROL: Record<Rol, string> = {
-  Admin: 'ADMIN', Supervisor: 'SUPERVISOR', Operador: 'OPERADOR', GestorAccesos: 'GESTOR_ACCESOS',
+  Admin: 'ADMIN', Guardia: 'GUARDIA', GestorPermisos: 'GESTOR_PERMISOS',
 };
 
 export const NOMBRE_ROL: Record<Rol, string> = {
-  Admin: 'Administrador', Supervisor: 'Supervisor', Operador: 'Operador', GestorAccesos: 'Gestor de accesos',
+  Admin: 'Administrador', Guardia: 'Guardia', GestorPermisos: 'Gestor de permisos',
 };
 
 /** Catálogo de permisos (recurso:acción). */
@@ -47,6 +50,7 @@ export const PERMISOS = {
   'avisos:acceso': 'Notificaciones de accesos denegados, fuera de horario y confirmaciones',
   'avisos:seguridad': 'Notificaciones de placas en la lista de alertas y posibles placas clonadas',
   'avisos:sistema': 'Notificaciones de cámaras sin conexión y del estado del servicio',
+  'avisos:padron': 'Notificaciones de permisos de placa otorgados (lista blanca)',
   'alarmas:escalamiento': 'Recibir alarmas no atendidas escaladas',
   // Análisis
   'reportes:ver': 'Reportes por período y cámara',
@@ -62,24 +66,19 @@ export const PERMISOS = {
 
 export type Permiso = keyof typeof PERMISOS;
 
-const BASE: Permiso[] = ['operacion:monitorear', 'detecciones:validar', 'listas:ver', 'solicitudes:crear'];
-
 /** Matriz rol → permisos. */
 export const MATRIZ: Record<Rol, readonly Permiso[]> = {
-  Operador: [
-    ...BASE,
-    'avisos:garita', 'avisos:acceso', 'avisos:seguridad',
+  // Punto de control: monitorea, valida lecturas, consulta la lista blanca y solicita accesos.
+  // Recibe los avisos de garita y la notificación de cada permiso otorgado.
+  Guardia: [
+    'operacion:monitorear', 'detecciones:validar', 'listas:ver', 'solicitudes:crear',
+    'avisos:garita', 'avisos:acceso', 'avisos:seguridad', 'avisos:padron',
   ],
-  GestorAccesos: [
-    ...BASE,
-    'padron:gestionar', 'accesos:excepcion', 'solicitudes:resolver',
-    'avisos:acceso', 'reportes:ver',
-  ],
-  Supervisor: [
-    ...BASE,
-    'padron:gestionar', 'alertas:gestionar', 'accesos:excepcion', 'solicitudes:resolver',
-    'avisos:garita', 'avisos:acceso', 'avisos:seguridad', 'avisos:sistema', 'alarmas:escalamiento',
-    'reportes:ver', 'evaluacion:ver', 'camaras:operar',
+  // Una sola vista (gestión de permisos), sin monitoreo: concede permisos de placa y resuelve
+  // solicitudes. Solo se le notifica la llegada de los vehículos a los que dio permiso
+  // (destinatario explícito, ver infraestructura/servicios/avisosAcceso.ts), no los avisos de monitoreo.
+  GestorPermisos: [
+    'listas:ver', 'padron:gestionar', 'solicitudes:resolver',
   ],
   Admin: Object.keys(PERMISOS) as Permiso[],
 };

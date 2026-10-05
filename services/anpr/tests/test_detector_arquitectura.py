@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from app.core.detectors import identificar_arquitectura
+from app.infraestructura.detectors import identificar_arquitectura
 
 MODELO_PRODUCCION = Path(__file__).resolve().parent.parent / "models" / "license_plate_detector.pt"
 

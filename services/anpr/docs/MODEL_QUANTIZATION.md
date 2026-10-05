@@ -56,36 +56,18 @@ python scripts/quantize_yolo.py --model yolo11n.pt --type all --benchmark
 python scripts/quantize_yolo.py --model yolo11n.pt --type tensorrt --benchmark
 ```
 
-### Paso 3: Habilitar Cuantización en Configuración
+### Paso 3: Usar el modelo cuantizado
 
-Editar el archivo `.env`:
+El servicio carga los modelos desde las rutas configuradas en `.env`. Para usar un modelo
+cuantizado, apunte la ruta correspondiente al archivo generado en el paso 2:
 
 ```bash
-# Habilitar cuantización
-ENABLE_MODEL_QUANTIZATION=true
-
-# Tipo de cuantización
-QUANTIZATION_TYPE=fp16
-
-# Rutas a los modelos cuantizados
-QUANTIZED_MODEL_PATH=models/yolo11n_fp16.pt
-QUANTIZED_PLATE_MODEL_PATH=models/license_plate_detector_fp16.pt
+YOLO_MODEL_PATH=models/yolo26n_fp16.pt
+PLATE_MODEL_PATH=models/license_plate_detector_fp16.pt
 ```
 
-### Paso 4: Usar el Cargador de Modelos
-
-En el código, importar y usar el cargador de modelos:
-
-```python
-from app.core.model_loader import load_yolo_model, get_model_info
-
-# Cargar modelo con cuantización automática
-model = load_yolo_model(model_type='yolo')
-
-# Obtener información del modelo
-info = get_model_info(model)
-print(f"Modelo cargado: {info}")
-```
+Compare la exactitud antes y después con `scripts/evaluate_detectors.py` (docs/EXPERIMENTO_MODELOS.md):
+la cuantización solo se adopta si no degrada la detección de placas.
 
 ## Resultados Esperados
 
@@ -153,13 +135,9 @@ print(f"Modelo cargado: {info}")
 
 ## Integración con el Sistema
 
-El sistema ANPR está configurado para usar automáticamente los modelos cuantizados cuando:
-
-1. `ENABLE_MODEL_QUANTIZATION=true` en `.env`
-2. Los archivos de modelos cuantizados existen en las rutas especificadas
-3. El hardware soporta el tipo de cuantización seleccionado
-
-Si alguna condición falla, el sistema hace fallback automáticamente al modelo original.
+No hay carga automática ni respaldo: el servicio usa exactamente los archivos indicados en
+`YOLO_MODEL_PATH` y `PLATE_MODEL_PATH`. Si el archivo no existe, el servicio no arranca y lo
+informa en el registro.
 
 ## Monitoreo de Rendimiento
 

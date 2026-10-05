@@ -115,17 +115,6 @@ groups:
           summary: "Alta memoria en Redis"
           description: "El uso de memoria de Redis supera el 90%"
 
-      # Alerta: Bajo hit ratio de caché
-      - alert: LowCacheHitRatio
-        expr: rate(cache_hits_total[5m]) / (rate(cache_hits_total[5m]) + rate(cache_misses_total[5m])) < 0.5
-        for: 10m
-        labels:
-          severity: info
-          service: redis
-        annotations:
-          summary: "Bajo hit ratio de caché"
-          description: "El hit ratio del caché es inferior al 50%"
-
   - name: database_alerts
     interval: 30s
     rules:

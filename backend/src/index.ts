@@ -3,13 +3,13 @@ dotenv.config();
 
 import { createServer } from 'http';
 import { crearApp } from './app';
-import { connectDB } from './config/db';
-import { initSocket } from './services/socket';
-import { iniciarSincronizacionMedios } from './services/medios';
-import { iniciarMonitorCamaras } from './services/conectividadCamaras';
-import { iniciarSincronizacionMotor } from './services/camaraMotor';
-import { iniciarWebPush } from './services/webPush';
-import { iniciarTareasProgramadas } from './services/tareasProgramadas';
+import { connectDB } from './infraestructura/db';
+import { initSocket } from './infraestructura/servicios/socket';
+import { iniciarSincronizacionMedios } from './infraestructura/servicios/medios';
+import { iniciarMonitorCamaras } from './infraestructura/servicios/conectividadCamaras';
+import { iniciarSincronizacionMotor } from './infraestructura/servicios/camaraMotor';
+import { iniciarWebPush } from './infraestructura/servicios/webPush';
+import { iniciarTareasProgramadas } from './infraestructura/servicios/tareasProgramadas';
 
 const app = crearApp();
 const server = createServer(app);

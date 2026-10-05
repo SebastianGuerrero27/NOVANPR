@@ -117,10 +117,10 @@ def main() -> None:
         return
 
     from fast_plate_ocr import LicensePlateRecognizer
-    from app.core.detector import compute_crop_sharpness
-    from app.core.ocr_engine import preprocess_plate_opencv
-    from app.core.ocr_verifier import PlateOcrVerifier
-    from app.utils.plate_parser import disambiguate_plate
+    from app.aplicacion.detector import compute_crop_sharpness
+    from app.infraestructura.ocr_engine import preprocess_plate_opencv
+    from app.infraestructura.ocr_verifier import PlateOcrVerifier
+    from app.dominio.plate_parser import disambiguate_plate
 
     if args.ocr_model.endswith(".onnx"):
         rec = LicensePlateRecognizer(onnx_model_path=args.ocr_model,
@@ -131,7 +131,7 @@ def main() -> None:
     verifier = PlateOcrVerifier(model_type="medium", engine="openvino")
     rectifier = None
     if args.rectifier:
-        from app.core.plate_rectifier import PlateRectifier
+        from app.infraestructura.plate_rectifier import PlateRectifier
         rectifier = PlateRectifier(args.rectifier)
     rect_ok = [0, 0]  # [rectificados, total]
 

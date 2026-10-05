@@ -2,8 +2,8 @@
 
 import numpy as np
 
-from app.core.plate_rectifier import PLATE_ASPECT, is_valid_quad, order_corners, warp_to_plate
-from app.core.vehicle_attributes import estimated_vehicle_box, vehicle_box_for_plate
+from app.infraestructura.plate_rectifier import PLATE_ASPECT, is_valid_quad, order_corners, warp_to_plate
+from app.infraestructura.vehicle_attributes import estimated_vehicle_box, vehicle_box_for_plate
 
 
 def test_order_corners_desde_cualquier_orden():

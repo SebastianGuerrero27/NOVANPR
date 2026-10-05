@@ -3,7 +3,7 @@ Tests para el validador de placas ecuatorianas
 """
 
 import pytest
-from app.core.ecuador_plate_validator import validate_ecuadorian_plate
+from app.dominio.ecuador_plate_validator import validate_ecuadorian_plate
 
 
 class TestEcuadorianPlateValidator:

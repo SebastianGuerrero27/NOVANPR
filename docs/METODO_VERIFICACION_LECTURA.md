@@ -6,10 +6,11 @@ y la decisión de acceso, inspirada en la arquitectura de OpenALPR
 Rekor Scout. Incluye el protocolo para evaluarla (ablación) con los datos que el sistema ya
 registra.
 
-Código: `services/anpr/app/core/verificacion_placa.py` (análisis y veredicto),
-`services/anpr/app/core/detector.py` (integración en el seguimiento),
+Código: `services/anpr/app/aplicacion/verificacion_placa.py` (análisis y veredicto),
+`services/anpr/app/aplicacion/detector.py` (integración en el seguimiento),
 `services/anpr/app/main.py` (`_verify_and_commit`) y
-`backend/src/routes/detecciones.ts` (`/completar-ocr`, regla de decisión).
+`backend/src/aplicacion/detecciones.ts` (`completarOcr`, fase 2) y `backend/src/dominio/decisionAcceso.ts`
+(regla de decisión R1–R7).
 
 ## 1. Problema
 

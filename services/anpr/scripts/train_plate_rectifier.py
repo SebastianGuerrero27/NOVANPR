@@ -3,7 +3,7 @@ Entrenamiento del rectificador de placas: YOLO26n-pose que predice las 4 esquina
 
 El modelo recibe el recorte que entrega el detector (con margen) y predice las esquinas
 [sup-izq, sup-der, inf-der, inf-izq]; con ellas se aplica una homografía que deja la placa
-frontal y del tamaño canónico ANT antes del OCR (app/core/plate_rectifier.py). Reemplaza a la
+frontal y del tamaño canónico ANT antes del OCR (app/infraestructura/plate_rectifier.py). Reemplaza a la
 rectificación heurística por contornos de plate_agent.py.
 
 Datos: dataset/pose (scripts/generate_synthetic_plates.py --pose-out), con esquinas exactas.

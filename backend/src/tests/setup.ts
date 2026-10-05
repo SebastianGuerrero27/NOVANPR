@@ -13,10 +13,9 @@ process.env.DB_NAME = 'ANPR_ECU911_TEST';
 process.env.JWT_SECRET = 'test_secret_key';
 process.env.REDIS_HOST = 'localhost';
 process.env.REDIS_PORT = '6379';
-process.env.ENABLE_REDIS_CACHE = 'false';
 
 // Mock de logger para no ensuciar la salida
-jest.mock('../utils/logger', () => ({
+jest.mock('../infraestructura/logger', () => ({
   logger: {
     info: jest.fn(),
     error: jest.fn(),

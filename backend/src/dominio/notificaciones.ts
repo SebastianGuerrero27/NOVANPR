@@ -1,4 +1,5 @@
 import type { Permiso } from './permisos';
+import { type Validado, validarEntero } from './validacion';
 
 /**
  * Catálogo de notificaciones del sistema (dominio puro).
@@ -25,6 +26,8 @@ export type TipoNotificacion =
   | 'acceso.vehiculo_no_coincide'
   | 'acceso.confirmacion'
   | 'acceso.reincidencia'
+  | 'acceso.llegada_permiso'
+  | 'padron.permiso_otorgado'
   | 'solicitud.nueva'
   | 'solicitud.resuelta'
   | 'padron.por_vencer'
@@ -49,7 +52,7 @@ export interface DefinicionTipo {
 
 export const CATALOGO: Record<TipoNotificacion, DefinicionTipo> = {
   'acceso.alerta_seguridad': {
-    etiqueta: 'Placa en lista de alertas', severidad: 'critica', permiso: 'avisos:seguridad',
+    etiqueta: 'Placa en lista negra', severidad: 'critica', permiso: 'avisos:seguridad',
     requiereAck: true, ventanaS: 120, alDuplicar: 'incrementar', push: true, ttlPushS: 300,
   },
   'acceso.no_registrado': {
@@ -69,8 +72,17 @@ export const CATALOGO: Record<TipoNotificacion, DefinicionTipo> = {
     requiereAck: true, ventanaS: 120, alDuplicar: 'incrementar', push: false, ttlPushS: 0,
   },
   'acceso.reincidencia': {
-    etiqueta: 'Intentos repetidos de una placa sin permiso', severidad: 'media', permiso: 'padron:gestionar',
+    etiqueta: 'Intentos repetidos de una placa sin permiso', severidad: 'media', permiso: 'avisos:acceso',
     requiereAck: false, ventanaS: 86400, alDuplicar: 'omitir', push: false, ttlPushS: 0,
+  },
+  // Sin permiso de destino: va solo a quien otorgó el permiso del vehículo que llegó
+  'acceso.llegada_permiso': {
+    etiqueta: 'Llegó un vehículo con el permiso que otorgó', severidad: 'baja',
+    requiereAck: false, ventanaS: 1800, alDuplicar: 'incrementar', push: true, ttlPushS: 3600,
+  },
+  'padron.permiso_otorgado': {
+    etiqueta: 'Vehículo agregado a la lista blanca', severidad: 'baja', permiso: 'avisos:padron',
+    requiereAck: false, ventanaS: 0, alDuplicar: 'incrementar', push: true, ttlPushS: 86400,
   },
   'solicitud.nueva': {
     etiqueta: 'Solicitud de acceso pendiente', severidad: 'media', permiso: 'solicitudes:resolver',
@@ -123,4 +135,43 @@ export function debeEscalar(a: EstadoAlarma, ahora: Date, umbralS: number): bool
 /** Urgencia Web Push (RFC 8030 §5.3) según la prioridad. */
 export function urgenciaPush(s: Severidad): 'very-low' | 'low' | 'normal' | 'high' {
   return s === 'critica' || s === 'alta' ? 'high' : s === 'media' ? 'normal' : 'low';
+}
+
+// ─── Consulta de la bandeja y de las métricas ────────────────────────────────
+
+export const FILTROS_BANDEJA = ['no_leidas', 'pendientes'] as const;
+export type FiltroBandeja = typeof FILTROS_BANDEJA[number];
+
+export interface ConsultaBandeja {
+  /** 1 a 100; por omisión 30 */
+  limite: number;
+  /** Paginación: notificaciones con id menor */
+  antesDe: number | null;
+  /** Recuperación tras reconectar: nuevas o modificadas después de este id */
+  desde: number | null;
+  filtro: FiltroBandeja | null;
+}
+
+/** Parámetros de la bandeja (?limite, ?antes_de, ?desde, ?filtro): un valor inválido se rechaza. */
+export function leerConsultaBandeja(q: { limite?: unknown; antes_de?: unknown; desde?: unknown; filtro?: unknown }): Validado<ConsultaBandeja> {
+  const limite = validarEntero(q.limite, { etiqueta: 'Límite', min: 1, max: 100 });
+  if (!limite.ok) return limite;
+  const antesDe = validarEntero(q.antes_de, { etiqueta: 'antes_de', min: 1 });
+  if (!antesDe.ok) return antesDe;
+  const desde = validarEntero(q.desde, { etiqueta: 'desde', min: 1 });
+  if (!desde.ok) return desde;
+  let filtro: FiltroBandeja | null = null;
+  if (q.filtro !== undefined && q.filtro !== null && q.filtro !== '') {
+    if (typeof q.filtro !== 'string' || !(FILTROS_BANDEJA as readonly string[]).includes(q.filtro)) {
+      return { ok: false, error: `Filtro inválido. Valores: ${FILTROS_BANDEJA.join(', ')}.` };
+    }
+    filtro = q.filtro as FiltroBandeja;
+  }
+  return { ok: true, valor: { limite: limite.valor ?? 30, antesDe: antesDe.valor, desde: desde.valor, filtro } };
+}
+
+/** Período de las métricas del canal: 1 a 90 días; por omisión 7. */
+export function leerDiasMetricas(valor: unknown): Validado<number> {
+  const dias = validarEntero(valor, { etiqueta: 'Días', min: 1, max: 90 });
+  return dias.ok ? { ok: true, valor: dias.valor ?? 7 } : dias;
 }

@@ -1,6 +1,6 @@
 """Registros en memoria del servicio: la purga evita la fuga de memoria en operación 24/7."""
 
-from app.utils.memoria import purgar_expirados
+from app.dominio.memoria import purgar_expirados
 
 
 def test_purga_solo_entradas_vencidas():

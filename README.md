@@ -1,4 +1,6 @@
-# Sistema ANPR · ECU 911 Coordinación Zonal 3 (Ambato)
+# NOVANPR
+
+Proyecto ANPR para ECU 911 Coordinación Zonal 3 (Ambato). Titular: SelfSteer Public Access Network S.A., empresa con fines de lucro de beneficio público.
 
 Reconocimiento automático de placas (ANPR) con aprendizaje profundo para el control de ingreso
 vehicular: detección y lectura de placas en tiempo real, permisos de placa con vigencia y horario,
@@ -21,10 +23,11 @@ Push, y evaluación científica del reconocimiento y de las alarmas.
 
 | Rol | Resumen |
 |---|---|
-| Operador | Garita: monitoreo, validación de lecturas, registro manual, solicitudes de acceso, aviso con protocolo |
-| **Gestor de accesos** | Permisos de placa (categoría, vigencia, franjas horarias), resolución de solicitudes, excepciones; alertas de accesos denegados |
-| Supervisor | Listas de control, reportes, evaluación, alarmas escaladas |
-| Administrador | Todo, más usuarios, cámaras, configuración y auditoría |
+| Guardia | Punto de control: monitoreo, validación de lecturas, registro manual, solicitudes de acceso; recibe cada permiso otorgado con enlace a la lista blanca |
+| **Gestor de permisos** | Una sola vista: otorga permisos de placa (categoría, vigencia, franjas horarias) y resuelve solicitudes; sin monitoreo, solo se le notifica la llegada de los vehículos a los que dio permiso |
+| Administrador | Todo: usuarios, cámaras, configuración, auditoría, lista de alertas, excepciones, reportes y evaluación |
+
+La API se documenta con **Swagger UI** en `http://localhost:5000/api/docs` (especificación OpenAPI en `/api/docs.json`).
 
 Matriz completa de permisos: [docs/ROLES_Y_PERMISOS.md](docs/ROLES_Y_PERMISOS.md).
 
@@ -69,4 +72,4 @@ node backend/scripts/benchmark_notificaciones.js --api http://localhost:5000 --s
 | [docs/METODO_VERIFICACION_LECTURA.md](docs/METODO_VERIFICACION_LECTURA.md) | Validez de la lectura y regla de autorización |
 | [docs/EXPERIMENTO_MODELOS.md](docs/EXPERIMENTO_MODELOS.md) | Experimento de detectores y OCR, estadística |
 | [docs/BASE_DE_DATOS.md](docs/BASE_DE_DATOS.md) | Esquema v5 y reglas de negocio |
-| [docs/MONITORING.md](docs/MONITORING.md), [docs/CICD.md](docs/CICD.md), [docs/REDIS_CACHE.md](docs/REDIS_CACHE.md) | Operación |
+| [docs/MONITORING.md](docs/MONITORING.md), [docs/CICD.md](docs/CICD.md) | Operación |

@@ -28,7 +28,7 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel
 import base64
 
-from app.config import (
+from app.infraestructura.config import (
     BACKEND_HEADERS,
     BACKEND_URL,
     CAMERA_ID,
@@ -43,30 +43,30 @@ from app.config import (
     WEBCAM_INDEX,
     RTSP_URL,
 )
-from app.core.detector import _ESTADOS_FINALES, DetectionPipeline, compute_crop_sharpness, create_detection_pipeline
-from app.core.verificacion_placa import (
+from app.aplicacion.detector import _ESTADOS_FINALES, DetectionPipeline, compute_crop_sharpness, create_detection_pipeline
+from app.aplicacion.verificacion_placa import (
     MIN_CARACTERES,
     analizar_caracteres,
     cuadrilatero_placa,
     evaluar_lectura,
     recorte_con_margen,
 )
-from app.core.frame_selector import BestFrameSelector
-from app.core.ocr_engine import create_ocr_engine
-from app.core.ocr_verifier import get_verifier
-from app.core.vehicle_attributes import get_vehicle_recognizer
-from app.core.video_source import RTSPSource, VideoSource, WebcamSource, create_video_source
-from app.services.debug_stream import (
+from app.aplicacion.frame_selector import BestFrameSelector
+from app.infraestructura.ocr_engine import create_ocr_engine
+from app.infraestructura.ocr_verifier import get_verifier
+from app.infraestructura.vehicle_attributes import get_vehicle_recognizer
+from app.infraestructura.video_source import RTSPSource, VideoSource, WebcamSource, create_video_source
+from app.infraestructura.debug_stream import (
     DebugFrameBuffer,
     _get_standby_jpeg,
     mjpeg_generator,
     rtsp_direct_preview_generator,
     try_imshow,
 )
-from app.core.ecuador_plate_validator import validate_ecuadorian_plate
-from app.services.ocr_worker import AsyncOcrWorker, OcrTask
-from app.services.acceso import ticket_valido, token_servicio_valido
-from app.services.metrics import (
+from app.dominio.ecuador_plate_validator import validate_ecuadorian_plate
+from app.aplicacion.ocr_worker import AsyncOcrWorker, OcrTask
+from app.infraestructura.acceso import ticket_valido, token_servicio_valido
+from app.infraestructura.metrics import (
     update_fps,
     record_detection,
     record_plate_recognized,
@@ -75,8 +75,8 @@ from app.services.metrics import (
     record_ocr_confidence,
     get_metrics,
 )
-from app.utils.logger import get_logger
-from app.utils.memoria import purgar_expirados
+from app.infraestructura.logger import get_logger
+from app.dominio.memoria import purgar_expirados
 
 logger = get_logger("main")
 
@@ -287,8 +287,12 @@ def _detection_worker(
 
 
 def _sin_credenciales(url: str | None) -> str | None:
-    """Oculta usuario:contraseña de una URL RTSP antes de exponerla en respuestas o registros."""
-    return re.sub(r"//([^:/@]+):[^@]+@", r"//\1:******@", url) if url else url
+    """Oculta la contraseña de una URL RTSP antes de exponerla en respuestas o registros.
+
+    Se lee como la conexión (FFmpeg, MediaMTX, WHATWG): la contraseña llega hasta la última «@»
+    de la autoridad y el usuario puede estar vacío (backend/src/dominio/camaras.ts → RE_CREDENCIALES).
+    """
+    return re.sub(r"//([^:/?#]*):[^/?#]+@", r"//\1:******@", url) if url else url
 
 
 def _render_standby_frame(nombre: str, url: str, width: int = 960, height: int = 540) -> np.ndarray:

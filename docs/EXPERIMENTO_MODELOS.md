@@ -156,7 +156,7 @@ frente a anclado en texto (`annotate_plates.py --circular-model`) y arquitectura
 
 El generador sintético conoce la perspectiva exacta de cada placa, así que las 4 esquinas
 (sup-izq, sup-der, inf-der, inf-izq) son etiquetas perfectas sin anotación manual. En el
-servicio (`app/core/plate_rectifier.py`) el modelo recibe el recorte del detector, predice
+servicio (`app/infraestructura/plate_rectifier.py`) el modelo recibe el recorte del detector, predice
 las esquinas y una homografía deja la placa frontal con la proporción ANT (404 × 154 mm).
 Si las esquinas no son confiables (`PLATE_RECTIFIER_MIN_KPT_CONF`) se usa la heurística por
 contornos. Se activa copiando el candidato a `models/plate_rectifier.pt` (o `PLATE_RECTIFIER_PATH`)
@@ -164,11 +164,11 @@ solo si la ablación `con_rectificador` mejora frente a `completo`.
 
 ## 9. Atributos del vehículo como segundo factor
 
-`app/core/vehicle_attributes.py`: YOLO26n (COCO) ubica el vehículo que contiene la placa y
+`app/infraestructura/vehicle_attributes.py`: YOLO26n (COCO) ubica el vehículo que contiene la placa y
 CLIP ViT-B/32 (zero-shot) estima tipo, color, marca y modelo contra el catálogo editable
 `app/data/catalogo_vehiculos_ecuador.json`. Por debajo de `VEHICLE_ATTR_MIN_CONF` el atributo
 queda como desconocido. En la lista negra y en autorizados se pueden registrar marca, modelo y
-color; el backend (`services/vehiculoAtributos.ts`) compara **marca y color** (no el modelo, cuyo
+color; el backend (`dominio/vehiculoAtributos.ts`) compara **marca y color** (no el modelo, cuyo
 reconocimiento zero-shot es poco fiable):
 
 - Lista negra + vehículo que no coincide → se mantiene la alerta con la marca
@@ -186,7 +186,7 @@ No existe una API pública que se pueda usar legalmente para obtener el propieta
 de la placa: los portales del SRI y la ANT están hechos para consultas individuales (con
 CAPTCHA) y su extracción automatizada no está permitida; además son datos personales (LOPDP).
 El canal legítimo es un convenio del ECU 911 con DINARDAP / ANT. El sistema deja listo el punto
-de integración (`services/consultaPropietario.ts`, `POST /api/propietario/consulta`): solo
+de integración (`infraestructura/servicios/consultaPropietario.ts`, `POST /api/propietario/consulta`): solo
 Admin, motivo obligatorio, límite por hora y auditoría de cada consulta
 (`AuditoriaConsultaPropietario`). Está deshabilitado hasta implementar el adaptador oficial.
 

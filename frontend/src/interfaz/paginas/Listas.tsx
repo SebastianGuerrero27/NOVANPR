@@ -1,0 +1,192 @@
+import React, { useMemo, useState } from 'react';
+import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
+import { Clock, Download, Edit3, History, Plus, Search, ShieldAlert, ShieldCheck, Trash2 } from 'lucide-react';
+import api, { mensajeError } from '../../infraestructura/api';
+import { useAuth } from '../../aplicacion/AuthContext';
+import { useEvento } from '../../aplicacion/tiempoReal';
+import { useConsulta, useDiferido } from '../../aplicacion/hooks';
+import type { RegistroLista } from '../../dominio/tipos';
+import { CATEGORIAS_PERMISO, fecha, fechaIsoLocal, NIVELES_ALERTA, numero } from '../../dominio/formato';
+import { descargarBlob } from '../../infraestructura/descargas';
+import { formatearPlaca } from '../../dominio/validacion';
+import { Aviso, Confirmar, FilasEsqueleto, Pestanas, Placa, Segmentado, Tarjeta, Vacio } from '../componentes/ui';
+import { FormularioLista, RUTA_API, TipoLista } from '../componentes/FormularioLista';
+import { useNotificar } from '../componentes/Notificaciones';
+
+type Vigencia = 'todas' | 'vigentes' | 'por_vencer' | 'vencidas';
+
+/** El plazo de "por vencer" lo define la configuración del sistema (lo calcula la API). */
+function vigenciaDe(r: RegistroLista): Exclude<Vigencia, 'todas'> {
+  if (!r.vigente) return 'vencidas';
+  return r.por_vencer ? 'por_vencer' : 'vigentes';
+}
+
+const InsigniaVigencia: React.FC<{ r: RegistroLista }> = ({ r }) => {
+  const v = vigenciaDe(r);
+  if (v === 'vencidas') return <span className="insignia neutro">Vencida · {fecha(r.fecha_vencimiento)}</span>;
+  if (r.pendiente_inicio) return <span className="insignia info">Desde {fecha(r.fecha_inicio)}</span>;
+  if (!r.fecha_vencimiento) return <span className="insignia autorizado">Permanente</span>;
+  return <span className={`insignia ${v === 'por_vencer' ? 'no_reconocido' : 'autorizado'}`}>Hasta {fecha(r.fecha_vencimiento)}</span>;
+};
+
+function aCsv(tipo: TipoLista, filas: RegistroLista[]): Blob {
+  const c = (v: unknown) => `"${String(v ?? '').replace(/"/g, '""')}"`;
+  const cab = tipo === 'autorizados'
+    ? ['Placa', 'Propietario', 'Departamento', 'Categoría', 'Tipo', 'Marca', 'Modelo', 'Color', 'Vigente desde', 'Vigente hasta', 'Horario', 'Observaciones', 'Ingresos', 'Registrado por', 'Fecha de registro']
+    : ['Placa', 'Motivo', 'Nivel', 'Marca', 'Modelo', 'Color', 'Vigente hasta', 'Observaciones', 'Detecciones', 'Registrado por', 'Fecha de registro'];
+  const lineas = filas.map(r => (tipo === 'autorizados'
+    ? [r.placa, r.propietario, r.departamento, CATEGORIAS_PERMISO[r.categoria ?? ''] ?? r.categoria, r.tipo_vehiculo, r.marca, r.modelo, r.color,
+      r.fecha_inicio?.slice(0, 10), r.fecha_vencimiento?.slice(0, 10), r.horario_texto, r.observaciones, r.ingresos, r.registrado_por_email, fecha(r.fecha_registro)]
+    : [r.placa, r.motivo, r.nivel_alerta, r.marca, r.modelo, r.color, r.fecha_vencimiento?.slice(0, 10), r.observaciones, r.ingresos, r.registrado_por_email, fecha(r.fecha_registro)]
+  ).map(c).join(','));
+  return new Blob(['﻿' + [cab.map(c).join(','), ...lineas].join('\n')], { type: 'text/csv;charset=utf-8' });
+}
+
+/**
+ * Listas de control. `incrustada` la muestra dentro de otra vista (gestión de permisos) con el
+ * `tipo` fijo, sin las pestañas de navegación entre listas.
+ */
+const Listas: React.FC<{ tipo?: TipoLista; incrustada?: boolean }> = ({ tipo: tipoFijo, incrustada }) => {
+  const { tipo: tipoRuta } = useParams();
+  const tipo: TipoLista = tipoFijo ?? (tipoRuta === 'alertas' ? 'alertas' : 'autorizados');
+  const { puede } = useAuth();
+  // El historial de ingresos de una placa es parte de la operación
+  const verIngresos = puede('operacion:monitorear');
+  const navigate = useNavigate();
+  const notificar = useNotificar();
+  const [params] = useSearchParams();
+  // Cada lista tiene su propio permiso de edición (matriz RBAC): el gestor de permisos edita el
+  // padrón pero no la lista de alertas
+  const puedeEditar = puede(tipo === 'autorizados' ? 'padron:gestionar' : 'alertas:gestionar');
+  const [busqueda, setBusqueda] = useState(() => params.get('q') ?? '');
+  const [vigencia, setVigencia] = useState<Vigencia>(() => {
+    const v = params.get('vigencia');
+    return v === 'vigentes' || v === 'por_vencer' || v === 'vencidas' ? v : 'todas';
+  });
+  const [editando, setEditando] = useState<RegistroLista | 'nuevo' | null>(null);
+  const [retirando, setRetirando] = useState<RegistroLista | null>(null);
+
+  const { datos, cargando, error, recargar } = useConsulta<RegistroLista[]>(() => api.get(RUTA_API[tipo]).then(r => r.data), [tipo]);
+  const diferido = useDiferido(() => recargar(true), 800);
+  useEvento<{ lista: string }>('listas:actualizadas', e => { if (e.lista === (tipo === 'alertas' ? 'lista_negra' : 'autorizado')) diferido(); });
+
+  const conteo = useMemo(() => {
+    const c = { todas: 0, vigentes: 0, por_vencer: 0, vencidas: 0 };
+    for (const r of datos ?? []) { c.todas++; c[vigenciaDe(r)]++; }
+    return c;
+  }, [datos]);
+
+  const filas = useMemo(() => {
+    const q = busqueda.trim().toUpperCase();
+    const qPlaca = q.replace(/[^A-Z0-9]/g, '');
+    return (datos ?? []).filter(r => (vigencia === 'todas' || vigenciaDe(r) === vigencia) && (!q
+      || (qPlaca && r.placa.includes(qPlaca))
+      || [r.propietario, r.departamento, r.motivo, r.marca, r.modelo, r.observaciones].some(x => x?.toUpperCase().includes(q))));
+  }, [datos, busqueda, vigencia]);
+
+  return (
+    <div className={incrustada ? undefined : 'pagina'}>
+      <div className="pila">
+        {!incrustada && <Pestanas<TipoLista> valor={tipo} onCambiar={t => navigate(`/listas/${t}`)}
+          opciones={[
+            { valor: 'autorizados', etiqueta: 'Lista blanca', icono: <ShieldCheck size={15} /> },
+            { valor: 'alertas', etiqueta: 'Lista negra', icono: <ShieldAlert size={15} /> },
+          ]} />}
+
+        {!puedeEditar && <Aviso tipo="info">Consulta de solo lectura. {tipo === 'autorizados'
+          ? <>Los permisos los otorga el gestor de permisos; para autorizar un vehículo, <Link to="/solicitudes">envíe una solicitud de acceso</Link>.</>
+          : 'Las altas y cambios los realiza el administrador.'}</Aviso>}
+        {error && <Aviso tipo="error">{error}</Aviso>}
+
+        <Tarjeta
+          titulo={tipo === 'autorizados' ? 'Lista blanca · vehículos autorizados' : 'Lista negra · placas con alerta de seguridad'}
+          subtitulo={tipo === 'autorizados'
+            ? 'Solo una coincidencia exacta de un permiso vigente, dentro de su horario, concede el ingreso automático.'
+            : 'Se alerta incluso ante lecturas aproximadas (confusiones típicas del OCR como 0/O u 8/B).'}
+          acciones={<>
+            <button className="btn btn-secondary btn-sm" disabled={!filas.length} onClick={() => descargarBlob(aCsv(tipo, filas), `${tipo === 'autorizados' ? 'vehiculos_autorizados' : 'lista_alertas'}_${fechaIsoLocal()}.csv`)}>
+              <Download size={14} /> Exportar
+            </button>
+            {puedeEditar && <button className={`btn btn-sm ${tipo === 'autorizados' ? 'btn-navy' : 'btn-primary'}`} onClick={() => setEditando('nuevo')}><Plus size={14} /> Agregar</button>}
+          </>}
+          sinPadding>
+          <div className="filtros" style={{ padding: '14px 16px', borderBottom: '1px solid var(--border)' }}>
+            <div className="campo crece" style={{ maxWidth: 380 }}>
+              <div className="input-icono"><Search size={15} />
+                <input className="input" value={busqueda} onChange={e => setBusqueda(e.target.value)} maxLength={100} placeholder={tipo === 'autorizados' ? 'Placa, propietario, departamento…' : 'Placa, motivo, marca…'} aria-label="Buscar" />
+              </div>
+            </div>
+            <Segmentado<Vigencia> valor={vigencia} onCambiar={setVigencia} opciones={[
+              { valor: 'todas', etiqueta: `Todas (${conteo.todas})` },
+              { valor: 'vigentes', etiqueta: `Vigentes (${conteo.vigentes})` },
+              { valor: 'por_vencer', etiqueta: `Por vencer (${conteo.por_vencer})` },
+              { valor: 'vencidas', etiqueta: `Vencidas (${conteo.vencidas})` },
+            ]} />
+          </div>
+          <div className="tabla-contenedor">
+            <table className="tabla">
+              <thead><tr>
+                <th>Placa</th>
+                {tipo === 'autorizados' ? <><th>Propietario / responsable</th><th className="ocultar-movil">Vehículo</th></> : <><th>Motivo</th><th>Nivel</th></>}
+                <th>Vigencia</th><th className="num ocultar-movil">{tipo === 'autorizados' ? 'Ingresos' : 'Detecciones'}</th>
+                <th className="ocultar-movil">Registro</th>{puedeEditar && <th />}
+              </tr></thead>
+              <tbody>
+                {cargando && !datos ? <FilasEsqueleto columnas={puedeEditar ? 7 : 6} /> : filas.map(r => (
+                  <tr key={r.id} className={r.vigente ? '' : 'inactivo'}>
+                    <td><Placa valor={r.placa} /></td>
+                    {tipo === 'autorizados' ? (
+                      <>
+                        <td><strong style={{ color: 'var(--text)', fontWeight: 600 }}>{r.propietario}</strong>
+                          <span className="secundario truncar" style={{ maxWidth: 280 }} title={r.observaciones ?? ''}>{[CATEGORIAS_PERMISO[r.categoria ?? ''] ?? r.categoria, r.departamento, r.observaciones].filter(Boolean).join(' · ')}</span>
+                          {r.horario && <span className="secundario" title="Horario de acceso"><Clock size={11} style={{ verticalAlign: -1 }} /> {r.horario_texto}</span>}</td>
+                        <td className="ocultar-movil">{[r.tipo_vehiculo, [r.marca, r.modelo].filter(Boolean).join(' '), r.color].filter(Boolean).join(' · ') || '—'}</td>
+                      </>
+                    ) : (
+                      <>
+                        <td style={{ maxWidth: 320 }}><span style={{ color: 'var(--text)', fontWeight: 600 }}>{r.motivo}</span>
+                          <span className="secundario truncar">{[[r.marca, r.modelo].filter(Boolean).join(' '), r.color, r.observaciones].filter(Boolean).join(' · ')}</span></td>
+                        <td><span className={`insignia ${NIVELES_ALERTA[r.nivel_alerta ?? 'ALTA'].clase}`}>{NIVELES_ALERTA[r.nivel_alerta ?? 'ALTA'].etiqueta}</span></td>
+                      </>
+                    )}
+                    <td><InsigniaVigencia r={r} /></td>
+                    <td className="num ocultar-movil">{r.ingresos > 0 && verIngresos ? <Link to={`/detecciones?placa=${r.placa}`} title="Ver ingresos">{numero(r.ingresos)}</Link> : numero(r.ingresos)}</td>
+                    <td className="ocultar-movil"><span className="texto-secundario">{fecha(r.fecha_registro)}</span><span className="secundario">{r.registrado_por_email ?? '—'}</span></td>
+                    {puedeEditar && (
+                      <td className="acciones-celda">
+                        {verIngresos && <Link className="btn btn-ghost btn-sm btn-icono" to={`/detecciones?placa=${r.placa}`} title="Historial de la placa" aria-label="Historial"><History size={15} /></Link>}
+                        <button className="btn btn-ghost btn-sm btn-icono" onClick={() => setEditando(r)} title="Editar" aria-label="Editar"><Edit3 size={15} /></button>
+                        <button className="btn btn-ghost btn-sm btn-icono" onClick={() => setRetirando(r)} title="Retirar de la lista" aria-label="Retirar"><Trash2 size={15} color="var(--alerta)" /></button>
+                      </td>
+                    )}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          {datos && filas.length === 0 && (
+            <Vacio titulo={datos.length ? 'Sin coincidencias' : tipo === 'autorizados' ? 'La lista blanca está vacía' : 'La lista negra está vacía'}
+              texto={datos.length ? 'Ajuste la búsqueda o el filtro de vigencia.' : puedeEditar ? 'Use “Agregar” para registrar el primero.' : undefined} />
+          )}
+        </Tarjeta>
+      </div>
+
+      {editando && (
+        <FormularioLista tipo={tipo} registro={editando === 'nuevo' ? undefined : editando} onCerrar={() => setEditando(null)}
+          onGuardado={() => { setEditando(null); recargar(true); notificar('exito', editando === 'nuevo' ? 'Registro agregado' : 'Cambios guardados'); }} />
+      )}
+      {retirando && (
+        <Confirmar titulo="Retirar de la lista" pedirMotivo peligro textoBoton="Retirar"
+          mensaje={<>La placa <b>{formatearPlaca(retirando.placa)}</b> dejará de {tipo === 'autorizados' ? 'tener ingreso automático' : 'generar alertas'}. El historial de ingresos se conserva.</>}
+          onConfirmar={async motivo => {
+            try { await api.delete(`${RUTA_API[tipo]}/${retirando.id}`, { data: { motivo } }); } catch (e) { throw new Error(mensajeError(e)); }
+            recargar(true);
+            notificar('exito', `${formatearPlaca(retirando.placa)} retirada de la lista`);
+          }}
+          onCerrar={() => setRetirando(null)} />
+      )}
+    </div>
+  );
+};
+
+export default Listas;

@@ -115,7 +115,7 @@ def engine_ppocrv6():
 
 def engine_sistema_actual():
     """Pipeline en producción: PlateEnhancementAgent + motor híbrido (config .env)."""
-    from app.core.plate_agent import PlateEnhancementAgent
+    from app.aplicacion.plate_agent import PlateEnhancementAgent
     agent = PlateEnhancementAgent()
 
     def run(img):
@@ -146,7 +146,7 @@ def main() -> None:
     ap.add_argument("--save-preds", default="", help="Carpeta donde guardar las predicciones por muestra (para McNemar)")
     args = ap.parse_args()
 
-    from app.utils.plate_parser import disambiguate_plate
+    from app.dominio.plate_parser import disambiguate_plate
 
     rows = [r for r in csv.DictReader(open(args.labels, encoding="utf-8")) if r["placa"].strip()]
     if args.days:

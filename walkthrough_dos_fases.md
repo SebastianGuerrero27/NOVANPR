@@ -40,12 +40,12 @@ sequenceDiagram
 | Componente | Archivo | Responsabilidad |
 |---|---|---|
 | **Base de Datos** | [`migration_deteccion_vehiculo.sql`](file:///c:/Users/ASUS/Desktop/TITULACION/ANPR/db/migration_deteccion_vehiculo.sql) | Esquema con campos de dos fases (`estado_procesamiento`, `ruta_imagen_ingreso`, `ruta_imagen_placa`, `placa_reconocida`, etc.). |
-| **Backend Node.js** | [`detecciones.ts`](file:///c:/Users/ASUS/Desktop/TITULACION/ANPR/backend/src/routes/detecciones.ts) | Endpoints `/ingreso` (Fase 1) y `/completar-ocr` (Fase 2) con cruce de listas y emisión de WebSockets. |
-| **Selector de Frame** | [`frame_selector.py`](file:///c:/Users/ASUS/Desktop/TITULACION/ANPR/services/anpr/app/core/frame_selector.py) | Cálculo de nitidez con varianza del Laplaciano, área, aspect ratio y debounce por tracking ID. |
-| **Worker Asíncrono** | [`ocr_worker.py`](file:///c:/Users/ASUS/Desktop/TITULACION/ANPR/services/anpr/app/services/ocr_worker.py) | Proceso en segundo plano que ejecuta PaddleOCR y actualiza el backend fuera del hilo de video. |
-| **Detector Liviano** | [`detector.py`](file:///c:/Users/ASUS/Desktop/TITULACION/ANPR/services/anpr/app/core/detector.py) | Inferencia YOLO liviana (~8ms) sin OCR en el bucle principal de captura. |
+| **Backend Node.js** | [`aplicacion/detecciones.ts`](backend/src/aplicacion/detecciones.ts) | Casos de uso `ingreso` (Fase 1) y `completarOcr` (Fase 2) con cruce de listas y emisión de WebSockets; rutas en `interfaz/http/rutas/detecciones.ts`. |
+| **Selector de Frame** | [`frame_selector.py`](file:///c:/Users/ASUS/Desktop/TITULACION/ANPR/services/anpr/app/aplicacion/frame_selector.py) | Cálculo de nitidez con varianza del Laplaciano, área, aspect ratio y debounce por tracking ID. |
+| **Worker Asíncrono** | [`ocr_worker.py`](file:///c:/Users/ASUS/Desktop/TITULACION/ANPR/services/anpr/app/aplicacion/ocr_worker.py) | Proceso en segundo plano que ejecuta PaddleOCR y actualiza el backend fuera del hilo de video. |
+| **Detector Liviano** | [`detector.py`](file:///c:/Users/ASUS/Desktop/TITULACION/ANPR/services/anpr/app/aplicacion/detector.py) | Inferencia YOLO liviana (~8ms) sin OCR en el bucle principal de captura. |
 | **Microservicio FastAPI** | [`main.py`](file:///c:/Users/ASUS/Desktop/TITULACION/ANPR/services/anpr/app/main.py) | Orquestador desacoplado: Productor a 30 FPS + Consumidor de Frame Selection + Worker Queue. |
-| **Frontend React** | [`Dashboard.tsx`](file:///c:/Users/ASUS/Desktop/TITULACION/ANPR/frontend/src/pages/Dashboard.tsx) | Video fluido a 30 FPS continuos + Feed reactivo con transición dinámica `[⏳ ANALIZANDO PLACA...]` ➔ `[🟢 AUTORIZADO]`. |
+| **Frontend React** | [`Monitoreo.tsx`](frontend/src/interfaz/paginas/Monitoreo.tsx) | Video fluido a 30 FPS continuos + Feed reactivo con transición dinámica `[⏳ ANALIZANDO PLACA...]` ➔ `[🟢 AUTORIZADO]`. |
 
 ---
 

@@ -12,9 +12,9 @@ Verifica:
 import unittest
 import numpy as np
 
-from app.core.models import Detection
-from app.core.detectors import MockDetector
-from app.core.detector import (
+from app.dominio.models import Detection
+from app.infraestructura.detectors import MockDetector
+from app.aplicacion.detector import (
     DetectionPipeline,
     TrackedPlateROI,
     is_valid_ecuador_plate,

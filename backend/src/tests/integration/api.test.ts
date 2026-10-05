@@ -7,9 +7,9 @@ import request from 'supertest';
 import jwt from 'jsonwebtoken';
 import type { Express } from 'express';
 
-const CODIGO_POR_USUARIO: Record<number, string> = { 1: 'ADMIN', 2: 'SUPERVISOR', 3: 'OPERADOR', 4: 'GESTOR_ACCESOS' };
+const CODIGO_POR_USUARIO: Record<number, string> = { 1: 'ADMIN', 3: 'GUARDIA', 4: 'GESTOR_PERMISOS' };
 
-jest.mock('../../config/db', () => {
+jest.mock('../../infraestructura/db', () => {
   const peticion = () => {
     const entradas: Record<string, unknown> = {};
     const r: any = {
@@ -27,12 +27,12 @@ jest.mock('../../config/db', () => {
   };
   return { getDB: () => ({ request: peticion }) };
 });
-jest.mock('../../services/socket', () => ({ emitEvent: jest.fn(), emitirAUsuarios: jest.fn(), emitirARoles: jest.fn() }));
+jest.mock('../../infraestructura/servicios/socket', () => ({ emitEvent: jest.fn(), emitirAUsuarios: jest.fn(), emitirARoles: jest.fn() }));
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { crearApp } = require('../../app') as { crearApp: () => Express };
 
-const ROLES = { Admin: 1, Supervisor: 2, Operador: 3, GestorAccesos: 4 } as const;
+const ROLES = { Admin: 1, Guardia: 3, GestorPermisos: 4 } as const;
 type Rol = keyof typeof ROLES;
 const token = (rol: Rol) => jwt.sign({ id: ROLES[rol], email: `${rol}@ecu911.gob.ec`, username: rol, nombre: rol, rol }, process.env.JWT_SECRET!);
 
@@ -60,21 +60,29 @@ describe('API · integración', () => {
    */
   const PERMITIDO = -1;
   const MATRIZ: [string, string, object, Record<Rol, number>][] = [
-    ['post', '/api/vehiculos-autorizados', {}, { Admin: 400, Supervisor: 400, GestorAccesos: 400, Operador: 403 }],
-    ['post', '/api/blacklist', {}, { Admin: 400, Supervisor: 400, GestorAccesos: 403, Operador: 403 }],
-    ['get', '/api/vehiculos-autorizados', {}, { Admin: 200, Supervisor: 200, GestorAccesos: 200, Operador: 200 }],
-    ['post', '/api/solicitudes-acceso', {}, { Admin: 400, Supervisor: 400, GestorAccesos: 400, Operador: 400 }],
-    ['post', '/api/solicitudes-acceso/5/rechazar', {}, { Admin: 400, Supervisor: 400, GestorAccesos: 400, Operador: 403 }],
-    ['post', '/api/solicitudes-acceso/5/aprobar', {}, { Admin: 404, Supervisor: 404, GestorAccesos: 404, Operador: 403 }],
-    ['get', '/api/panel/accesos', {}, { Admin: 200, Supervisor: 200, GestorAccesos: 200, Operador: 403 }],
-    ['get', '/api/usuarios', {}, { Admin: 200, Supervisor: 403, GestorAccesos: 403, Operador: 403 }],
-    ['delete', '/api/detecciones/1', {}, { Admin: 400, Supervisor: 403, GestorAccesos: 403, Operador: 403 }],
-    ['get', '/api/notificaciones/metricas', {}, { Admin: 200, Supervisor: 200, GestorAccesos: 403, Operador: 403 }],
-    ['get', '/api/reportes?desde=2026-10-02&hasta=2026-10-01', {}, { Admin: 400, Supervisor: 400, GestorAccesos: 400, Operador: 403 }],
-    ['get', '/api/auditoria', {}, { Admin: PERMITIDO, Supervisor: 403, GestorAccesos: 403, Operador: 403 }],
+    ['post', '/api/vehiculos-autorizados', {}, { Admin: 400, GestorPermisos: 400, Guardia: 403 }],
+    ['post', '/api/blacklist', {}, { Admin: 400, GestorPermisos: 403, Guardia: 403 }],
+    ['get', '/api/vehiculos-autorizados', {}, { Admin: 200, GestorPermisos: 200, Guardia: 200 }],
+    ['post', '/api/solicitudes-acceso', {}, { Admin: 400, GestorPermisos: 403, Guardia: 400 }],
+    ['post', '/api/solicitudes-acceso/5/rechazar', {}, { Admin: 400, GestorPermisos: 400, Guardia: 403 }],
+    ['post', '/api/solicitudes-acceso/5/aprobar', { version: 1 }, { Admin: 404, GestorPermisos: 404, Guardia: 403 }],
+    ['get', '/api/panel/accesos', {}, { Admin: 200, GestorPermisos: 200, Guardia: 403 }],
+    ['get', '/api/usuarios', {}, { Admin: 200, GestorPermisos: 403, Guardia: 403 }],
+    ['delete', '/api/detecciones/1', {}, { Admin: 400, GestorPermisos: 403, Guardia: 403 }],
+    ['get', '/api/notificaciones/metricas', {}, { Admin: 200, GestorPermisos: 403, Guardia: 403 }],
+    ['get', '/api/reportes?desde=2026-10-02&hasta=2026-10-01', {}, { Admin: 400, GestorPermisos: 403, Guardia: 403 }],
+    ['get', '/api/auditoria', {}, { Admin: PERMITIDO, GestorPermisos: 403, Guardia: 403 }],
+    // El gestor de permisos no accede al monitoreo ni por la API (detecciones, video en vivo, inicio)
+    ['get', '/api/detecciones', {}, { Admin: PERMITIDO, GestorPermisos: 403, Guardia: PERMITIDO }],
+    ['get', '/api/detecciones/recientes', {}, { Admin: PERMITIDO, GestorPermisos: 403, Guardia: PERMITIDO }],
+    ['post', '/api/monitoreo/ticket', { alcance: 'stream' }, { Admin: PERMITIDO, GestorPermisos: 403, Guardia: PERMITIDO }],
+    ['get', '/api/panel/resumen', {}, { Admin: PERMITIDO, GestorPermisos: 403, Guardia: PERMITIDO }],
+    ['get', '/api/camaras', {}, { Admin: PERMITIDO, GestorPermisos: 403, Guardia: PERMITIDO }],
+    ['get', '/api/evaluacion/resumen', {}, { Admin: PERMITIDO, GestorPermisos: 403, Guardia: 403 }],
+    ['post', '/api/camaras/1/ping', {}, { Admin: PERMITIDO, GestorPermisos: 403, Guardia: 403 }],
     // Excepción de acceso (autorizar fuera de horario): solo con accesos:excepcion
     ['post', '/api/detecciones/validar/1', { placa_validada: 'ABC1234', excepcion: true, observacion: 'Reunión urgente' },
-      { Admin: 404, Supervisor: 404, GestorAccesos: 404, Operador: 403 }],
+      { Admin: 404, GestorPermisos: 403, Guardia: 403 }],
   ];
 
   for (const [metodo, ruta, cuerpo, esperado] of MATRIZ) {
@@ -97,7 +105,7 @@ describe('API · integración', () => {
   });
 
   it('el catálogo de notificaciones se publica para el cliente', async () => {
-    const r = await request(app).get('/api/notificaciones/catalogo').set('Authorization', `Bearer ${token('Operador')}`).expect(200);
+    const r = await request(app).get('/api/notificaciones/catalogo').set('Authorization', `Bearer ${token('Guardia')}`).expect(200);
     expect(r.body.map((t: any) => t.tipo)).toContain('acceso.restringido');
   });
 });

@@ -11,11 +11,11 @@ const HASH = bcrypt.hashSync('ClaveSegura#2026', 4);
 
 const usuario = {
   id: 4, email: 'gestor@ecu911.gob.ec', nombre_completo: 'Gestor de Accesos', cargo: null, password_hash: HASH,
-  rol_codigo: 'GESTOR_ACCESOS', rol_nombre: 'Gestor de accesos', estado: 'activo', email_verificado: 1,
+  rol_codigo: 'GESTOR_PERMISOS', rol_nombre: 'Gestor de permisos', estado: 'activo', email_verificado: 1,
   bloqueado: 0, bloqueado_hasta: null, intentos_fallidos: 0,
 };
 
-jest.mock('../../config/db', () => ({
+jest.mock('../../infraestructura/db', () => ({
   getDB: () => ({
     request: () => {
       const entradas: Record<string, unknown> = {};
@@ -32,10 +32,10 @@ jest.mock('../../config/db', () => ({
     },
   }),
 }));
-jest.mock('../../services/emailService', () => ({ emailService: { cuentaBloqueada: jest.fn(), smtpConfigurado: () => false } }));
+jest.mock('../../infraestructura/servicios/emailService', () => ({ emailService: { cuentaBloqueada: jest.fn(), smtpConfigurado: () => false } }));
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
-const authRoutes = require('../../routes/auth').default;
+const authRoutes = require('../../interfaz/http/rutas/auth').default;
 
 describe('Auth API', () => {
   const app = express();
@@ -45,11 +45,11 @@ describe('Auth API', () => {
   it('inicia sesión con credenciales válidas y entrega el rol con sus permisos', async () => {
     const r = await request(app).post('/api/auth/login').send({ email: 'GESTOR@ecu911.gob.ec ', password: 'ClaveSegura#2026' });
     expect(r.status).toBe(200);
-    expect(r.body.user).toMatchObject({ id: 4, rol: 'GestorAccesos', rol_nombre: 'Gestor de accesos' });
+    expect(r.body.user).toMatchObject({ id: 4, rol: 'GestorPermisos', rol_nombre: 'Gestor de permisos' });
     expect(r.body.user.permisos).toEqual(expect.arrayContaining(['padron:gestionar', 'solicitudes:resolver']));
     expect(r.body.user.permisos).not.toContain('alertas:gestionar');
     const payload = jwt.verify(r.body.token, process.env.JWT_SECRET!) as any;
-    expect(payload).toMatchObject({ id: 4, rol: 'GestorAccesos' });
+    expect(payload).toMatchObject({ id: 4, rol: 'GestorPermisos' });
   });
 
   it('rechaza una contraseña incorrecta con 401 y mensaje genérico', async () => {

@@ -22,34 +22,39 @@ usuario ──(1 rol)──▶ rol ──(n permisos)──▶ permiso (recurso:
 
 ## 2. Roles
 
+Solo existen **tres roles** (migración `db/migration_v6_tres_roles.sql`: `OPERADOR` → `GUARDIA`,
+`GESTOR_ACCESOS` → `GESTOR_PERMISOS`; las cuentas `SUPERVISOR` pasan a `GUARDIA` por mínimo privilegio).
+
 | Rol | Código | Propósito |
 |---|---|---|
-| **Operador** | `OPERADOR` | Personal de garita: monitoreo, validación de lecturas, registro manual, solicitudes de acceso. Recibe el aviso a pantalla completa con el protocolo. |
-| **Gestor de accesos** *(nuevo)* | `GESTOR_ACCESOS` | Administra los **permisos de placa** (padrón): categoría, vigencia desde/hasta y franjas horarias; resuelve las solicitudes de acceso; autoriza excepciones. Recibe las alertas de accesos denegados y fuera de horario, las solicitudes y las placas reincidentes. |
-| **Supervisor** | `SUPERVISOR` | Gestión de las dos listas, reportes, evaluación, cámara del motor; recibe las alarmas escaladas. |
-| **Administrador** | `ADMIN` | Todos los permisos. |
+| **Guardia** | `GUARDIA` | Punto de control: monitoreo en vivo, validación de lecturas, registro manual y solicitudes de acceso. Recibe el aviso a pantalla completa con el protocolo y la notificación **"Se ha otorgado permiso a … con vehículo de placa …"**, que abre la lista blanca filtrada por la placa. |
+| **Gestor de permisos** | `GESTOR_PERMISOS` | Otorga los **permisos de placa** (lista blanca): categoría, vigencia y franjas horarias; resuelve las solicitudes de acceso. Trabaja en **una sola vista** (*Gestión de permisos*), sin monitoreo en vivo. No recibe avisos de monitoreo: solo la **llegada del vehículo** al que dio permiso, además de las solicitudes nuevas y los permisos por vencer. |
+| **Administrador** | `ADMIN` | Todos los permisos: usuarios, cámaras, configuración, auditoría, lista de alertas, excepciones de acceso, reportes, evaluación y alarmas escaladas. |
 
 ## 3. Matriz rol → permiso
 
-| Permiso | Operador | Gestor de accesos | Supervisor | Admin |
-|---|:-:|:-:|:-:|:-:|
-| `operacion:monitorear` — monitoreo, inicio, registro de ingresos | ✓ | ✓ | ✓ | ✓ |
-| `detecciones:validar` — confirmar/corregir lecturas, registro manual | ✓ | ✓ | ✓ | ✓ |
-| `listas:ver` — consultar padrón y lista de alertas | ✓ | ✓ | ✓ | ✓ |
-| `solicitudes:crear` — solicitar la autorización de una placa | ✓ | ✓ | ✓ | ✓ |
-| `padron:gestionar` — permisos de placa (vigencia, horario, categoría) | | ✓ | ✓ | ✓ |
-| `accesos:excepcion` — autorizar fuera de horario/vigencia | | ✓ | ✓ | ✓ |
-| `solicitudes:resolver` — aprobar o rechazar solicitudes | | ✓ | ✓ | ✓ |
-| `alertas:gestionar` — lista de alertas | | | ✓ | ✓ |
-| `avisos:garita` — aviso a pantalla completa con protocolo | ✓ | | ✓ | ✓ |
-| `avisos:acceso` — notificaciones de accesos denegados/restringidos | ✓ | ✓ | ✓ | ✓ |
-| `avisos:seguridad` — placas en lista de alertas | ✓ | | ✓ | ✓ |
-| `avisos:sistema` — cámaras sin conexión | | | ✓ | ✓ |
-| `alarmas:escalamiento` — alarmas no atendidas | | | ✓ | ✓ |
-| `reportes:ver` | | ✓ | ✓ | ✓ |
-| `evaluacion:ver` | | | ✓ | ✓ |
-| `camaras:operar` — cámara del motor y región de interés | | | ✓ | ✓ |
-| `detecciones:eliminar`, `camaras:gestionar`, `usuarios:gestionar`, `auditoria:ver`, `configuracion:gestionar`, `propietario:consultar` | | | | ✓ |
+| Permiso | Guardia | Gestor de permisos | Admin |
+|---|:-:|:-:|:-:|
+| `operacion:monitorear` — monitoreo, inicio, registro de ingresos | ✓ | | ✓ |
+| `detecciones:validar` — confirmar/corregir lecturas, registro manual | ✓ | | ✓ |
+| `listas:ver` — consultar lista blanca y lista de alertas | ✓ | ✓ | ✓ |
+| `solicitudes:crear` — solicitar la autorización de una placa | ✓ | | ✓ |
+| `padron:gestionar` — permisos de placa (vigencia, horario, categoría) | | ✓ | ✓ |
+| `solicitudes:resolver` — aprobar o rechazar solicitudes | | ✓ | ✓ |
+| `avisos:garita` — aviso a pantalla completa con protocolo | ✓ | | ✓ |
+| `avisos:acceso` — accesos denegados/restringidos, reincidencias | ✓ | | ✓ |
+| `avisos:seguridad` — placas en lista de alertas | ✓ | | ✓ |
+| `avisos:padron` — permisos de placa otorgados | ✓ | | ✓ |
+| `accesos:excepcion`, `alertas:gestionar`, `avisos:sistema`, `alarmas:escalamiento`, `reportes:ver`, `evaluacion:ver`, `camaras:operar`, `detecciones:eliminar`, `camaras:gestionar`, `usuarios:gestionar`, `auditoria:ver`, `configuracion:gestionar`, `propietario:consultar` | | | ✓ |
+
+### Flujo de notificaciones de permisos
+
+1. El **gestor de permisos** registra un permiso (o aprueba una solicitud) → notificación
+   `padron.permiso_otorgado` a quienes tienen `avisos:padron` (guardias y administradores), excepto
+   a quien lo otorgó. Enlace: `/listas/autorizados?q=<placa>`.
+2. Llega el vehículo y el paso queda **autorizado** (lectura automática, validación o registro
+   manual) → notificación `acceso.llegada_permiso` **solo** al usuario que otorgó el permiso
+   (`VehiculosAutorizados.registrado_por`). Las entradas repetidas dentro de 30 min se agrupan.
 
 El enrutamiento de notificaciones también se hace **por permiso** (no por rol): cada tipo de
 notificación declara el permiso de sus destinatarios (ver [NOTIFICACIONES.md](NOTIFICACIONES.md)).
@@ -88,9 +93,9 @@ el ingreso queda `no_reconocido` con `restriccion_acceso`, el personal ve el mot
 
 ```mermaid
 sequenceDiagram
-  participant G as Garita (Operador)
+  participant G as Garita (Guardia)
   participant API as Backend
-  participant GA as Gestor de accesos
+  participant GA as Gestor de permisos
   G->>API: Vehículo sin permiso → "Solicitar autorización" (POST /api/solicitudes-acceso)
   API-->>GA: notificación solicitud.nueva (Socket.IO + Web Push)
   GA->>API: Aprobar con vigencia/horario (POST /:id/aprobar)  — SoD: GA ≠ solicitante

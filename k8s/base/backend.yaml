@@ -112,10 +112,6 @@ spec:
               value: redis
             - name: REDIS_PORT
               value: "6379"
-            - name: ENABLE_REDIS_CACHE
-              value: "true"
-            - name: CACHE_TTL_SECONDS
-              value: "3600"
             - name: SOCKET_REDIS_ADAPTER
               value: "true"
           volumeMounts:

@@ -68,11 +68,10 @@ async function paso(placa, tid, extra = {}) {
   let r = await axios.post(`${B}/auth/configuracion-inicial`, { email: 'admin@ecu911.gob.ec', nombre_completo: 'Administradora Zonal', password: PASS }, h());
   const admin = r.status === 201 ? r.data.token : (await axios.post(`${B}/auth/login`, { email: 'admin@ecu911.gob.ec', password: PASS })).data.token;
   ok(!!admin, 'administrador inicial');
-  const gestor = await crearUsuario(admin, 'gestor@ecu911.gob.ec', 'Gabriela Gestora Accesos', 'GestorAccesos');
-  const operador = await crearUsuario(admin, 'operador@ecu911.gob.ec', 'Oscar Operador Garita', 'Operador');
-  const supervisor = await crearUsuario(admin, 'super@ecu911.gob.ec', 'Sonia Supervisora Turno', 'Supervisor');
-  ok(gestor.user.rol === 'GestorAccesos' && gestor.user.permisos.includes('padron:gestionar') && !gestor.user.permisos.includes('alertas:gestionar'), 'login del Gestor de accesos con sus permisos');
-  ok(operador.user.permisos.includes('avisos:garita') && !operador.user.permisos.includes('padron:gestionar'), 'login del Operador con sus permisos');
+  const gestor = await crearUsuario(admin, 'gestor@ecu911.gob.ec', 'Gabriela Gestora Permisos', 'GestorPermisos');
+  const operador = await crearUsuario(admin, 'guardia@ecu911.gob.ec', 'Oscar Guardia Garita', 'Guardia');
+  ok(gestor.user.rol === 'GestorPermisos' && gestor.user.permisos.includes('padron:gestionar') && !gestor.user.permisos.includes('operacion:monitorear'), 'login del Gestor de permisos (sin monitoreo)');
+  ok(operador.user.permisos.includes('avisos:garita') && operador.user.permisos.includes('avisos:padron') && !operador.user.permisos.includes('padron:gestionar'), 'login del Guardia con sus permisos');
 
   // 2. Sockets de tiempo real (operador y gestor)
   const recibidas = { op: [], ge: [], adm: [] };
@@ -82,15 +81,21 @@ async function paso(placa, tid, extra = {}) {
 
   // 3. RBAC: el operador no gestiona el padrón; el gestor no gestiona alertas
   r = await axios.post(`${B}/vehiculos-autorizados`, { placa: 'ZZZ0001', propietario: 'X' }, h(operador.token));
-  ok(r.status === 403, `operador no crea permisos (HTTP ${r.status})`);
+  ok(r.status === 403, `guardia no crea permisos (HTTP ${r.status})`);
   r = await axios.post(`${B}/blacklist`, { placa: 'ZZZ0002', motivo: 'Prueba de permisos', nivel_alerta: 'ALTA' }, h(gestor.token));
-  ok(r.status === 403, `gestor no edita la lista de alertas (HTTP ${r.status})`);
+  ok(r.status === 403, `gestor no edita la lista negra (HTTP ${r.status})`);
 
   // 4. El gestor crea permisos: uno con horario que excluye ahora (domingo 03:00-03:01) y uno 24/7
   r = await axios.post(`${B}/vehiculos-autorizados`, { placa: 'ABC1234', propietario: 'Proveedor Nocturno', categoria: 'PROVEEDOR', horario: [{ dias: [7], desde: '03:00', hasta: '03:01' }] }, h(gestor.token));
   ok(r.status === 201 && r.data.item.horario_texto === 'D 03:00–03:01', `permiso con franja horaria (${r.data.item?.horario_texto})`);
   r = await axios.post(`${B}/vehiculos-autorizados`, { placa: 'XYZ9876', propietario: 'Funcionaria Permanente', categoria: 'FUNCIONARIO' }, h(gestor.token));
   ok(r.status === 201, 'permiso 24/7');
+  await espera(800);
+  // El guardia recibe "Se ha otorgado permiso a … con vehículo de placa …" con enlace a la lista blanca
+  const otorgado = recibidas.op.find(x => x.n.tipo === 'padron.permiso_otorgado' && x.n.titulo.includes('XYZ9876'));
+  ok(!!otorgado && /Se ha otorgado permiso a Funcionaria Permanente/.test(otorgado.n.mensaje) && otorgado.n.enlace === '/listas/autorizados?q=XYZ9876',
+    `guardia notificado del permiso otorgado: ${otorgado?.n.mensaje} → ${otorgado?.n.enlace}`);
+  ok(!recibidas.ge.some(x => x.n.tipo === 'padron.permiso_otorgado'), 'quien otorga el permiso no se lo notifica a sí mismo');
   r = await axios.post(`${B}/vehiculos-autorizados`, { placa: 'BAD0001', propietario: 'x', horario: [{ dias: [9], desde: '25:00', hasta: '1' }] }, h(gestor.token));
   ok(r.status === 400, `horario inválido rechazado (${r.data.error})`);
 
@@ -108,58 +113,63 @@ async function paso(placa, tid, extra = {}) {
 
   // 6. Notificaciones: enrutamiento por permiso y latencia
   const tipos = k => recibidas[k].map(x => x.n.tipo);
-  ok(tipos('ge').includes('acceso.restringido') && tipos('ge').includes('acceso.no_registrado'), `gestor recibe denegados y fuera de horario: ${[...new Set(tipos('ge'))].join(', ')}`);
-  ok(!tipos('ge').includes('acceso.confirmacion'), 'gestor NO recibe confirmaciones de garita');
-  ok(tipos('op').includes('acceso.confirmacion') && tipos('op').includes('acceso.restringido'), `operador recibe: ${[...new Set(tipos('op'))].join(', ')}`);
+  ok(!['acceso.restringido', 'acceso.no_registrado', 'acceso.confirmacion'].some(t => tipos('ge').includes(t)), `el gestor no recibe avisos de monitoreo: ${[...new Set(tipos('ge'))].join(', ')}`);
+  const llegada = recibidas.ge.find(x => x.n.tipo === 'acceso.llegada_permiso' && x.n.titulo.includes('XYZ9876'));
+  ok(!!llegada, `el gestor recibe la llegada del vehículo al que dio permiso: ${llegada?.n.mensaje}`);
+  ok(!recibidas.op.some(x => x.n.tipo === 'acceso.llegada_permiso'), 'la llegada solo va a quien otorgó el permiso');
+  ok(tipos('op').includes('acceso.confirmacion') && tipos('op').includes('acceso.restringido'), `guardia recibe: ${[...new Set(tipos('op'))].join(', ')}`);
   const nr = recibidas.op.find(x => x.n.tipo === 'acceso.no_registrado');
   ok(!!nr, `latencia completar-ocr → notificación en el socket: ${nr ? nr.t - sinPermiso.t0 : '?'} ms`);
 
   // 7. ACK desde el aviso de garita ("Enterado")
   r = await axios.post(`${B}/notificaciones/reconocer-deteccion/${sinPermiso.id}`, {}, h(operador.token));
-  ok(r.status === 200 && r.data.reconocidas === 1, `ACK del operador (${r.data.reconocidas} alarma)`);
-  r = await axios.get(`${B}/notificaciones?filtro=pendientes`, h(gestor.token));
-  ok(!r.data.items.some(n => n.datos?.deteccion_id === sinPermiso.id), 'la alarma atendida deja de estar pendiente para el gestor');
+  ok(r.status === 200 && r.data.reconocidas === 1, `ACK del guardia (${r.data.reconocidas} alarma)`);
+  r = await axios.get(`${B}/notificaciones?filtro=pendientes`, h(admin));
+  ok(!r.data.items.some(n => n.datos?.deteccion_id === sinPermiso.id), 'la alarma atendida deja de estar pendiente para el administrador');
 
   // 8. Solicitud de acceso con separación de funciones
   r = await axios.post(`${B}/solicitudes-acceso`, { placa: 'QWE1111', propietario: 'Proveedor de radios', motivo: 'Entrega de equipos de radio', categoria: 'PROVEEDOR', deteccion_id: sinPermiso.id, horario: [{ dias: [1, 2, 3, 4, 5, 6, 7], desde: '00:00', hasta: '23:59' }] }, h(operador.token));
-  ok(r.status === 201, `operador crea solicitud #${r.data.solicitud?.id}`);
+  ok(r.status === 201, `guardia crea solicitud #${r.data.solicitud?.id}`);
   const sol = r.data.solicitud;
   r = await axios.post(`${B}/solicitudes-acceso`, { placa: 'QWE1111', propietario: 'x', motivo: 'duplicada' }, h(operador.token));
   ok(r.status === 409, 'una sola solicitud pendiente por placa');
   await espera(800);
   ok(tipos('ge').includes('solicitud.nueva') && !tipos('op').includes('solicitud.nueva'), 'el gestor recibe la solicitud; el solicitante no');
   r = await axios.post(`${B}/solicitudes-acceso/${sol.id}/aprobar`, {}, h(operador.token));
-  ok(r.status === 403, `operador no aprueba (HTTP ${r.status})`);
-  r = await axios.post(`${B}/solicitudes-acceso`, { placa: 'GGG7777', propietario: 'Familiar', motivo: 'Visita propia del gestor' }, h(gestor.token));
+  ok(r.status === 403, `guardia no aprueba (HTTP ${r.status})`);
+  r = await axios.post(`${B}/solicitudes-acceso`, { placa: 'GGG7777', propietario: 'Familiar', motivo: 'Visita propia' }, h(gestor.token));
+  ok(r.status === 403, `el gestor no crea solicitudes: otorga el permiso directamente (HTTP ${r.status})`);
+  r = await axios.post(`${B}/solicitudes-acceso`, { placa: 'GGG7777', propietario: 'Familiar', motivo: 'Visita propia del administrador' }, h(admin));
   const propia = r.data.solicitud;
-  r = await axios.post(`${B}/solicitudes-acceso/${propia.id}/aprobar`, {}, h(gestor.token));
-  ok(r.status === 403 && /Separación de funciones/.test(r.data.error), `SoD: el gestor no aprueba su propia solicitud (${r.status})`);
+  r = await axios.post(`${B}/solicitudes-acceso/${propia.id}/aprobar`, {}, h(admin));
+  ok(r.status === 403 && /Separación de funciones/.test(r.data.error), `SoD: nadie aprueba su propia solicitud (${r.status})`);
   r = await axios.post(`${B}/solicitudes-acceso/${sol.id}/aprobar`, { comentario: 'Autorizado por una semana', ajustes: { fecha_fin: new Date(Date.now() + 7 * 864e5).toISOString().slice(0, 10) } }, h(gestor.token));
   ok(r.status === 200 && r.data.permiso?.placa === 'QWE1111', `gestor aprueba: ${r.data.message}`);
   r = await axios.post(`${B}/solicitudes-acceso/${sol.id}/aprobar`, {}, h(gestor.token));
   ok(r.status === 409, 'no se aprueba dos veces');
   await espera(800);
-  ok(tipos('op').includes('solicitud.resuelta'), 'el operador recibe la resolución');
-  r = await axios.post(`${B}/detecciones/validar/${sinPermiso.id}`, { placa_validada: 'QWE1111' }, h(gestor.token));
+  ok(tipos('op').includes('solicitud.resuelta'), 'el guardia recibe la resolución');
+  ok(recibidas.op.some(x => x.n.tipo === 'padron.permiso_otorgado' && x.n.titulo.includes('QWE1111')), 'la solicitud aprobada también se anuncia como permiso otorgado');
+  r = await axios.post(`${B}/detecciones/validar/${sinPermiso.id}`, { placa_validada: 'QWE1111' }, h(operador.token));
   ok(r.data.deteccion?.estado_validacion === 'autorizado', `el ingreso que originó la solicitud queda ${r.data.deteccion?.estado_validacion}`);
 
   // 9. Excepción fuera de horario
   r = await axios.post(`${B}/detecciones/validar/${fuera.id}`, { placa_validada: 'ABC1234', excepcion: true, observacion: 'Entrega urgente' }, h(operador.token));
-  ok(r.status === 403, 'operador no autoriza excepciones');
+  ok(r.status === 403, 'guardia no autoriza excepciones');
   r = await axios.post(`${B}/detecciones/validar/${fuera.id}`, { placa_validada: 'ABC1234' }, h(operador.token));
   ok(r.data.deteccion?.estado_validacion === 'no_reconocido', 'validar sin excepción mantiene la restricción horaria');
-  r = await axios.post(`${B}/detecciones/validar/${fuera.id}`, { placa_validada: 'ABC1234', excepcion: true, observacion: 'Entrega urgente autorizada' }, h(gestor.token));
-  ok(r.data.deteccion?.estado_validacion === 'autorizado', 'el gestor autoriza por excepción');
+  r = await axios.post(`${B}/detecciones/validar/${fuera.id}`, { placa_validada: 'ABC1234', excepcion: true, observacion: 'Entrega urgente autorizada' }, h(admin));
+  ok(r.data.deteccion?.estado_validacion === 'autorizado', 'el administrador autoriza por excepción');
   r = await axios.get(`${B}/detecciones/${fuera.id}`, h(admin));
   ok(r.data.auditoria.some(a => a.accion === 'EXCEPCION_ACCESO'), 'la excepción queda en la auditoría');
 
-  // 10. Escalamiento: alarma sin ACK > 20 s → supervisor/administrador
+  // 10. Escalamiento: alarma sin ACK > 20 s → administrador
   const ignorada = await paso('NOA0001', 9005);
   console.log('… esperando el escalamiento (umbral 20 s, barrido cada 15 s)');
   let escalada = null;
   for (let i = 0; i < 30 && !escalada; i++) { await espera(2000); escalada = recibidas.adm.find(x => x.n.tipo === 'alarma.escalada' && x.n.titulo.includes('NOA0001')); }
-  ok(!!escalada, `alarma escalada a supervisión: ${escalada?.n.titulo}`);
-  ok(!recibidas.op.some(x => x.n.tipo === 'alarma.escalada'), 'el operador no recibe la escalada');
+  ok(!!escalada, `alarma escalada al administrador: ${escalada?.n.titulo}`);
+  ok(!recibidas.op.some(x => x.n.tipo === 'alarma.escalada'), 'el guardia no recibe la escalada');
 
   // 11. Push, métricas, panel del gestor
   r = await axios.post(`${B}/notificaciones/push/suscripcion`, { endpoint: 'https://push.ejemplo.invalid/abc', keys: { p256dh: 'BNcRdreALRFXTkOOUHK1EtK2wtaz5Ry4YfYCA_0QTpQtUbVlUls0VJXg7A8u-Ts1XbjhazAkj7I99e8QcYP7DkM', auth: 'tBHItJI5svbpez7KI4CCXg' } }, h(gestor.token));
@@ -168,7 +178,7 @@ async function paso(placa, tid, extra = {}) {
   ok(r.data.habilitado && r.data.clave_publica?.length > 60, 'clave pública VAPID disponible');
   r = await axios.get(`${B}/panel/accesos`, h(gestor.token));
   ok(r.status === 200 && r.data.padron.vigentes >= 2, `panel del gestor: ${JSON.stringify({ solicitudes: r.data.solicitudes.pendientes, padron: r.data.padron, hoy: r.data.hoy })}`);
-  r = await axios.get(`${B}/notificaciones/metricas?dias=1`, h(supervisor.token));
+  r = await axios.get(`${B}/notificaciones/metricas?dias=1`, h(admin));
   ok(r.status === 200, `métricas de alarmas: ${JSON.stringify(r.data.por_severidad.map(f => ({ s: f.severidad, n: f.emitidas, ack: f.reconocidas, esc: f.escaladas, tta: f.tta_mediana_s })))}`);
   const prom = (await axios.get(`${RAIZ}/metrics`)).data;
   ok(/anpr_notificaciones_total\{tipo="acceso.restringido"/.test(prom) && /anpr_notificacion_latencia_seconds_bucket/.test(prom) && /anpr_notificacion_tiempo_reconocimiento_seconds_count/.test(prom), 'métricas Prometheus de notificaciones');
