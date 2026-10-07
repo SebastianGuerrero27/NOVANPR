@@ -88,14 +88,16 @@ _INTERVALO_ANALISIS_S = 0.25
 _ESTADOS_FINALES = {"confirmada", "autorizado", "alerta", "no_reconocido", "pendiente_revision"}
 
 # Colores de estado (BGR) iguales a los del sistema web: autorizado #15803d,
-# pendiente #2563eb, no registrado #d97706, alerta #b91c1c; en lectura, cian.
+# pendiente #2563eb, no registrado #d97706, alerta #b91c1c. Mientras el OCR escanea,
+# ámbar #f59e0b; con la placa leída y sin decisión del backend, verde #22c55e.
 _COLOR_ESTADO = {
     "autorizado": (61, 128, 21),
     "pendiente_revision": (235, 99, 37),
     "no_reconocido": (6, 119, 217),
     "alerta": (28, 28, 185),
 }
-_COLOR_LEYENDO = (230, 200, 0)
+_COLOR_ESCANEANDO = (11, 158, 245)
+_COLOR_LEIDA = (94, 197, 34)
 _TEXTO_ESTADO = {
     "autorizado": "AUTORIZADO",
     "pendiente_revision": "POR CONFIRMAR",
@@ -455,6 +457,15 @@ class VisualOverlayBox:
     oriented_box: list[list[int]] = field(default_factory=list)
     placa: str = ""
     estado: str = ""
+    # Lectura cruda del OCR que aún no forma una placa ANT (se muestra mientras escanea)
+    parcial: str = ""
+    # Confianza del detector y de la placa por consenso (0–1)
+    confianza: float = 0.0
+    confianza_placa: float = 0.0
+    # Velocidad del centro (px/s, estado Kalman) para extrapolar la caja entre envíos
+    velocidad: tuple[float, float] = (0.0, 0.0)
+    # Región comprobada como placa (fila de caracteres) o con dos lecturas ANT
+    verificada: bool = False
 
 
 # =============================================================================
@@ -1292,21 +1303,26 @@ class DetectionPipeline:
                 )
                 tracked_rois.append(roi)
 
-                # 7.3. Solo se dibuja lo que se comprobó que es una placa: fila de caracteres
-                # válida o al menos dos lecturas OCR con formato ANT en cuadros distintos.
-                # El resto de candidatos del detector se sigue rastreando y leyendo, pero no se
-                # muestra (evita recuadros sobre rótulos, rejillas o faros).
+                # 7.3. Cada pista se dibuja desde el primer cuadro: la caja sigue a la placa en
+                # movimiento mientras el OCR la lee. Sin lectura muestra "ESCANEANDO OCR" (o el
+                # texto parcial) con la confianza del detector; con lectura ANT, la placa por
+                # consenso; con la decisión del backend, su estado. Qué se registra lo sigue
+                # decidiendo la verificación en dos fases, no este dibujo.
                 lecturas = int(plate_info.get("lecturas", 0)) if plate_info else 0
-                if not (verif["es_placa"] or lecturas >= 2):
-                    continue
-                placa = plate_info.get("plate", "") if plate_info and lecturas >= 1 else ""
+                texto_ocr = plate_info.get("plate", "") if plate_info else ""
+                placa = texto_ocr if lecturas >= 1 else ""
+                parcial = "" if placa else texto_ocr[:8]
+                confianza_placa = float(plate_info.get("confidence", 0.0)) if placa else 0.0
                 estado = plate_info.get("status", "") if plate_info else ""
                 if estado in _COLOR_ESTADO:
                     box_color = _COLOR_ESTADO[estado]
                     box_label = f"{placa_con_guion(placa)}  {_TEXTO_ESTADO[estado]}" if placa else _TEXTO_ESTADO[estado]
+                elif placa:
+                    box_color = _COLOR_LEIDA
+                    box_label = f"{placa_con_guion(placa)}  {int(confianza_placa * 100)}%"
                 else:
-                    box_color = _COLOR_LEYENDO
-                    box_label = f"{placa_con_guion(placa)}  {int(plate_info.get('confidence', 0) * 100)}%" if placa else ""
+                    box_color = _COLOR_ESCANEANDO
+                    box_label = f"{parcial or 'ESCANEANDO OCR'}...  {int(trk.confidence * 100)}%"
 
                 new_overlays.append(VisualOverlayBox(
                     x1=x1,
@@ -1321,6 +1337,11 @@ class DetectionPipeline:
                     oriented_box=oriented_box,
                     placa=placa,
                     estado=estado,
+                    parcial=parcial,
+                    confianza=float(trk.confidence),
+                    confianza_placa=confianza_placa,
+                    velocidad=(round(vx_px_s, 2), round(vy_px_s, 2)),
+                    verificada=bool(verif["es_placa"] or lecturas >= 2),
                 ))
 
         with self._overlays_lock:
@@ -1364,10 +1385,10 @@ class DetectionPipeline:
             cv2.rectangle(overlay, (mx1, my1), (mx2, my2), (40, 190, 70), -1)
             cv2.addWeighted(overlay, 0.18, out_frame, 0.82, 0, out_frame)
             cv2.rectangle(out_frame, (mx1, my1), (mx2, my2), (40, 200, 70), 1)
-            # Etiqueta táctica "VEHÍCULO DETECTADO" en la zona de movimiento
+            # Etiqueta táctica con el porcentaje de movimiento de la zona
             cv2.putText(
                 out_frame,
-                "VEHICULO",
+                f"VEHICULO - MOV {self._last_motion_pct}%",
                 (mx1 + 4, my1 + 14),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.40,

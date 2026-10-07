@@ -3,97 +3,36 @@ import { AlertTriangle, Loader2, Maximize2, PauseCircle, Radio, VideoOff } from 
 import api, { mensajeError } from '../../infraestructura/api';
 import { usePaginaVisible } from '../../aplicacion/hooks';
 import { conectarWhep, crearMedidor, EstadisticasVideo, SesionWhep } from '../../infraestructura/webrtc';
+import { areaVideo, crearHud, Hud, MovimientoHud, PistaHud, Punto } from './hud';
 import { Aviso, Modal } from './ui';
 
 /**
- * Video en vivo por WebRTC (MediaMTX) con las cajas de detección del motor ANPR dibujadas
- * encima. El video no pasa por el motor: MediaMTX reenvía el H.264 de la cámara sin
- * re-codificar, y el motor solo envía las coordenadas de las placas (JSON).
+ * Video en vivo por WebRTC (MediaMTX) con el HUD de detección del motor ANPR dibujado encima.
+ * El video no pasa por el motor: MediaMTX reenvía el H.264 de la cámara sin re-codificar, y el
+ * motor solo envía por WebSocket las pistas y la zona de movimiento (JSON).
  *
- * Como en Rekor Scout / OpenALPR, solo se dibujan las regiones que el motor comprobó que
- * son placas (fila de caracteres o lecturas confirmadas), con el cuadrilátero ajustado a
- * los bordes reales de la placa y el color del estado decidido por el backend. La región
- * de interés de la cámara se muestra con el exterior atenuado.
+ * Cada placa en seguimiento se dibuja desde que aparece y sigue al vehículo: "ESCANEANDO OCR"
+ * mientras se lee, la placa al leerla y el color del estado decidido por el backend (ver
+ * hud.ts). La región de interés de la cámara se muestra con el exterior atenuado.
  */
 
-export type Punto = [number, number];
-interface Pista {
-  id: number; caja: [number, number, number, number]; puntos: Punto[] | null; etiqueta: string; color: string;
-  placa?: string | null; estado?: string | null;
-}
-export interface AreaVideo { x: number; y: number; w: number; h: number }
+interface AreaVideo { x: number; y: number; w: number; h: number }
 
 type Estado = 'conectando' | 'en_vivo' | 'pausado' | 'oculto' | 'reconectando' | 'error' | 'sin_camara';
 
-/** Rectángulo del video dentro del elemento (object-fit: contain). */
-function areaVideo(v: HTMLVideoElement) {
-  const r = v.getBoundingClientRect();
-  const vw = v.videoWidth || 16;
-  const vh = v.videoHeight || 9;
-  const esc = Math.min(r.width / vw, r.height / vh);
-  return { ancho: r.width, alto: r.height, x: (r.width - vw * esc) / 2, y: (r.height - vh * esc) / 2, w: vw * esc, h: vh * esc };
-}
-
-function dibujarPistas(lienzo: HTMLCanvasElement, video: HTMLVideoElement, pistas: Pista[], roi: Punto[] | null) {
-  const a = areaVideo(video);
-  const dpr = window.devicePixelRatio || 1;
-  if (lienzo.width !== Math.round(a.ancho * dpr) || lienzo.height !== Math.round(a.alto * dpr)) {
-    lienzo.width = Math.round(a.ancho * dpr);
-    lienzo.height = Math.round(a.alto * dpr);
-  }
-  const ctx = lienzo.getContext('2d')!;
-  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  ctx.clearRect(0, 0, a.ancho, a.alto);
-  const X = (x: number) => a.x + x * a.w;
-  const Y = (y: number) => a.y + y * a.h;
-
-  // Región de interés: exterior atenuado y contorno discontinuo
-  if (roi && roi.length >= 3 && video.videoWidth) {
-    ctx.beginPath();
-    ctx.rect(a.x, a.y, a.w, a.h);
-    roi.forEach(([x, y], i) => (i ? ctx.lineTo(X(x), Y(y)) : ctx.moveTo(X(x), Y(y))));
-    ctx.closePath();
-    ctx.fillStyle = 'rgba(2,6,23,0.38)';
-    ctx.fill('evenodd');
-    ctx.beginPath();
-    roi.forEach(([x, y], i) => (i ? ctx.lineTo(X(x), Y(y)) : ctx.moveTo(X(x), Y(y))));
-    ctx.closePath();
-    ctx.setLineDash([8, 6]);
-    ctx.strokeStyle = 'rgba(125,211,252,0.9)';
-    ctx.lineWidth = 1.5;
-    ctx.stroke();
-    ctx.setLineDash([]);
-  }
-
-  for (const p of pistas) {
-    ctx.strokeStyle = p.color;
-    ctx.lineWidth = 2.5;
-    ctx.beginPath();
-    if (p.puntos) {
-      p.puntos.forEach(([x, y], i) => (i ? ctx.lineTo(X(x), Y(y)) : ctx.moveTo(X(x), Y(y))));
-      ctx.closePath();
-    } else {
-      ctx.rect(X(p.caja[0]), Y(p.caja[1]), X(p.caja[2]) - X(p.caja[0]), Y(p.caja[3]) - Y(p.caja[1]));
-    }
-    ctx.globalAlpha = 0.16;
-    ctx.fillStyle = p.color;
-    ctx.fill();
-    ctx.globalAlpha = 1;
-    ctx.stroke();
-    if (p.etiqueta) {
-      ctx.font = '600 12px Inter, system-ui, sans-serif';
-      const tw = ctx.measureText(p.etiqueta).width + 12;
-      const bx = Math.min(Math.max(a.x, X(p.caja[0])), a.x + a.w - tw);
-      const by = Math.max(a.y, Y(p.caja[1]) - 22);
-      ctx.fillStyle = 'rgba(7,23,48,0.88)';
-      ctx.fillRect(bx, by, tw, 19);
-      ctx.strokeStyle = p.color;
-      ctx.lineWidth = 1;
-      ctx.strokeRect(bx, by, tw, 19);
-      ctx.fillStyle = '#fff';
-      ctx.fillText(p.etiqueta, bx + 6, by + 14);
-    }
-  }
+/** Pistas del WebSocket /ws/pistas del motor → HUD. */
+function pistasDelMotor(lista: any[]): PistaHud[] {
+  return (lista ?? []).map(p => ({
+    id: p.id,
+    caja: p.caja,
+    puntos: p.puntos ?? null,
+    velocidad: p.velocidad ?? [0, 0],
+    confianza: p.confianza ?? 0,
+    placa: p.placa ?? null,
+    parcial: p.parcial ?? null,
+    confianzaPlaca: p.confianza_placa ?? 0,
+    estado: p.estado ?? null,
+  }));
 }
 
 const Superposicion: React.FC<{ estado: Estado; mensaje?: string | null; pausado: boolean }> = ({ estado, mensaje }) => {
@@ -162,12 +101,11 @@ export const ReproductorWebRTC: React.FC<{
     let cerrado = false;
     let sesion: SesionWhep | null = null;
     let ws: WebSocket | null = null;
-    let pistas: Pista[] = [];
-    let roi: Punto[] | null = null;
     let timerStats: number | undefined;
     let vigilancia: number | undefined;
     let reintento: number | undefined;
     const v = video.current!;
+    const hud: Hud = crearHud(lienzo.current!, () => (v.videoWidth ? areaVideo(v) : null));
 
     const fallar = (texto: string) => {
       if (cerrado) return;
@@ -177,9 +115,8 @@ export const ReproductorWebRTC: React.FC<{
       setEstado('reconectando');
       reintento = window.setTimeout(() => setIntento(i => i + 1), Math.min(10000, 1500 * fallos.current));
     };
+    // El HUD se redimensiona solo; aquí se mantiene el área de la capa interactiva
     const redibujar = () => {
-      if (!v) return;
-      if (lienzo.current) dibujarPistas(lienzo.current, v, pistas, roi);
       if (v.videoWidth) {
         const a = areaVideo(v);
         setArea(prev => (prev && prev.x === a.x && prev.y === a.y && prev.w === a.w && prev.h === a.h ? prev : { x: a.x, y: a.y, w: a.w, h: a.h }));
@@ -213,12 +150,10 @@ export const ReproductorWebRTC: React.FC<{
           ws.onmessage = ev => {
             try {
               const m = JSON.parse(ev.data);
-              pistas = m.pistas ?? [];
-              roi = m.roi ?? null;
-              redibujar();
+              hud.actualizar(pistasDelMotor(m.pistas), (m.movimiento as MovimientoHud | null) ?? null, (m.roi as Punto[] | null) ?? null);
             } catch { /* mensaje inválido */ }
           };
-          ws.onclose = () => { pistas = []; roi = null; redibujar(); };
+          ws.onclose = () => hud.limpiar();
         }
       } catch (e) {
         fallar(mensajeError(e, (e as Error)?.message || 'No se pudo abrir el video.'));
@@ -232,6 +167,7 @@ export const ReproductorWebRTC: React.FC<{
       window.clearInterval(timerStats);
       ro.disconnect();
       ws?.close();
+      hud.detener();
       sesion?.cerrar();
       v.onloadeddata = null;
       onEstadisticas?.(null);

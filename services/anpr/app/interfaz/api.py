@@ -115,20 +115,26 @@ def crear_app(motor: MotorAnpr) -> FastAPI:
     @app.websocket("/api/ws/pistas")
     async def pistas(websocket: WebSocket):
         """
-        Cajas de detección para dibujar sobre el video WebRTC del navegador: solo JSON (≈10 envíos
-        por segundo y únicamente cuando cambian); el video llega aparte desde MediaMTX.
+        Cajas de detección y zona de movimiento para dibujar sobre el video WebRTC del navegador:
+        solo JSON (≈10 envíos por segundo); el video llega aparte desde MediaMTX. Se envía al
+        cambiar y, mientras haya algo visible, al menos cada 0,3 s: el navegador desvanece las
+        pistas que dejan de llegar.
         """
         if not ticket_valido(websocket.query_params.get("ticket"), "stream"):
             await websocket.close(code=4401)
             return
         await websocket.accept()
         ultimo = None
+        enviado = 0.0
         try:
             while motor.activo:
                 datos = motor.pistas_actuales()
-                if datos != ultimo:
+                ahora = time.monotonic()
+                visible = bool(datos.get("pistas") or datos.get("movimiento"))
+                if datos != ultimo or (visible and ahora - enviado >= 0.3):
                     await websocket.send_json(datos)
                     ultimo = datos
+                    enviado = ahora
                 await asyncio.sleep(0.1)
         except WebSocketDisconnect:
             pass

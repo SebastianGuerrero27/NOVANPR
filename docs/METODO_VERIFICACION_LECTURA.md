@@ -49,12 +49,21 @@ caracteres y usan la caja del detector.
 
 ### 2.1 Qué se dibuja
 
-Solo se dibuja una región cuando se comprobó que es una placa: fila de caracteres válida
-(5–9 caracteres) en algún cuadro del track, o al menos dos lecturas OCR con formato ANT en
-cuadros distintos. El resto de candidatos se sigue rastreando y leyendo, pero no se
-muestra. La figura es el cuadrilátero de `_bordes_placa` (no la caja del detector) y su
-color es el estado decidido por el backend (autorizado, por confirmar, no registrado,
-alerta).
+Cada pista del rastreador se dibuja desde el primer cuadro en que aparece, para que el
+operador vea la placa seguida en movimiento mientras el OCR la lee:
+
+| Situación | Color | Insignia |
+|---|---|---|
+| Sin lectura con formato ANT | ámbar | "ESCANEANDO OCR" o el texto parcial, con la confianza del detector |
+| Placa leída por consenso | verde | placa y confianza del consenso |
+| Estado decidido por el backend | el del estado (autorizado, por confirmar, no registrado, alerta) | placa y estado |
+
+La figura es el cuadrilátero de `_bordes_placa` cuando se localizó la fila de caracteres, o
+la caja del detector mientras tanto. Sobre el video se muestra además la zona de movimiento
+(MOG2) cuando contiene una detección del detector de placas. Dibujar no implica registrar:
+cada pista lleva el indicador `verificada` (fila de caracteres válida de 5–9 caracteres en
+algún cuadro del track, o al menos dos lecturas OCR con formato ANT en cuadros distintos), y
+qué lectura se guarda y si se autoriza sola lo decide la validez de la lectura (§2.2).
 
 ### 2.2 Validez de la lectura
 

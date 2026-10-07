@@ -3,7 +3,8 @@ import { Eraser, Maximize, Save, Undo2 } from 'lucide-react';
 import api, { mensajeError } from '../../infraestructura/api';
 import type { Camara } from '../../dominio/tipos';
 import { Aviso, Modal } from './ui';
-import { Punto, ReproductorWebRTC } from './envivo';
+import { ReproductorWebRTC } from './envivo';
+import { Punto } from './hud';
 
 /**
  * Editor de la región de interés de una cámara (equivalente a la máscara de detección de

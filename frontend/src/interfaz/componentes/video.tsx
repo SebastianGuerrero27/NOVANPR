@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { Loader2, Maximize2, PauseCircle, VideoOff, WifiOff } from 'lucide-react';
 import api, { mensajeError } from '../../infraestructura/api';
 import { usePaginaVisible } from '../../aplicacion/hooks';
+import { areaVideo, crearHud, MovimientoHud, PistaHud, Punto } from './hud';
 
 /**
  * Video en vivo del motor ANPR por WebSocket (JPEG por cuadro).
@@ -142,10 +143,38 @@ export const VisorVideo: React.FC<{ perfil: PerfilVideo; pausado: boolean; clave
   );
 };
 
+/** Detecciones de la respuesta de /ws/webcam (píxeles del cuadro enviado) → HUD (0–1). */
+function pistasDeLaWebcam(rois: any[], ancho: number, alto: number): PistaHud[] {
+  if (!ancho || !alto) return [];
+  const nx = (x: number) => x / ancho;
+  const ny = (y: number) => y / alto;
+  return rois.filter(r => Array.isArray(r.bbox) && r.bbox.length === 4).map((r): PistaHud => {
+    const leida = (r.lecturas ?? 0) >= 1;
+    return {
+      id: r.tracking_id,
+      caja: [nx(r.bbox[0]), ny(r.bbox[1]), nx(r.bbox[2]), ny(r.bbox[3])],
+      puntos: Array.isArray(r.oriented_box) && r.oriented_box.length === 4 ? r.oriented_box.map(([x, y]: number[]): Punto => [nx(x), ny(y)]) : null,
+      velocidad: Array.isArray(r.velocity) ? [nx(r.velocity[0] ?? 0), ny(r.velocity[1] ?? 0)] : [0, 0],
+      confianza: r.confidence ?? 0,
+      placa: leida ? r.plate || null : null,
+      parcial: leida ? null : r.plate || null,
+      confianzaPlaca: r.plate_confidence ?? 0,
+      estado: r.status || null,
+    };
+  });
+}
+
+function movimientoDeLaWebcam(m: any, ancho: number, alto: number): MovimientoHud | null {
+  const c = m.motion_bbox;
+  if (!ancho || !alto || !Array.isArray(c) || c.length !== 4 || !m.motion_vehicle_detected || !(m.motion_pct > 3)) return null;
+  return { caja: [c[0] / ancho, c[1] / alto, c[2] / ancho, c[3] / alto], porcentaje: m.motion_pct };
+}
+
 /**
  * Modo de prueba (solo Administrador): envía la webcam del navegador al motor ANPR para
- * probar la detección sin cámara IP. Limitado a 640 px y 6 cuadros por segundo, con un
- * solo cuadro en tránsito; se detiene al ocultar la pestaña.
+ * probar la detección sin cámara IP, con el mismo HUD que el video en vivo (zona de movimiento,
+ * caja que sigue a la placa y lectura del OCR). Limitado a 640 px y 6 cuadros por segundo, con
+ * un solo cuadro en tránsito; se detiene al ocultar la pestaña.
  */
 export const WebcamPrueba: React.FC = () => {
   const visible = usePaginaVisible();
@@ -162,33 +191,7 @@ export const WebcamPrueba: React.FC = () => {
     let timer: number | undefined;
     let esperando = false;
     const lienzo = document.createElement('canvas');
-
-    const dibujar = (rois: any[]) => {
-      const c = superposicion.current;
-      const v = video.current;
-      if (!c || !v || !v.videoWidth) return;
-      const r = v.getBoundingClientRect();
-      c.width = r.width; c.height = r.height;
-      const ctx = c.getContext('2d')!;
-      ctx.clearRect(0, 0, c.width, c.height);
-      const esc = Math.min(r.width / lienzo.width, r.height / lienzo.height);
-      const ox = (r.width - lienzo.width * esc) / 2;
-      const oy = (r.height - lienzo.height * esc) / 2;
-      for (const roi of rois) {
-        const [x1, y1, x2, y2] = roi.bbox;
-        const leida = roi.status === 'leida';
-        ctx.strokeStyle = leida ? '#22c55e' : '#f59e0b';
-        ctx.lineWidth = 2;
-        ctx.strokeRect(ox + x1 * esc, oy + y1 * esc, (x2 - x1) * esc, (y2 - y1) * esc);
-        const texto = roi.plate || 'Leyendo…';
-        ctx.font = 'bold 13px Inter, sans-serif';
-        const tw = ctx.measureText(texto).width + 10;
-        ctx.fillStyle = leida ? '#15803d' : '#b45309';
-        ctx.fillRect(ox + x1 * esc, oy + y1 * esc - 20, tw, 18);
-        ctx.fillStyle = '#fff';
-        ctx.fillText(texto, ox + x1 * esc + 5, oy + y1 * esc - 6);
-      }
-    };
+    const hud = crearHud(superposicion.current!, () => (video.current?.videoWidth ? areaVideo(video.current) : null));
 
     (async () => {
       try {
@@ -200,7 +203,13 @@ export const WebcamPrueba: React.FC = () => {
         if (cerrado) return;
         ws = new WebSocket(`${String(url).replace(/^http/, 'ws')}/ws/webcam?ticket=${encodeURIComponent(ticket)}`);
         ws.binaryType = 'arraybuffer';
-        ws.onmessage = ev => { esperando = false; try { dibujar(JSON.parse(ev.data).rois ?? []); } catch { /* respuesta inválida */ } };
+        ws.onmessage = ev => {
+          esperando = false;
+          try {
+            const m = JSON.parse(ev.data);
+            hud.actualizar(pistasDeLaWebcam(m.rois ?? [], lienzo.width, lienzo.height), movimientoDeLaWebcam(m, lienzo.width, lienzo.height));
+          } catch { /* respuesta inválida */ }
+        };
         ws.onopen = () => {
           setEstado('activa');
           timer = window.setInterval(() => {
@@ -224,6 +233,7 @@ export const WebcamPrueba: React.FC = () => {
       cerrado = true;
       window.clearInterval(timer);
       ws?.close();
+      hud.detener();
       stream?.getTracks().forEach(t => t.stop());
     };
   }, [visible]);

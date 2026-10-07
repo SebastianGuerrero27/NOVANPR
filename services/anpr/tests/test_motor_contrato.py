@@ -245,6 +245,34 @@ def test_camara_activa_conectada_por_fuente_o_por_fps(servicio):
     assert servicio.client.get("/api/camera/active").json()["is_connected"] is True
 
 
+def test_pistas_por_websocket_con_zona_de_movimiento(servicio, monkeypatch):
+    """El HUD del navegador recibe cada pista (aunque aún escanee) y la zona de movimiento MOG2."""
+    from app.aplicacion.detector import VisualOverlayBox
+    from app.interfaz import api
+
+    monkeypatch.setattr(api, "ticket_valido", lambda ticket, alcance: ticket == "t" and alcance == "stream")
+    pipeline = Pipeline()
+    pipeline.get_motion_info = lambda: ([64, 48, 320, 240], 42, True)
+    pipeline._current_overlays = [VisualOverlayBox(
+        x1=64, y1=96, x2=192, y2=144, tracking_id=7, label="PB...  88%", color=(11, 158, 245),
+        parcial="PB", confianza=0.88, velocidad=(64.0, -48.0),
+    )]
+    monkeypatch.setitem(servicio.motor.tamano_fuente, "w", 640)
+    monkeypatch.setitem(servicio.motor.tamano_fuente, "h", 480)
+    servicio.fijar(pipeline=pipeline, activo=True)
+    with servicio.client.websocket_connect("/ws/pistas?ticket=t") as ws:
+        datos = ws.receive_json()
+        servicio.fijar(activo=False)
+    assert datos == {
+        "pistas": [{
+            "id": 7, "caja": [0.1, 0.2, 0.3, 0.3], "puntos": None, "velocidad": [0.1, -0.1], "confianza": 0.88,
+            "placa": None, "parcial": "PB", "confianza_placa": 0.0, "estado": None, "verificada": False,
+        }],
+        "roi": None,
+        "movimiento": {"caja": [0.1, 0.1, 0.5, 0.5], "porcentaje": 42},
+    }
+
+
 def test_metricas_prometheus(servicio):
     r = servicio.client.get("/metrics")
     assert r.status_code == 200 and r.headers["content-type"].startswith("text/plain")

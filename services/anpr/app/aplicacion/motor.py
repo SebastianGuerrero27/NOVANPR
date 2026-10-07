@@ -203,11 +203,12 @@ class MotorAnpr:
         }
 
     def pistas_actuales(self) -> dict:
-        """Cajas de detección vigentes, normalizadas a 0–1 respecto del cuadro de la fuente."""
+        """Cajas de detección vigentes y zona de movimiento, normalizadas a 0–1 respecto del
+        cuadro de la fuente (velocidades en fracción del cuadro por segundo)."""
         w, h = self.tamano_fuente["w"], self.tamano_fuente["h"]
         pipeline = self._pipeline
         if not pipeline or not w or not h:
-            return {"pistas": [], "roi": pipeline.roi if pipeline else None}
+            return {"pistas": [], "roi": pipeline.roi if pipeline else None, "movimiento": None}
         ahora = time.time()
         with pipeline._overlays_lock:
             cajas = [ov for ov in pipeline._current_overlays if ahora - ov.timestamp < 1.0]
@@ -217,17 +218,23 @@ class MotorAnpr:
 
         pistas = []
         for ov in cajas:
-            b, g, r = ov.color
             pistas.append({
                 "id": ov.tracking_id,
                 "caja": [n(ov.x1, w), n(ov.y1, h), n(ov.x2, w), n(ov.y2, h)],
                 "puntos": [[n(px, w), n(py, h)] for px, py in ov.oriented_box] if ov.oriented_box and len(ov.oriented_box) == 4 else None,
-                "etiqueta": ov.label.strip(),
-                "color": f"#{int(r):02x}{int(g):02x}{int(b):02x}",
+                "velocidad": [round(ov.velocidad[0] / w, 4), round(ov.velocidad[1] / h, 4)],
+                "confianza": round(ov.confianza, 3),
                 "placa": ov.placa or None,
+                "parcial": ov.parcial or None,
+                "confianza_placa": round(ov.confianza_placa, 3),
                 "estado": ov.estado or None,
+                "verificada": ov.verificada,
             })
-        return {"pistas": pistas, "roi": pipeline.roi}
+        caja, porcentaje, vehiculo = pipeline.get_motion_info()
+        movimiento = None
+        if caja and vehiculo and porcentaje > 3:
+            movimiento = {"caja": [n(caja[0], w), n(caja[1], h), n(caja[2], w), n(caja[3], h)], "porcentaje": porcentaje}
+        return {"pistas": pistas, "roi": pipeline.roi, "movimiento": movimiento}
 
     # ─── Ciclo de vida ──────────────────────────────────────────────────────
 
@@ -456,6 +463,7 @@ class MotorAnpr:
                 "plate": info.get("plate", ""),
                 "status": info.get("status", ""),
                 "plate_confidence": round(info.get("confidence", 0.0), 3),
+                "lecturas": int(info.get("lecturas", 0)),
             })
         if self._selector and self._trabajador_ocr:
             self._evaluar_capturas(self._selector, rois, frame, int(ahora * 30))
@@ -487,6 +495,7 @@ class MotorAnpr:
                 "plate": info.get("plate", ""),
                 "status": info.get("status", ""),
                 "plate_confidence": round(info.get("confidence", 0.0), 3),
+                "lecturas": int(info.get("lecturas", 0)),
             })
         # Video de diagnóstico en segundo plano (no retrasa la respuesta)
         if pipeline:
