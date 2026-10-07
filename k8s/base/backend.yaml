@@ -1,0 +1,150 @@
+# API, política de acceso y centro de notificaciones. Aplica las migraciones al arrancar.
+# Una réplica: el registro de migraciones no toma un bloqueo entre instancias. Para escalar, el
+# adaptador Redis de Socket.IO ya reparte las emisiones (el cliente usa solo WebSocket, no requiere
+# sesiones fijas) y el escalamiento de alarmas es atómico; basta con un volumen RWX de evidencia.
+apiVersion: v1
+kind: Service
+metadata:
+  name: backend
+  labels:
+    app.kubernetes.io/name: backend
+spec:
+  selector:
+    app.kubernetes.io/name: backend
+  ports:
+    - name: http
+      port: 5000
+      targetPort: 5000
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: anpr-backend
+  labels:
+    app.kubernetes.io/name: backend
+spec:
+  replicas: 1
+  revisionHistoryLimit: 5
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: backend
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: backend
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "5000"
+        prometheus.io/path: /metrics
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+      # Secret docker-registry para GHCR (paquetes privados); si no existe, se intenta sin credenciales
+      imagePullSecrets:
+        - name: ghcr-pull
+      containers:
+        - name: backend
+          image: anpr-backend
+          ports:
+            - containerPort: 5000
+              name: http
+          envFrom:
+            - configMapRef:
+                name: anpr-config
+          env:
+            - name: PORT
+              value: "5000"
+            - name: NODE_ENV
+              value: production
+            - name: DOCKER_CONTAINER
+              value: "true"
+            - name: DB_SERVER
+              value: db
+            - name: DB_PORT
+              value: "1433"
+            - name: DB_NAME
+              value: ANPR_ECU911
+            - name: DB_USER
+              value: sa
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: anpr-secrets
+                  key: MSSQL_SA_PASSWORD
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: anpr-secrets
+                  key: JWT_SECRET
+            - name: ANPR_SERVICE_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: anpr-secrets
+                  key: ANPR_SERVICE_TOKEN
+            - name: SMTP_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: anpr-secrets
+                  key: SMTP_PASSWORD
+                  optional: true
+            - name: VAPID_PRIVATE_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: anpr-secrets
+                  key: VAPID_PRIVATE_KEY
+                  optional: true
+            - name: MEDIA_DIR
+              value: /app/media
+            - name: ANPR_SERVICE_URL
+              value: http://anpr:8000
+            - name: MEDIAMTX_API_URL
+              value: http://mediamtx:9997
+            - name: MEDIAMTX_RTSP_URL
+              value: rtsp://mediamtx:8554
+            - name: REDIS_HOST
+              value: redis
+            - name: REDIS_PORT
+              value: "6379"
+            - name: SOCKET_REDIS_ADAPTER
+              value: "true"
+          volumeMounts:
+            - name: media
+              mountPath: /app/media
+          startupProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 5
+            failureThreshold: 60
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 20
+            failureThreshold: 3
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 250m
+              memory: 256Mi
+            limits:
+              memory: 768Mi
+      volumes:
+        - name: media
+          persistentVolumeClaim:
+            claimName: anpr-media

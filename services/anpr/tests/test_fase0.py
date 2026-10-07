@@ -2,9 +2,9 @@
 
 import numpy as np
 
-import app.core.detector as detector_mod
-from app.core.detector import DetectionPipeline, byte_track_thresholds
-from app.core.detectors import MockDetector
+import app.aplicacion.detector as detector_mod
+from app.aplicacion.detector import DetectionPipeline, byte_track_thresholds
+from app.infraestructura.detectors import MockDetector
 
 
 def test_umbral_configurado_se_respeta(monkeypatch):

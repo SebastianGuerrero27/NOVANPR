@@ -14,6 +14,10 @@ Uso (entorno de entrenamiento, desde services/anpr):
         --models actual=models/license_plate_detector.pt \
                  yolo26n=models/yolo26n_ecuador_candidato.pt \
                  rfdetr=models/rfdetr_nano_ecuador_candidato.pth
+
+    # Mismo protocolo sobre otro dataset en formato YOLO (p. ej. Open Images, sin textos de OCR)
+    python scripts/evaluate_detectors.py --data-dir ../../dataset/openimages_plates --imgsz 512 \
+        --models yolov8n=models/archive/<yolov8n>.pt yolo26n=models/license_plate_detector.pt
 """
 
 from __future__ import annotations
@@ -101,6 +105,7 @@ def average_precision(scored: list[tuple[float, bool]], n_gt: int) -> float:
 
 
 def main() -> None:
+    global DATA_DIR
     ap = argparse.ArgumentParser()
     ap.add_argument("--models", nargs="+", required=True, help="nombre=ruta (.pt YOLO o .pth RF-DETR)")
     ap.add_argument("--split", default="test")
@@ -108,12 +113,18 @@ def main() -> None:
     ap.add_argument("--imgsz", type=int, default=640)
     ap.add_argument("--ocr-model", default="cct-s-v2-global-model")
     ap.add_argument("--out", default=str(BASE_DIR / "dataset" / "resultados_detectores.json"))
+    ap.add_argument("--save-preds", default="", help="Carpeta para predicciones detector+OCR por imagen (para McNemar)")
+    ap.add_argument("--data-dir", default=str(DATA_DIR), help="Dataset en formato YOLO (images/<split>, labels/<split>)")
     args = ap.parse_args()
 
-    from fast_plate_ocr import LicensePlateRecognizer
-    ocr = LicensePlateRecognizer(hub_ocr_model=args.ocr_model, device="cpu")
-
+    DATA_DIR = Path(args.data_dir).resolve()
     items, texts = load_split(args.split)
+    # El OCR solo se carga si el dataset trae textos de placas (dataset/ocr/real/<split>.csv)
+    ocr = None
+    if texts:
+        from fast_plate_ocr import LicensePlateRecognizer
+        ocr = LicensePlateRecognizer(hub_ocr_model=args.ocr_model, device="cpu")
+
     n_gt = sum(len(g) for _, _, g in items)
     print(f"Split '{args.split}': {len(items)} imágenes, {n_gt} placas etiquetadas, {len(texts)} con texto\n")
     header = f"{'modelo':22s} {'Prec':>6s} {'Recall':>7s} {'F1':>6s} {'AP50':>6s} {'IoU':>5s} {'Det+OCR':>8s} {'ms':>6s}"
@@ -124,6 +135,7 @@ def main() -> None:
         run = make_predictor(path, args.conf, args.imgsz)
         run(items[0][1])  # calentamiento
         scored, tp, fp, ious, ocr_ok, t_total = [], 0, 0, [], 0, 0.0
+        per_image = []
         for stem, img, gts in items:
             t0 = time.perf_counter()
             preds = run(img)
@@ -147,12 +159,15 @@ def main() -> None:
             # Detector + OCR: recorte de la detección más confiable y lectura exacta
             if stem in texts:
                 confident = [p for p in preds if p[1] >= args.conf]
+                read = ""
                 if confident:
                     (x1, y1, x2, y2), _ = max(confident, key=lambda p: p[1])
                     crop = img[max(0, int(y1)):int(y2), max(0, int(x1)):int(x2)]
                     if crop.size:
                         pred = ocr.run(cv2.cvtColor(crop, cv2.COLOR_BGR2RGB))[0].plate
-                        ocr_ok += re.sub(r"[^A-Z0-9]", "", pred.upper()) == texts[stem]
+                        read = re.sub(r"[^A-Z0-9]", "", pred.upper())
+                        ocr_ok += read == texts[stem]
+                per_image.append((stem, texts[stem], read))
         prec = tp / max(1, tp + fp)
         rec = tp / max(1, n_gt)
         f1 = 2 * prec * rec / max(1e-9, prec + rec)
@@ -164,9 +179,17 @@ def main() -> None:
             "ms_por_imagen": t_total / len(items) * 1000, "ruta": path,
         }
         results[name] = r
+        if args.save_preds:
+            Path(args.save_preds).mkdir(parents=True, exist_ok=True)
+            with open(Path(args.save_preds) / f"preds_det_{name}.csv", "w", newline="", encoding="utf-8") as f:
+                w = csv.writer(f)
+                w.writerow(["id", "gt", "pred"])
+                w.writerows(per_image)
         print(f"{name:22s} {prec:6.1%} {rec:7.1%} {f1:6.3f} {ap50:6.3f} {r['iou_medio']:5.2f} "
               f"{r['detector_ocr_exacto']:8.1%} {r['ms_por_imagen']:6.0f}", flush=True)
-    Path(args.out).write_text(json.dumps({"split": args.split, "conf": args.conf, "resultados": results}, indent=2), encoding="utf-8")
+    Path(args.out).write_text(json.dumps({"dataset": str(DATA_DIR), "split": args.split, "conf": args.conf,
+                                          "imgsz": args.imgsz, "imagenes": len(items), "placas": n_gt,
+                                          "resultados": results}, indent=2), encoding="utf-8")
     print(f"\nResultados guardados en {args.out}")
 
 

@@ -1,4 +1,9 @@
-/# Arquitectura y Estado Actual del Sistema ANPR — ECU 911 Zona 3
+> **Documento histórico (fase 0).** La arquitectura vigente, los hallazgos del análisis de código y el
+> protocolo de evaluación están en [docs/ANALISIS_ARQUITECTURA.md](docs/ANALISIS_ARQUITECTURA.md);
+> roles y permisos en [docs/ROLES_Y_PERMISOS.md](docs/ROLES_Y_PERMISOS.md) y alarmas en
+> [docs/NOTIFICACIONES.md](docs/NOTIFICACIONES.md).
+
+# Arquitectura y Estado Actual del Sistema ANPR — ECU 911 Zona 3
 
 Este documento detalla la arquitectura técnica, los modelos de Inteligencia Artificial utilizados, el flujo de datos en dos fases y la integración de microservicios desarrollada para el proyecto de titulación.
 
@@ -83,53 +88,36 @@ Para garantizar un tiempo de respuesta menor a 2 segundos y evitar latencias o b
 
 ## 4. Estructura de Módulos del Proyecto
 
+Backend y frontend siguen una arquitectura por capas con las dependencias hacia el dominio; una prueba
+de aptitud en cada uno impide que una capa interna dependa de una externa (detalle en
+[docs/ARQUITECTURA_LIMPIA.md](docs/ARQUITECTURA_LIMPIA.md)).
+
 ```text
 /ANPR
-│
-├── docker-compose.yml              # Orquestación de SQL Server, MediaMTX, Backend y Frontend
-├── README.md                       # Guía de despliegue y credenciales
-│
-├── backend/                        # API REST en Node.js + Express + TypeScript
-│   ├── src/
-│   │   ├── config/db.ts            # Conexión resiliente a SQL Server (puertos 1433/14333)
-│   │   ├── middlewares/auth.ts     # Autenticación JWT y control de roles (Admin/Operador)
-│   │   ├── routes/
-│   │   │   ├── auth.ts             # Login e inicio de sesión
-│   │   │   ├── detecciones.ts      # Recepción de capturas del ANPR y estadísticas
-│   │   │   ├── blacklist.ts        # Gestión de vehículos en lista negra
-│   │   │   ├── eventos.ts          # Historial y exportación a CSV
-│   │   │   └── usuarios.ts         # Gestión de cuentas de operadores
-│   │   └── services/socket.ts      # Emisión de eventos en tiempo real con Socket.io
-│   └── .env                        # Variables de entorno del backend
-│
-├── frontend/                       # Aplicación Web en React 18 + Vite + TypeScript
-│   ├── src/
-│   │   ├── components/             # Navbar, VideoPlayer
-│   │   ├── context/AuthContext.tsx # Manejo de sesión y tokens JWT
-│   │   ├── pages/
-│   │   │   ├── Login.tsx           # Inicio de sesión con estética institucional
-│   │   │   ├── Dashboard.tsx       # Monitoreo en vivo (Stream 30 FPS + Feed + Alertas)
-│   │   │   ├── Historial.tsx       # Búsqueda con filtros, fotos y exportación CSV
-│   │   │   └── AdminPanel.tsx      # Gestión de lista negra y operadores
-│   │   └── styles/index.css        # Tema oscuro institucional (Navy ECU 911)
-│
-├── services/anpr/                  # Microservicio de IA en Python + FastAPI
-│   ├── models/
-│   │   └── license_plate_detector.pt # Pesos del modelo YOLO especializado en placas
-│   ├── app/
-│   │   ├── core/
-│   │   │   ├── detector.py         # Inferencia YOLO y extracción de bounding boxes
-│   │   │   ├── frame_selector.py   # Algoritmo de nitidez Laplaciana
-│   │   │   ├── ocr_engine.py       # Motores OCR (EasyOCR / PaddleOCR / Tesseract)
-│   │   │   └── video_source.py     # Abstracción para Webcam local o RTSP
-│   │   ├── utils/plate_parser.py   # Validación y corrección de nomenclatura ecuatoriana
-│   │   └── main.py                 # FastAPI app, stream MJPEG y orquestación
-│   ├── media/                      # Carpeta donde se guardan las fotografías y recortes
-│   └── .env                        # Configuración de cámara, OCR y umbrales YOLO
-│
-└── db/                             # Base de datos SQL Server
-    ├── init.sql                    # Creación de tablas base y usuarios por defecto
-    └── migration_deteccion_vehiculo.sql # Esquema para tracking de dos fases
+├── docker-compose.yml           # SQL Server, Redis, MediaMTX, backend, frontend, motor ANPR y monitoreo
+├── backend/                     # API REST: Node.js + Express + TypeScript (arquitectura limpia)
+│   └── src/
+│       ├── dominio/             # Reglas puras: validación (placa ANT), permisos, decisión de acceso, horarios…
+│       ├── aplicacion/          # Casos de uso por módulo y sus puertos
+│       ├── infraestructura/     # Repositorios SQL, sesiones, Socket.IO, Web Push, correo, MediaMTX, motor ANPR
+│       ├── interfaz/http/       # Routers finos, middlewares de sesión/permiso y catálogo OpenAPI (Swagger)
+│       ├── contenedor/          # Raíz de composición
+│       └── tests/               # Pruebas por capa + prueba de aptitud de la arquitectura
+├── frontend/                    # React 18 + Vite + TypeScript
+│   └── src/
+│       ├── dominio/             # Validación, reglas, permisos, tipos y formato (sin React ni red)
+│       ├── infraestructura/     # Cliente HTTP, Web Push, WebRTC, descargas y aviso sonoro
+│       ├── aplicacion/          # Sesión, tiempo real (Socket.IO) y centro de notificaciones
+│       └── interfaz/            # Componentes, páginas por rol y plantilla con el menú
+├── services/anpr/               # Motor de reconocimiento: Python + FastAPI (YOLO26n afinado + OCR)
+│   ├── app/dominio/             # Validación de placas ecuatorianas y modelos (puro)
+│   ├── app/aplicacion/          # MotorAnpr (tiempo real), pipeline de detección, verificación, OCR asíncrono
+│   ├── app/infraestructura/     # Modelos YOLO/OCR/CLIP, cámaras, acceso al backend, métricas, config
+│   ├── app/interfaz/api.py      # Servidor HTTP y WebSocket (FastAPI)
+│   ├── app/main.py              # Raíz de composición
+│   ├── models/                  # Pesos y MODEL_CARD.md
+│   └── scripts/                 # Entrenamiento, evaluación y estadística (McNemar, IC 95 %)
+└── db/                          # init.sql y migraciones versionadas (v2 … v8)
 ```
 
 ---

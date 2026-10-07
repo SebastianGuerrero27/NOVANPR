@@ -113,8 +113,12 @@ def render_plate(text: str, fonts_big, fonts_small) -> np.ndarray:
     return cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR)
 
 
-def degrade(plate: np.ndarray) -> np.ndarray:
-    """Aplica degradaciones de cámara y un recorte imperfecto del detector."""
+def degrade(plate: np.ndarray, margin_max: float = 0.12) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Aplica degradaciones de cámara y un recorte imperfecto del detector.
+    Retorna (imagen, esquinas) con las 4 esquinas de la placa [sup-izq, sup-der, inf-der, inf-izq]
+    normalizadas a [0, 1] respecto a la imagen devuelta (etiquetas exactas para YOLO-pose).
+    """
     h, w = plate.shape[:2]
     # Fondo alrededor (la caja del detector rara vez es exacta)
     pad = int(w * 0.25)
@@ -134,10 +138,11 @@ def degrade(plate: np.ndarray) -> np.ndarray:
 
     # Recorte alrededor de la placa con margen aleatorio (a veces corta un poco, como el detector)
     xs, ys = dst[:, 0], dst[:, 1]
-    mx, my = np.random.uniform(-0.04, 0.12) * w, np.random.uniform(-0.04, 0.15) * h
+    mx, my = np.random.uniform(-0.04, margin_max) * w, np.random.uniform(-0.04, margin_max + 0.03) * h
     x1, y1 = int(max(0, xs.min() - mx)), int(max(0, ys.min() - my))
     x2, y2 = int(min(canvas.shape[1], xs.max() + mx)), int(min(canvas.shape[0], ys.max() + my))
     crop = canvas[y1:y2, x1:x2]
+    corners = (dst - np.float32([x1, y1])) / np.float32([max(1, x2 - x1), max(1, y2 - y1)])
 
     # Iluminación: brillo, contraste y sombra parcial
     crop = cv2.convertScaleAbs(crop, alpha=np.random.uniform(0.6, 1.3), beta=np.random.uniform(-50, 40))
@@ -168,7 +173,42 @@ def degrade(plate: np.ndarray) -> np.ndarray:
     out = cv2.imdecode(enc, cv2.IMREAD_COLOR)
     if random.random() < 0.15:
         out = cv2.cvtColor(cv2.cvtColor(out, cv2.COLOR_BGR2GRAY), cv2.COLOR_GRAY2BGR)  # cámara IR nocturna
-    return out
+    return out, corners
+
+
+def pose_label(corners: np.ndarray) -> str:
+    """Línea YOLO-pose: clase, caja de la placa y 4 esquinas (x, y, visibilidad)."""
+    inside = (corners >= 0).all(axis=1) & (corners <= 1).all(axis=1)
+    c = np.clip(corners, 0, 1)
+    x1, y1 = c.min(axis=0)
+    x2, y2 = c.max(axis=0)
+    kpts = " ".join(f"{x:.6f} {y:.6f} {2 if v else 0}" for (x, y), v in zip(c, inside))
+    return f"0 {(x1 + x2) / 2:.6f} {(y1 + y2) / 2:.6f} {x2 - x1:.6f} {y2 - y1:.6f} {kpts}\n"
+
+
+def generate_pose_dataset(args) -> None:
+    """Recortes con márgenes amplios (como los del detector) y sus 4 esquinas exactas."""
+    random.seed(args.seed)
+    np.random.seed(args.seed)
+    out = Path(args.pose_out)
+    fonts_big, fonts_small = load_fonts(120), load_fonts(40)
+    for i in range(args.n):
+        split = "val" if i % 10 == 0 else "train"
+        (out / "images" / split).mkdir(parents=True, exist_ok=True)
+        (out / "labels" / split).mkdir(parents=True, exist_ok=True)
+        img, corners = degrade(render_plate(random_plate_text(), fonts_big, fonts_small), margin_max=0.30)
+        cv2.imwrite(str(out / "images" / split / f"pose_{i:06d}.jpg"), img, [cv2.IMWRITE_JPEG_QUALITY, 95])
+        (out / "labels" / split / f"pose_{i:06d}.txt").write_text(pose_label(corners))
+        if (i + 1) % 2000 == 0:
+            print(f"  {i + 1}/{args.n} recortes con esquinas", flush=True)
+    (out / "data.yaml").write_text(
+        f"path: {out.resolve().as_posix()}\ntrain: images/train\nval: images/val\n"
+        "kpt_shape: [4, 3]\n"
+        "flip_idx: [1, 0, 3, 2]\n"  # al voltear horizontalmente se intercambian izq/der
+        "names:\n  0: placa\n",
+        encoding="utf-8",
+    )
+    print(f"Listo: dataset YOLO-pose en {out}")
 
 
 def main() -> None:
@@ -176,7 +216,12 @@ def main() -> None:
     ap.add_argument("--n", type=int, default=20000)
     ap.add_argument("--out", default="../../dataset/ocr/synth")
     ap.add_argument("--seed", type=int, default=42)
+    ap.add_argument("--pose-out", default="",
+                    help="Genera en su lugar un dataset YOLO-pose de esquinas (para scripts/train_plate_rectifier.py)")
     args = ap.parse_args()
+    if args.pose_out:
+        generate_pose_dataset(args)
+        return
 
     random.seed(args.seed)
     np.random.seed(args.seed)
@@ -189,7 +234,7 @@ def main() -> None:
         w.writerow(["image_path", "plate_text", "plate_region"])
         for i in range(args.n):
             text = random_plate_text()
-            img = degrade(render_plate(text, fonts_big, fonts_small))
+            img, _ = degrade(render_plate(text, fonts_big, fonts_small))
             name = f"images/synth_{i:06d}.jpg"
             cv2.imwrite(str(out / name), img, [cv2.IMWRITE_JPEG_QUALITY, 95])
             w.writerow([name, text, "Unknown"])

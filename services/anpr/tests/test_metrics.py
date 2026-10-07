@@ -5,7 +5,7 @@ Tests para el servicio de métricas Prometheus
 import pytest
 import time
 from unittest.mock import patch, MagicMock
-from app.services.metrics import (
+from app.infraestructura.metrics import (
     update_fps,
     record_detection,
     record_plate_recognized,

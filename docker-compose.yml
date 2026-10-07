@@ -22,7 +22,8 @@ services:
     image: redis:7-alpine
     container_name: anpr-redis
     ports:
-      - "6379:6379"
+      # Solo en el equipo anfitrión: Redis no tiene contraseña y no debe exponerse a la red
+      - "127.0.0.1:6379:6379"
     volumes:
       - redis_data:/data
     command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
@@ -75,15 +76,18 @@ services:
   mediamtx:
     image: bluenviron/mediamtx:1.6.0
     container_name: anpr-mediamtx
+    environment:
+      # IP del equipo (host) que el navegador usa para WebRTC; agregar la IP de la LAN para
+      # ver el video desde otros equipos, p. ej. WEBRTC_HOSTS=127.0.0.1,192.168.0.105
+      - MTX_WEBRTCADDITIONALHOSTS=${WEBRTC_HOSTS:-127.0.0.1}
     ports:
-      - "8554:8554"      # RTSP
-      - "1935:1935"      # RTMP
-      - "8888:8888"      # HLS
-      - "8889:8889"      # WebRTC HTTP
-      - "8189:8189/udp"  # WebRTC ICE/UDP
-      - "9997:9997"      # API
+      - "8554:8554"      # RTSP (lectura autenticada)
+      - "8889:8889"      # WebRTC (señalización WHEP)
+      - "8189:8189/udp"  # WebRTC (medios)
+      - "8189:8189/tcp"  # WebRTC (respaldo TCP)
+      # La API (9997) no se publica: solo la usa el backend dentro de la red de Docker
     volumes:
-      - ./mediamtx/mediamtx.yml:/mediamtx.yml
+      - ./mediamtx/mediamtx.yml:/mediamtx.yml:ro
     restart: always
 
   backend:
@@ -100,14 +104,30 @@ services:
       - DB_PORT=1433
       - DB_NAME=ANPR_ECU911
       - JWT_SECRET=${JWT_SECRET:?Defina JWT_SECRET en .env}
+      - ANPR_SERVICE_TOKEN=${ANPR_SERVICE_TOKEN:?Defina ANPR_SERVICE_TOKEN en .env}
+      - SMTP_HOST=${SMTP_HOST:-}
+      - SMTP_PORT=${SMTP_PORT:-587}
+      - SMTP_USER=${SMTP_USER:-}
+      - SMTP_PASSWORD=${SMTP_PASSWORD:-}
+      - SMTP_FROM=${SMTP_FROM:-}
+      - ALLOWED_EMAIL_DOMAINS=${ALLOWED_EMAIL_DOMAINS:-ecu911.gob.ec}
+      - FRONTEND_URL=${FRONTEND_URL:-http://localhost:3000}
       - MEDIA_DIR=/app/media
       - ANPR_SERVICE_URL=http://anpr:8000
+      - ANPR_PUBLIC_URL=${ANPR_PUBLIC_URL:-http://localhost:8000}
+      - MEDIAMTX_API_URL=http://mediamtx:9997
+      - MEDIAMTX_RTSP_URL=rtsp://mediamtx:8554
+      - WEBRTC_PUBLIC_URL=${WEBRTC_PUBLIC_URL:-http://localhost:8889}
       - DOCKER_CONTAINER=true
       - REDIS_HOST=redis
       - REDIS_PORT=6379
       - REDIS_PASSWORD=
-      - ENABLE_REDIS_CACHE=true
       - CACHE_TTL_SECONDS=3600
+      # Centro de notificaciones: Socket.IO con adaptador Redis (varias instancias) y Web Push
+      - SOCKET_REDIS_ADAPTER=true
+      - VAPID_PUBLIC_KEY=${VAPID_PUBLIC_KEY:-}
+      - VAPID_PRIVATE_KEY=${VAPID_PRIVATE_KEY:-}
+      - VAPID_SUBJECT=${VAPID_SUBJECT:-mailto:anpr@ecu911.gob.ec}
     volumes:
       - ./backend:/app
       - /app/node_modules
@@ -142,11 +162,13 @@ services:
       - PORT=8000
       - BACKEND_URL=http://backend:5000
       - BACKEND_SOCKETIO_URL=http://backend:5000
+      - ANPR_SERVICE_TOKEN=${ANPR_SERVICE_TOKEN:?Defina ANPR_SERVICE_TOKEN en .env}
       - OCR_ENGINE=plate
       - MEDIA_DIR=/app/media
       - CAMERA_SOURCE=rtsp
-      - RTSP_URL=rtsp://mediamtx:8554/camara_raw
-      - RTSP_STREAM_URL=rtsp://mediamtx:8554/camara_raw
+      # Fuente inicial vacía: el backend asigna la cámara (vía MediaMTX) al arrancar
+      - RTSP_URL=
+      - RTSP_STREAM_URL=
       - RUNNING_IN_DOCKER=true
       - DEBUG_VISUAL=true
       - DEBUG_SHOW_WINDOW=false
@@ -154,12 +176,15 @@ services:
     volumes:
       - ./services/anpr:/app
       - ./services/anpr/media:/app/media
+      # Caché de pesos descargados (CLIP, PP-OCRv6, fast-plate-ocr): evita volver a bajarlos al recrear
+      - anpr_model_cache:/root/.cache
     depends_on:
       - mediamtx
       - backend
     restart: always
 
 volumes:
+  anpr_model_cache:
   db_data:
   redis_data:
   prometheus_data:

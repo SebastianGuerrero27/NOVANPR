@@ -3,7 +3,7 @@ Tests para el validador de placas ecuatorianas
 """
 
 import pytest
-from app.core.ecuador_plate_validator import validate_ecuadorian_plate
+from app.dominio.ecuador_plate_validator import validate_ecuadorian_plate
 
 
 class TestEcuadorianPlateValidator:
@@ -38,10 +38,16 @@ class TestEcuadorianPlateValidator:
         is_valid, formatted, score = validate_ecuadorian_plate('PBA123456')
         assert is_valid is False
 
-    def test_invalid_characters(self):
-        """Test de placa con caracteres inválidos"""
-        is_valid, formatted, score = validate_ecuadorian_plate('PB@1234')
-        assert is_valid is False
+    def test_caracteres_especiales_se_eliminan(self):
+        """
+        Los símbolos que el OCR confunde con caracteres son ruido: `sanitize` los elimina antes de
+        validar (contrato documentado en EcuadorPlateValidator.sanitize). El resultado debe ser el
+        mismo que con la lectura limpia y nunca contener el símbolo.
+        """
+        con_ruido = validate_ecuadorian_plate('PB@1234')
+        limpio = validate_ecuadorian_plate('PB1234')
+        assert con_ruido == limpio
+        assert '@' not in con_ruido[1]
 
     def test_case_insensitive(self):
         """Test de insensibilidad a mayúsculas/minúsculas"""

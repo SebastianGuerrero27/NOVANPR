@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: anpr-staging
+  labels:
+    app.kubernetes.io/part-of: anpr-ecu911
+    environment: staging

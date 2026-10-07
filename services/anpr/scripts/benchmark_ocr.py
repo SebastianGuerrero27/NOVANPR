@@ -115,7 +115,7 @@ def engine_ppocrv6():
 
 def engine_sistema_actual():
     """Pipeline en producción: PlateEnhancementAgent + motor híbrido (config .env)."""
-    from app.core.plate_agent import PlateEnhancementAgent
+    from app.aplicacion.plate_agent import PlateEnhancementAgent
     agent = PlateEnhancementAgent()
 
     def run(img):
@@ -143,9 +143,10 @@ def main() -> None:
     ap.add_argument("--media", default="media")
     ap.add_argument("--only", default="", help="subcadena para evaluar solo algunos motores")
     ap.add_argument("--days", nargs="*", default=[], help="Evaluar solo recortes de estas fechas (YYYYMMDD)")
+    ap.add_argument("--save-preds", default="", help="Carpeta donde guardar las predicciones por muestra (para McNemar)")
     args = ap.parse_args()
 
-    from app.utils.plate_parser import disambiguate_plate
+    from app.dominio.plate_parser import disambiguate_plate
 
     rows = [r for r in csv.DictReader(open(args.labels, encoding="utf-8")) if r["placa"].strip()]
     if args.days:
@@ -168,6 +169,7 @@ def main() -> None:
         cer_sum = 0.0
         t_total = 0.0
         errores = []
+        preds = []
         for fname, gt, img in data:
             t0 = time.perf_counter()
             try:
@@ -176,6 +178,7 @@ def main() -> None:
                 pred = ""
             t_total += time.perf_counter() - t0
             post = norm(disambiguate_plate(pred)) if pred else ""
+            preds.append((fname, gt, post))
             ok += pred == gt
             ok_rules += post == gt
             cer_sum += levenshtein(post or pred, gt) / len(gt)
@@ -183,6 +186,13 @@ def main() -> None:
                 errores.append(f"{fname}:{post or pred or '∅'}")
         n = len(data)
         print(f"{name:40s} {ok / n:7.1%} {ok_rules / n:13.1%} {cer_sum / n:6.3f} {t_total / n * 1000:7.0f}", flush=True)
+        if args.save_preds:
+            os.makedirs(args.save_preds, exist_ok=True)
+            slug = re.sub(r"[^a-z0-9]+", "_", name.lower()).strip("_")
+            with open(os.path.join(args.save_preds, f"preds_{slug}.csv"), "w", newline="", encoding="utf-8") as f:
+                w = csv.writer(f)
+                w.writerow(["id", "gt", "pred"])
+                w.writerows(preds)
         if errores:
             print(f"    errores ({len(errores)}): {', '.join(errores[:8])}{' ...' if len(errores) > 8 else ''}")
 

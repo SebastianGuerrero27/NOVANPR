@@ -142,6 +142,7 @@ def main() -> None:
     ap.add_argument("--synth-val", type=int, default=1000, help="Placas sintéticas reservadas para validación")
     ap.add_argument("--synth-max", type=int, default=6000, help="Máximo de placas sintéticas en train (afinar no requiere todas)")
     ap.add_argument("--skip-train", action="store_true", help="Solo exportar/evaluar el último entrenamiento")
+    ap.add_argument("--seed", type=int, default=42, help="Semilla (repetir con varias para el artículo)")
     ap.add_argument("--promote", action="store_true", help="Usar el candidato en el servicio si supera al global en la prueba real")
     args = ap.parse_args()
 
@@ -165,7 +166,7 @@ def main() -> None:
             "--lr", str(args.lr),
             "--early-stopping-patience", "8",
             "--early-stopping-metric", "val_plate_acc",
-            "--seed", "42",
+            "--seed", str(args.seed),
         )
 
     # Mejor época según val_plate_acc (best.keras); last.keras solo si no existe

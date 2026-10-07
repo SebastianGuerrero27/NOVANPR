@@ -1,0 +1,49 @@
+{
+  "_descripcion": "Marcas y modelos frecuentes en el parque automotor ecuatoriano, usados como clases zero-shot de CLIP. Editable: agregue o quite modelos según los vehículos que circulan por la cámara.",
+  "marcas": {
+    "Chevrolet": ["Aveo", "Sail", "Spark", "Beat", "Onix", "Groove", "Tracker", "Captiva", "D-Max", "Luv D-Max", "N300"],
+    "Kia": ["Rio", "Picanto", "Soluto", "Sonet", "Seltos", "Sportage", "Sorento"],
+    "Hyundai": ["Accent", "Grand i10", "Creta", "Tucson", "Santa Fe", "H-1"],
+    "Toyota": ["Hilux", "Corolla", "Yaris", "Fortuner", "RAV4", "Land Cruiser Prado", "Rush"],
+    "Nissan": ["Sentra", "Versa", "Kicks", "X-Trail", "Frontier", "Navara"],
+    "Mazda": ["Mazda 2", "Mazda 3", "CX-3", "CX-30", "CX-5", "BT-50"],
+    "Great Wall": ["Wingle 5", "Wingle 7", "Poer"],
+    "Haval": ["H6", "Jolion"],
+    "Chery": ["Tiggo 2", "Tiggo 4", "Tiggo 7", "Tiggo 8"],
+    "JAC": ["S2", "S3", "JS4", "T6", "T8"],
+    "Renault": ["Kwid", "Logan", "Sandero", "Stepway", "Duster", "Koleos"],
+    "Ford": ["Ranger", "Escape", "Explorer", "EcoSport"],
+    "Volkswagen": ["Gol", "Polo", "Virtus", "T-Cross", "Tiguan", "Amarok"],
+    "Suzuki": ["Swift", "Celerio", "Vitara", "Grand Vitara", "Jimny"],
+    "Mitsubishi": ["L200", "ASX", "Outlander", "Montero Sport"],
+    "Peugeot": ["208", "2008", "3008"],
+    "Honda": ["City", "Civic", "HR-V", "CR-V"],
+    "Isuzu": ["NPR", "NHR", "FRR"],
+    "Hino": ["Dutro", "Serie 500"],
+    "DFSK": ["Glory 500", "C31", "K01"]
+  },
+  "colores": {
+    "blanco": "white",
+    "negro": "black",
+    "gris": "gray",
+    "plateado": "silver",
+    "rojo": "red",
+    "azul": "blue",
+    "verde": "green",
+    "amarillo": "yellow",
+    "naranja": "orange",
+    "café": "brown",
+    "beige": "beige",
+    "vino": "dark red maroon"
+  },
+  "tipos": {
+    "automóvil": "sedan car",
+    "camioneta": "pickup truck",
+    "SUV": "SUV",
+    "furgoneta": "van",
+    "camión": "truck",
+    "bus": "bus",
+    "motocicleta": "motorcycle",
+    "taxi": "yellow taxi car"
+  }
+}

@@ -5,13 +5,13 @@
   "type": "module",
   "scripts": {
     "dev": "vite --host 0.0.0.0 --port 3000",
-    "build": "tsc && vite build",
+    "arquitectura": "node scripts/verificar-arquitectura.mjs",
+    "build": "npm run arquitectura && tsc && vite build",
     "lint": "eslint . --ext ts,tsx --report-unused-disable-directives --max-warnings 0",
     "preview": "vite preview"
   },
   "dependencies": {
-    "axios": "^1.6.8",
-    "hls.js": "^1.5.8",
+    "axios": "^1.20.0",
     "lucide-react": "^0.368.0",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",

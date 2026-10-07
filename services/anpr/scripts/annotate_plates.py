@@ -107,6 +107,15 @@ def find_plate(ocr, img: np.ndarray):
     return bbox, texto, ln["score"], cabecera is not None
 
 
+def find_plate_circular(model, img: np.ndarray):
+    """Línea base para la ablación: caja del detector YOLO existente (etiquetado circular)."""
+    r = model.predict(img, conf=0.25, verbose=False)[0]
+    if r.boxes is None or len(r.boxes) == 0:
+        return None
+    i = int(r.boxes.conf.argmax())
+    return [float(v) for v in r.boxes.xyxy[i].tolist()], float(r.boxes.conf[i])
+
+
 def group_key(path: Path, src_root: Path) -> str:
     """Grupo = fecha de captura en el nombre (YYYYMMDD) o, si no hay, la subcarpeta."""
     m = re.search(r"(20\d{6})", path.name)
@@ -133,6 +142,8 @@ def main() -> None:
     ap.add_argument("--val-groups", nargs="*", default=[], help="Grupos para validación (si se omite, se reparte por --val-ratio)")
     ap.add_argument("--val-ratio", type=float, default=0.2)
     ap.add_argument("--pattern", default="*", help="Filtro de nombre, ej. 'ingreso_*'")
+    ap.add_argument("--circular-model", default="",
+                    help="Solo para la ablación: etiquetar cajas con este detector YOLO (método circular anterior)")
     args = ap.parse_args()
 
     out = Path(args.out)
@@ -142,6 +153,10 @@ def main() -> None:
             shutil.rmtree(d)
     ocr = create_ocr()
     test_groups = set(args.test_groups)
+    circular = None
+    if args.circular_model:
+        from ultralytics import YOLO
+        circular = YOLO(args.circular_model)
 
     rows_review = []
     ocr_rows = defaultdict(list)
@@ -157,6 +172,10 @@ def main() -> None:
             grp = group_key(p, src_root)
             split = assign_split(grp, test_groups, args.val_ratio, set(args.val_groups))
             found = find_plate(ocr, img)
+            if circular is not None:
+                # La caja viene del detector; el texto del OCR anclado solo se usa para el recorte OCR
+                det = find_plate_circular(circular, img)
+                found = (det[0], found[1] if found else "", det[1], False) if det else None
             stem = f"{grp}_{p.stem}"
             (det_dir / "images" / split).mkdir(parents=True, exist_ok=True)
             (det_dir / "labels" / split).mkdir(parents=True, exist_ok=True)
@@ -175,7 +194,8 @@ def main() -> None:
                 crop_rel = f"images/{split}/{stem}.jpg"
                 (ocr_dir / "images" / split).mkdir(parents=True, exist_ok=True)
                 cv2.imwrite(str(ocr_dir / crop_rel), crop)
-                ocr_rows[split].append([crop_rel, texto, "Unknown"])
+                if texto:  # en modo circular puede haber caja sin texto legible
+                    ocr_rows[split].append([crop_rel, texto, "Unknown"])
                 estado = "ok" if (con_cab and score >= 0.85) else "revisar"
                 color = (0, 200, 0) if estado == "ok" else (0, 165, 255)
                 cv2.rectangle(prev, (int(x1), int(y1)), (int(x2), int(y2)), color, 3)

@@ -37,11 +37,7 @@ BEGIN
         vehiculo_autorizado_id      INT           NULL FOREIGN KEY REFERENCES VehiculosAutorizados(id),
         validado_manualmente        BIT           DEFAULT 0,
         placa_validada              VARCHAR(10)   NULL,
-        usuario_validador_id        INT           NULL FOREIGN KEY REFERENCES Usuarios(id),
-        placa                       VARCHAR(10)   NULL,
-        fecha_hora                  DATETIME      DEFAULT GETDATE(),
-        imagen_vehiculo_path        VARCHAR(255)  NULL,
-        imagen_placa_path           VARCHAR(255)  NULL
+        usuario_validador_id        INT           NULL FOREIGN KEY REFERENCES Usuarios(id)
     );
 END
 ELSE
@@ -82,16 +78,7 @@ BEGIN
 END
 GO
 
--- 3. Sembrar datos de prueba en VehiculosAutorizados si está vacía
-IF NOT EXISTS (SELECT * FROM VehiculosAutorizados WHERE placa = 'PBA5678')
-BEGIN
-    INSERT INTO VehiculosAutorizados (placa, propietario, departamento, tipo_vehiculo, activo)
-    VALUES
-        ('PBA5678', 'Coordinación Zonal 3 - ECU 911', 'Dirección', 'Institucional', 1),
-        ('TCA9012', 'Ing. Carlos Medina', 'Operaciones', 'Funcionario', 1),
-        ('ABC999',  'Prueba Sistema ANPR', 'Desarrollo / Tesis', 'Prueba', 1);
-END
-GO
+-- (Se eliminó la siembra de vehículos de prueba: el sistema no precarga datos ficticios.)
 
 -- 4. Fin de migración (cámaras registradas dinámicamente por el usuario)
 GO

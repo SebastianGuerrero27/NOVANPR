@@ -15,6 +15,10 @@ El resultado se guarda como CANDIDATO; nunca reemplaza el modelo de producción 
 Uso (entorno de entrenamiento, desde services/anpr):
     .venv-train/Scripts/python scripts/train_plate_detector.py --arch yolo26n --epochs 80
     .venv-train/Scripts/python scripts/train_plate_detector.py --arch rfdetr-nano --epochs 30
+
+    # Con el dataset público de Open Images (scripts/prepare_openimages_plates.py)
+    python scripts/train_plate_detector.py --arch yolo26n --data ../../dataset/openimages_plates/data.yaml \
+        --nombre openimages --epochs 30 --imgsz 512 --batch 16
 """
 
 from __future__ import annotations
@@ -50,21 +54,25 @@ def count_images(split: str) -> int:
 # YOLO26n
 # ---------------------------------------------------------------------------
 
-def train_yolo(arch: str, epochs: int, imgsz: int, batch: int, device: str) -> Path:
+def train_yolo(arch: str, epochs: int, imgsz: int, batch: int, device: str, seed: int = 0,
+               nombre: str = "ecuador", workers: int = 4) -> Path:
     from ultralytics import YOLO
 
     weights = f"{arch}.pt"  # yolo26n.pt se descarga de los releases oficiales de Ultralytics
     model = YOLO(weights)
     model.train(
         data=str(DATA_YAML),
+        workers=workers,
         epochs=epochs,
         imgsz=imgsz,
         batch=batch,
         device=device,
         patience=max(10, epochs // 4),
         project=str(RUNS_DIR),
-        name=f"{arch}_ecuador",
+        name=f"{arch}_{nombre}_s{seed}",
         exist_ok=True,
+        seed=seed,
+        deterministic=True,
         # Aumentaciones pensadas para placas: sin volteo horizontal (invierte los caracteres)
         fliplr=0.0,
         flipud=0.0,
@@ -78,8 +86,8 @@ def train_yolo(arch: str, epochs: int, imgsz: int, batch: int, device: str) -> P
         plots=True,
         verbose=True,
     )
-    best = RUNS_DIR / f"{arch}_ecuador" / "weights" / "best.pt"
-    dest = MODELS_DIR / f"{arch}_ecuador_candidato.pt"
+    best = RUNS_DIR / f"{arch}_{nombre}_s{seed}" / "weights" / "best.pt"
+    dest = MODELS_DIR / (f"{arch}_{nombre}_candidato.pt" if seed == 0 else f"{arch}_{nombre}_s{seed}_candidato.pt")
     shutil.copy2(best, dest)
     return dest
 
@@ -120,12 +128,12 @@ def yolo_to_coco(coco_dir: Path) -> None:
         (out / "_annotations.coco.json").write_text(json.dumps(coco), encoding="utf-8")
 
 
-def train_rfdetr(epochs: int, batch: int, device: str) -> Path:
+def train_rfdetr(epochs: int, batch: int, device: str, seed: int = 0) -> Path:
     from rfdetr import RFDETRNano
 
     coco_dir = BASE_DIR / "dataset" / "detector_coco"
     yolo_to_coco(coco_dir)
-    out_dir = RUNS_DIR / "rfdetr_nano_ecuador"
+    out_dir = RUNS_DIR / f"rfdetr_nano_ecuador_s{seed}"
     model = RFDETRNano()  # descarga los pesos preentrenados COCO de RF-DETR-nano
     model.train(
         dataset_dir=str(coco_dir),
@@ -135,10 +143,11 @@ def train_rfdetr(epochs: int, batch: int, device: str) -> Path:
         lr=1e-4,
         output_dir=str(out_dir),
         device=device,
+        seed=seed,
     )
     best = next((out_dir / n for n in ("checkpoint_best_total.pth", "checkpoint_best_ema.pth", "checkpoint_best_regular.pth")
                  if (out_dir / n).exists()), out_dir / "checkpoint.pth")
-    dest = MODELS_DIR / "rfdetr_nano_ecuador_candidato.pth"
+    dest = MODELS_DIR / ("rfdetr_nano_ecuador_candidato.pth" if seed == 0 else f"rfdetr_nano_ecuador_s{seed}_candidato.pth")
     shutil.copy2(best, dest)
     return dest
 
@@ -163,15 +172,23 @@ def promote(candidate: Path) -> None:
 
 
 def main() -> None:
+    global DATA_DIR, DATA_YAML
     ap = argparse.ArgumentParser(description="Afinar detector de placas ecuatorianas (YOLO26n / RF-DETR-nano).")
     ap.add_argument("--arch", default="yolo26n", choices=["yolo26n", "yolo11n", "yolov8n", "rfdetr-nano"])
     ap.add_argument("--epochs", type=int, default=80)
     ap.add_argument("--imgsz", type=int, default=640)
     ap.add_argument("--batch", type=int, default=8)
     ap.add_argument("--device", default="0" if os.environ.get("CUDA_VISIBLE_DEVICES") else "cpu")
+    ap.add_argument("--seed", type=int, default=0, help="Semilla (repetir con varias para el artículo)")
     ap.add_argument("--force", action="store_true", help=f"Entrenar con menos de {MIN_TRAIN_IMAGES} imágenes (solo pruebas)")
     ap.add_argument("--promote", action="store_true", help="Reemplazar producción si el candidato YOLO es mejor")
+    ap.add_argument("--data", default=str(DATA_YAML), help="data.yaml del dataset (por omisión, el ecuatoriano)")
+    ap.add_argument("--nombre", default="ecuador", help="Sufijo de la corrida y del candidato (p. ej. openimages)")
+    ap.add_argument("--workers", type=int, default=4, help="Procesos del cargador de datos")
     args = ap.parse_args()
+
+    DATA_YAML = Path(args.data).resolve()
+    DATA_DIR = DATA_YAML.parent
 
     if not DATA_YAML.exists():
         raise SystemExit(f"No existe {DATA_YAML}. Ejecute primero scripts/annotate_plates.py")
@@ -182,9 +199,10 @@ def main() -> None:
 
     RUNS_DIR.mkdir(parents=True, exist_ok=True)
     if args.arch == "rfdetr-nano":
-        cand = train_rfdetr(args.epochs, args.batch, args.device)
+        cand = train_rfdetr(args.epochs, args.batch, args.device, args.seed)
     else:
-        cand = train_yolo(args.arch, args.epochs, args.imgsz, args.batch, args.device)
+        cand = train_yolo(args.arch, args.epochs, args.imgsz, args.batch, args.device, args.seed,
+                          args.nombre, args.workers)
     print(f"[+] Candidato guardado: {cand}")
     print("    Compárelo con: scripts/evaluate_detectors.py")
 

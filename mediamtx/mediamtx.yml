@@ -1,48 +1,62 @@
-# ==============================================================================
-# Configuración de MediaMTX para el ECU 911 Zona 3 (Ambato)
-# Cámara: Hikvision DS-2CD1123G0E-I (Acceso Vehicular 10.126.9.104)
-# ==============================================================================
+###############################################################################
+# MediaMTX · servidor de medios del Sistema ANPR
+#
+# - Cada cámara registrada se publica como la ruta `cam_<id>`. Las rutas NO se escriben
+#   aquí: el backend las crea, actualiza y elimina por la API (puerto 9997, solo red interna
+#   de Docker) a partir de la tabla Camaras. Así no hay credenciales RTSP en este archivo.
+# - MediaMTX mantiene UNA conexión con cada cámara y la reparte: el motor ANPR la lee por
+#   RTSP y los navegadores por WebRTC (baja latencia, sin transcodificar).
+# - Toda lectura se autoriza contra el backend (/api/medios/autorizar):
+#     · motor ANPR (RTSP): usuario "anpr" + ANPR_SERVICE_TOKEN
+#     · navegador (WebRTC): ticket de 60 s emitido a un usuario con sesión válida
+#   Publicar en el servidor está prohibido.
+###############################################################################
 
-# Protocolos habilitados
+logLevel: info
+readTimeout: 10s
+writeTimeout: 10s
+writeQueueSize: 512
+
+authMethod: http
+authHTTPAddress: http://backend:5000/api/medios/autorizar
+# La API y las métricas no salen de la red interna de Docker (sin puerto publicado)
+authHTTPExclude:
+- action: api
+- action: metrics
+
+api: yes
+apiAddress: :9997
+metrics: yes
+metricsAddress: :9998
+
+# RTSP (lectura del motor ANPR y fuentes de las cámaras)
 rtsp: yes
-rtmp: yes
-hls: yes
-webrtc: yes
-
-# Puertos de red
+protocols: [tcp]
 rtspAddress: :8554
-rtmpAddress: :1935
-hlsAddress: :8888
+
+# WebRTC (video en el navegador, latencia ~0,2–0,5 s)
+webrtc: yes
 webrtcAddress: :8889
-
-# Optimización de transporte WebRTC (WHEP)
+webrtcAllowOrigin: '*'
 webrtcLocalUDPAddress: :8189
+# Respaldo por TCP cuando la red bloquea UDP
+webrtcLocalTCPAddress: :8189
+# Las IP del contenedor no son alcanzables desde el navegador: se anuncian las del host
+# (variable MTX_WEBRTCADDITIONALHOSTS en docker-compose, a partir de WEBRTC_HOSTS del .env)
+webrtcIPsFromInterfaces: no
+webrtcAdditionalHosts: [127.0.0.1]
 
-# Configuración de rutas (paths)
-paths:
-  # ----------------------------------------------------------------------------
-  # 1. STREAM RAW: Ingesta directa H.265+ desde la cámara Hikvision (para ANPR)
-  # ----------------------------------------------------------------------------
-  camara_raw:
-    source: rtsp://admin:Ecu911Ambato@10.126.9.104:554/Streaming/Channels/101
-    sourceProtocol: tcp
-    rtspTransport: tcp
-    sourceOnDemand: no
-    sourceOnDemandStartTimeout: 10s
-    sourceOnDemandCloseAfter: 10s
+# Protocolos que el sistema no usa
+rtmp: no
+hls: no
+srt: no
+playback: no
 
-  # ----------------------------------------------------------------------------
-  # 2. STREAM WEB: Transcodificación H.264 para WebRTC / Frontend
-  # ----------------------------------------------------------------------------
-  camara_web:
-    runOnInit: ffmpeg -reconnect 1 -reconnect_at_eof 1 -reconnect_streamed 1 -rtsp_transport tcp -i rtsp://127.0.0.1:8554/camara_raw -c:v libx264 -preset ultrafast -tune zerolatency -profile:v baseline -level 3.1 -pix_fmt yuv420p -g 30 -keyint_min 30 -sc_threshold 0 -b:v 2000k -maxrate 2500k -bufsize 500k -an -f rtsp rtsp://127.0.0.1:8554/camara_web
-    runOnInitRestart: yes
+pathDefaults:
+  rtspTransport: tcp
+  # La cámara solo se abre mientras alguien la lee (el motor ANPR la mantiene abierta)
+  sourceOnDemand: yes
+  sourceOnDemandStartTimeout: 10s
+  sourceOnDemandCloseAfter: 15s
 
-  # ----------------------------------------------------------------------------
-  # 3. ALIAS 'camera' PARA RETROCOMPATIBILIDAD
-  # ----------------------------------------------------------------------------
-  camera:
-    source: rtsp://127.0.0.1:8554/camara_raw
-    sourceProtocol: tcp
-    rtspTransport: tcp
-    sourceOnDemand: no
+paths: {}

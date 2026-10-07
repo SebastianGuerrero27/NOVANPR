@@ -1,0 +1,74 @@
+# Origen de la aplicación (regla 0): la SPA en "/", y la API, Socket.IO y la evidencia hacia el backend.
+# Mismo origen = la imagen del frontend no lleva la URL de la API incrustada y Web Push funciona
+# (requiere https). El navegador también consume directamente la vista previa del motor
+# (ANPR_PUBLIC_URL, regla 1) y la señalización WHEP de MediaMTX (WEBRTC_PUBLIC_URL, regla 2).
+# Los hosts y el TLS los define cada overlay.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: anpr
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-body-size: 20m
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: anpr.example.invalid
+      http:
+        paths:
+          - path: /api
+            pathType: Prefix
+            backend:
+              service:
+                name: backend
+                port:
+                  name: http
+          - path: /socket.io
+            pathType: Prefix
+            backend:
+              service:
+                name: backend
+                port:
+                  name: http
+          - path: /media
+            pathType: Prefix
+            backend:
+              service:
+                name: backend
+                port:
+                  name: http
+          - path: /health
+            pathType: Exact
+            backend:
+              service:
+                name: backend
+                port:
+                  name: http
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: frontend
+                port:
+                  name: http
+    - host: motor.example.invalid
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: anpr
+                port:
+                  name: http
+    - host: video.example.invalid
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: mediamtx
+                port:
+                  name: webrtc

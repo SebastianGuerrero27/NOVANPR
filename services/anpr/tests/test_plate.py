@@ -1,5 +1,5 @@
 import unittest
-from app.utils.plate_parser import validate_ecuadorian_plate, clean_ocr_mistakes
+from app.dominio.plate_parser import validate_ecuadorian_plate, clean_ocr_mistakes
 
 
 class TestEcuadorPlateParser(unittest.TestCase):

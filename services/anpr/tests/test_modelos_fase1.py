@@ -6,8 +6,8 @@ import types
 import numpy as np
 import pytest
 
-import app.core.ocr_engine as ocr_mod
-from app.core.ocr_verifier import parse_plate_lines
+import app.infraestructura.ocr_engine as ocr_mod
+from app.infraestructura.ocr_verifier import parse_plate_lines
 
 
 def test_verificador_ignora_cabecera_ecuador():
@@ -25,7 +25,7 @@ def test_verificador_cabecera_pegada_o_mal_leida():
 
 
 def test_verificador_une_fragmentos_de_la_misma_fila():
-    from app.core.ocr_verifier import merge_row_fragments
+    from app.infraestructura.ocr_verifier import merge_row_fragments
     boxes = [
         [[10, 5], [90, 5], [90, 20], [10, 20]],      # ECUADOR (arriba)
         [[60, 30], [120, 30], [120, 60], [60, 60]],  # Y-589
@@ -82,7 +82,7 @@ def test_factory_plate_no_usa_respaldos(fake_fast_plate_ocr, monkeypatch):
 
 
 def test_rfdetr_sin_paquete_da_error_claro(monkeypatch):
-    from app.core import detectors
+    from app.infraestructura import detectors
     monkeypatch.setitem(sys.modules, "rfdetr", None)
     with pytest.raises(RuntimeError, match="rfdetr"):
         detectors.create_detector("x.pth", model_type="rfdetr-nano")

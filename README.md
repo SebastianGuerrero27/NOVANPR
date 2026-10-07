@@ -1,76 +1,75 @@
-# Sistema ANPR para el ECU 911 - Coordinación Zonal 3 (Ambato)
+# NOVANPR
 
-Este repositorio contiene la solución completa de Reconocimiento Automático de Placas Vehiculares (ANPR) basada en Deep Learning para reemplazar el control de acceso vehicular manual.
+Proyecto ANPR para ECU 911 Coordinación Zonal 3 (Ambato). Titular: SelfSteer Public Access Network S.A., empresa con fines de lucro de beneficio público.
 
-## Requisitos Previos
+Reconocimiento automático de placas (ANPR) con aprendizaje profundo para el control de ingreso
+vehicular: detección y lectura de placas en tiempo real, permisos de placa con vigencia y horario,
+lista de alertas, solicitudes de acceso, centro de alarmas con notificaciones en tiempo real y Web
+Push, y evaluación científica del reconocimiento y de las alarmas.
 
-- [Docker Desktop](https://www.docker.com/products/docker-desktop/) instalado y en ejecución en su sistema operativo.
-- Puertos `3000` (Frontend), `5000` (Backend), `8000` (ANPR), `8554` (MediaMTX RTSP), `8888` (MediaMTX HLS) y `1433` (SQL Server) disponibles.
+## Componentes
 
----
+| Carpeta | Servicio | Tecnología |
+|---|---|---|
+| `frontend/` | Interfaz web por roles | React 18 + TypeScript + Vite, Socket.IO, service worker Web Push |
+| `backend/` | API, política de acceso, centro de notificaciones | Express + TypeScript, Socket.IO (adaptador Redis), web-push, SQL Server |
+| `services/anpr/` | Motor de reconocimiento | FastAPI + Python: YOLO26n / RF-DETR, OCR cct-s-v2, verificador PP-OCRv6 (OpenVINO) |
+| `db/` | Esquema y migraciones | SQL Server 2022 (`init.sql` + `migration_*.sql`, registradas en `SchemaMigraciones`) |
+| `mediamtx/` | Video | Relay RTSP → WebRTC (WHEP) |
+| `monitoring/` | Observabilidad | Prometheus + Grafana |
+| `k8s/` | Despliegue | Kustomize (base + overlays staging/producción); CI/CD con GitHub Actions y GHCR ([docs/CICD.md](docs/CICD.md)) |
 
-## Estructura del Monorepositorio
+## Roles
 
-- **`frontend/`**: Cliente web React 18 + TS + Vite.
-- **`backend/`**: Servidor de API Express + TS con soporte Socket.io 
-- **`services/anpr/`**: Microservicio Python + FastAPI que ejecuta inferencias de YOLOv8 y OCR de caracteres.
-- **`mediamtx/`**: Servidor relay de video para flujos HLS y RTSP.
+| Rol | Resumen |
+|---|---|
+| Guardia | Punto de control: monitoreo, validación de lecturas, registro manual, solicitudes de acceso; recibe cada permiso otorgado con enlace a la lista blanca |
+| **Gestor de permisos** | Una sola vista: otorga permisos de placa (categoría, vigencia, franjas horarias) y resuelve solicitudes; sin monitoreo, solo se le notifica la llegada de los vehículos a los que dio permiso |
+| Administrador | Todo: usuarios, cámaras, configuración, auditoría, lista de alertas, excepciones, reportes y evaluación |
 
-- **`docker-compose.yml`**: Configuración de orquestación de contenedores.
+La API se documenta con **Swagger UI** en `http://localhost:5000/api/docs` (especificación OpenAPI en `/api/docs.json`).
 
----- **`db/`**: Archivos de esquema de base de datos (`init.sql`).
+Matriz completa de permisos: [docs/ROLES_Y_PERMISOS.md](docs/ROLES_Y_PERMISOS.md).
 
-## Cómo Ejecutar el Proyecto
+## Puesta en marcha
 
-1. Clone o descargue este repositorio.
-2. Abra una terminal en la carpeta raíz del proyecto y ejecute:
-   ```bash
-   docker compose up --build
-   ```
-3. Docker descargará las imágenes correspondientes, creará la base de datos SQL Server, inicializará las tablas automáticamente y sembrará los datos iniciales de prueba.
-4. El microservicio ANPR de Python inicializará el detector YOLOv8 y EasyOCR.
+Requisitos: Docker Desktop y los puertos 3000 (frontend), 5000 (API), 8000 (motor), 8554/8889/8189
+(MediaMTX), 14333 (SQL Server), 9090/3001 (Prometheus/Grafana) libres.
 
-### Enlaces de Acceso Local
-- **Frontend**: [http://localhost:3000](http://localhost:3000)
-- **Backend API**: [http://localhost:5000](http://localhost:5000)
-- **FastAPI ANPR Service**: [http://localhost:8000](http://localhost:8000)
-- **Panel MediaMTX (HLS/WebRTC)**: [http://localhost:8888](http://localhost:8888)
-
----
-
-## Credenciales de Acceso por Defecto
-El sistema cuenta con usuarios semilla creados automáticamente al primer arranque:
-
-| Rol | Usuario | Contraseña |
-| :--- | :--- | :--- |
-| **Administrador** | `admin` | `PasswordAdmin123!` |
-| **Operador** | `operator` | `PasswordOperator123!` |
-
----
-
-## Modo de Simulación de Tránsito (Prueba Inmediata)
-
-Para que el proyecto sea **100% testable de inmediato**, el microservicio ANPR cuenta con una validación de conexión inteligente:
-- Si la cámara física Hikvision en la IP `10.126.9.104` no está conectada o no es accesible desde su red local, el servicio ANPR detectará el fallo tras 3 intentos.
-- Se activará automáticamente el **Modo Simulación de Tránsito**, el cual simulará el ingreso de un vehículo cada **30 segundos** enviando fotos de prueba y placas aleatorias.
-- Algunas placas coincidirán con la **Lista Negra** activa (`PBA-1234` y `TBG-987`), lo cual activará las notificaciones rojas flotantes en tiempo real y la alarma audible en la pantalla de monitoreo.
-
----
-
-## Ejecución de Pruebas Unitarias
-
-### Backend (Node.js/Jest)
-Para ejecutar las pruebas del backend en su máquina local:
 ```bash
-cd backend
-npm install
-npm test
+cp .env.example .env     # defina MSSQL_SA_PASSWORD, JWT_SECRET, ANPR_SERVICE_TOKEN, GRAFANA_ADMIN_PASSWORD
+docker compose up --build
 ```
 
-### ANPR Service (Python/Pytest)
-Para ejecutar las pruebas de validación de placas del microservicio:
+- Frontend: <http://localhost:3000> · API: <http://localhost:5000> · Motor: <http://localhost:8000>
+- **No hay usuarios predefinidos:** al abrir el sistema por primera vez se muestra la configuración
+  inicial para crear el primer administrador; luego se crean las demás cuentas en *Usuarios*.
+- El esquema y las migraciones se aplican solos al arrancar el backend.
+- Las notificaciones push del navegador requieren `https` o `http://localhost` (ver
+  [docs/NOTIFICACIONES.md](docs/NOTIFICACIONES.md)).
+
+## Pruebas
+
 ```bash
-cd services/anpr
-pip install -r requirements.txt
-pytest
+cd backend && npm test                     # 191 pruebas: dominio, orquestación, integración RBAC, esquema
+cd frontend && npm run build               # verificación de tipos + build
+cd services/anpr && pytest                 # motor ANPR (requiere sus dependencias)
+
+# Con el sistema en marcha:
+node backend/scripts/aceptacion_e2e.js --api http://localhost:5000 --servicio "$ANPR_SERVICE_TOKEN" --log backend.log
+node backend/scripts/benchmark_notificaciones.js --api http://localhost:5000 --servicio "$ANPR_SERVICE_TOKEN" \
+     --email <cuenta> --password '…' --muestras 200
 ```
+
+## Documentación
+
+| Documento | Contenido |
+|---|---|
+| [docs/ANALISIS_ARQUITECTURA.md](docs/ANALISIS_ARQUITECTURA.md) | Análisis del código, hallazgos, decisiones de diseño, estado del arte y protocolo de evaluación (base del artículo) |
+| [docs/ROLES_Y_PERMISOS.md](docs/ROLES_Y_PERMISOS.md) | RBAC, separación de funciones, permisos de placa con horario (TRBAC) |
+| [docs/NOTIFICACIONES.md](docs/NOTIFICACIONES.md) | Centro de alarmas: tecnología, arquitectura, ciclo ISA-18.2, API y resultados |
+| [docs/SISTEMA_WEB.md](docs/SISTEMA_WEB.md) | Pantallas, tiempo real, video y seguridad |
+| [docs/METODO_VERIFICACION_LECTURA.md](docs/METODO_VERIFICACION_LECTURA.md) | Validez de la lectura y regla de autorización |
+| [docs/EXPERIMENTO_MODELOS.md](docs/EXPERIMENTO_MODELOS.md) | Experimento de detectores y OCR, estadística |
+| [docs/BASE_DE_DATOS.md](docs/BASE_DE_DATOS.md) | Esquema v5 y reglas de negocio |
+| [docs/MONITORING.md](docs/MONITORING.md), [docs/CICD.md](docs/CICD.md) | Operación |
