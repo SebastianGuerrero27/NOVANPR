@@ -87,6 +87,15 @@ OCR_VERIFIER_MAX_MS: float = float(os.getenv("OCR_VERIFIER_MAX_MS", "2000"))
 # Peso del voto del verificador en el consenso temporal (una lectura normal pesa su confianza ≤ 1)
 OCR_VERIFIER_VOTE_WEIGHT: float = float(os.getenv("OCR_VERIFIER_VOTE_WEIGHT", "2.0"))
 
+# --- Hilos por motor de inferencia (CPU) ---
+# PyTorch (detector de placas y atributos del vehículo), ONNX Runtime (OCR rápido) y OpenVINO
+# (verificador) usan por omisión todos los núcleos. Como corren a la vez (detección continua, OCR
+# asíncrono, verificación del registro), se sobresuscribe la CPU y cada etapa tarda varias veces
+# más. Se reparte un número fijo de hilos por motor (docs/METODO_VERIFICACION_LECTURA.md §3.2).
+TORCH_THREADS: int = int(os.getenv("TORCH_THREADS", "4"))
+OCR_THREADS: int = int(os.getenv("OCR_THREADS", "2"))
+OCR_VERIFIER_THREADS: int = int(os.getenv("OCR_VERIFIER_THREADS", "4"))
+
 # Rectificador aprendido (YOLO26n-pose, 4 esquinas). Si el archivo no existe se usa la
 # rectificación heurística por contornos. Entrenar con scripts/train_plate_rectifier.py.
 PLATE_RECTIFIER_PATH: str = os.getenv("PLATE_RECTIFIER_PATH", "models/plate_rectifier.pt")
@@ -121,6 +130,15 @@ INFERENCE_HEIGHT: int = int(os.getenv("INFERENCE_HEIGHT", "480"))
 INFERENCE_THROTTLE_MS: int = int(os.getenv("INFERENCE_THROTTLE_MS", "0"))
 # Guardado asíncrono de imágenes de evidencia (ThreadPoolExecutor)
 ASYNC_DISK_IO: bool = os.getenv("ASYNC_DISK_IO", "true").lower() in ("true", "1", "yes")
+
+# --- Compuerta de movimiento (docs/METODO_VERIFICACION_LECTURA.md §2.4) ---
+# El detector de placas solo se ejecuta si desde la última inferencia cambió al menos
+# MOTION_GATE_MIN_FRACTION del área (o de la región de interés); si no, la última detección
+# sigue valiendo, con una inferencia de control cada MOTION_GATE_MAX_SKIP cuadros. "false" la
+# desactiva (cada cuadro pasa por el detector), p. ej. para medir su efecto.
+MOTION_GATE_ENABLED: bool = os.getenv("MOTION_GATE_ENABLED", "true").lower() in ("true", "1", "yes")
+MOTION_GATE_MIN_FRACTION: float = float(os.getenv("MOTION_GATE_MIN_FRACTION", "0.002"))
+MOTION_GATE_MAX_SKIP: int = int(os.getenv("MOTION_GATE_MAX_SKIP", "5"))
 
 # =============================================================================
 # Modo de Depuración Visual

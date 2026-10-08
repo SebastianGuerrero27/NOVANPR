@@ -34,6 +34,7 @@ from typing import Optional, List, Dict, Set
 import cv2
 import numpy as np
 
+from app.aplicacion.verificacion_placa import toca_borde_lateral
 from app.infraestructura.logger import get_logger
 
 logger = get_logger("frame_selector")
@@ -188,6 +189,13 @@ class BestFrameSelector:
                 del self._captured_history[tracking_id]
         return False
 
+    def liberar(self, tracking_id: int) -> None:
+        """
+        Vuelve elegible un track cuya captura no sirvió (la foto resultó ilegible): el selector
+        podrá elegir otro de sus cuadros en lugar de ignorarlo durante la ventana anti-rebote.
+        """
+        self._captured_history.pop(tracking_id, None)
+
     def _adaptive_min_sharpness(self, dist_m: float) -> float:
         """
         Retorna el umbral de nitidez minimo adecuado para la distancia estimada.
@@ -274,9 +282,10 @@ class BestFrameSelector:
         if pw < self.min_plate_width or ph < self.min_plate_height:
             return None
 
-        # Descartar si esta pegado al borde del frame (cortado)
+        # Descartar si está pegado al borde del frame (cortado). A los lados el margen es el de
+        # toca_borde_lateral: ahí un corte quita caracteres enteros de la placa
         margin = 3
-        if x1 < margin or y1 < margin or x2 > (w - margin) or y2 > (h - margin):
+        if y1 < margin or y2 > (h - margin) or toca_borde_lateral([x1, y1, x2, y2], w):
             return None
 
         plate_crop = frame[y1:y2, x1:x2]

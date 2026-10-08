@@ -377,6 +377,19 @@ def toca_borde(bbox: list[int], ancho_img: int, alto_img: int, margen_rel: float
     return x1 <= mx or y1 <= my or x2 >= ancho_img - mx or y2 >= alto_img - my
 
 
+def toca_borde_lateral(bbox: list[int], ancho_img: int, margen_rel: float = 0.02) -> bool:
+    """
+    True si la placa puede estar cortada por el borde izquierdo o derecho del cuadro. En una placa
+    horizontal la fila de caracteres ocupa casi todo el ancho, así que ese corte quita caracteres
+    enteros ("SY589" por "PSY589"); un corte arriba o abajo quita primero la franja "ECUADOR" o
+    el margen inferior. El margen (2 % del ancho) cubre la holgura del detector, que al entrar la
+    placa puede dibujar la caja unos píxeles adentro aunque la placa siga cortada.
+    """
+    x1, _, x2, _ = bbox
+    mx = max(2, int(ancho_img * margen_rel))
+    return x1 <= mx or x2 >= ancho_img - mx
+
+
 def recorte_con_margen(frame: np.ndarray, bbox: list[int], mx: float = 0.08, my: float = 0.12) -> tuple[np.ndarray, tuple[int, int]]:
     """Recorte de la caja con un margen (para que los caracteres no toquen el borde)."""
     h, w = frame.shape[:2]

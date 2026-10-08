@@ -43,7 +43,7 @@ fila indica **dónde** está la evidencia; lo que aún no se cumple se declara e
 | Adaptadores | `backend/src/tests/infraestructura/` — repositorios SQL, migraciones, notificaciones, métricas |
 | Aceptación extremo a extremo | `backend/scripts/aceptacion_e2e.js` — flujo completo con la API real, SQL Server real y Socket.IO, sobre una base vacía migrada desde cero (v2 a v8). Resultado (2026-10-05): **70 de 70 comprobaciones en verde** — roles y permisos, decisión R1–R7, notificaciones y escalamiento, separación de funciones, concurrencia optimista, CRUD de usuarios, auditoría (consulta, detalle, CSV, retención transaccional), validación de placas y datos; latencia media captura → notificación ≈ 0,1 s |
 | Servicio ANPR | `services/anpr/tests/` (pytest) |
-| Resultado (2026-10-05) | Backend: 38 suites, 646 pruebas en verde; servicio ANPR: 101 pruebas en verde (incluidas 22 de contrato del motor y del servidor); compilación TypeScript sin errores en backend y frontend; pruebas de aptitud de la arquitectura en verde en los tres componentes |
+| Resultado (2026-10-08) | Backend: 38 suites, 646 pruebas en verde; servicio ANPR: 123 pruebas en verde (contrato del motor y del servidor, movimiento y compuerta de inferencia, selector de cuadros y registro del paso); compilación TypeScript sin errores en backend y frontend; pruebas de aptitud de la arquitectura en verde en los tres componentes |
 | Evaluación del reconocimiento | `services/anpr/scripts/evaluate_detectors.py`, `benchmark_ocr.py`, `estadistica.py` (IC 95 %, McNemar, bootstrap) |
 
 ## 4. Seguridad de aplicaciones — OWASP ASVS 4.0.3 (nivel 2)

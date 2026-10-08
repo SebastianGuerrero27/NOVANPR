@@ -143,12 +143,16 @@ export const VisorVideo: React.FC<{ perfil: PerfilVideo; pausado: boolean; clave
   );
 };
 
-/** Detecciones de la respuesta de /ws/webcam (píxeles del cuadro enviado) → HUD (0–1). */
+/**
+ * Detecciones de la respuesta de /ws/webcam (píxeles del cuadro enviado) → HUD (0–1). Se dibujan
+ * las que el motor marca para mostrar: placa en movimiento o con una lectura ANT (un objeto
+ * quieto que el detector confunde con una placa no se enmarca).
+ */
 function pistasDeLaWebcam(rois: any[], ancho: number, alto: number): PistaHud[] {
   if (!ancho || !alto) return [];
   const nx = (x: number) => x / ancho;
   const ny = (y: number) => y / alto;
-  return rois.filter(r => Array.isArray(r.bbox) && r.bbox.length === 4).map((r): PistaHud => {
+  return rois.filter(r => r.mostrar !== false && Array.isArray(r.bbox) && r.bbox.length === 4).map((r): PistaHud => {
     const leida = (r.lecturas ?? 0) >= 1;
     return {
       id: r.tracking_id,

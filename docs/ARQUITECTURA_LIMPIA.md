@@ -146,7 +146,8 @@ services/anpr/app/
 ├── aplicacion/         motor.py: MotorAnpr, el motor en tiempo real (hilos de captura e inferencia,
 │                       compuerta de captura, anti-duplicados, registro en dos fases) con todo su
 │                       estado encapsulado y sus adaptadores inyectados; pipeline de detección,
-│                       selección del mejor cuadro, verificación de la lectura, OCR asíncrono
+│                       movimiento (MOG2: compuerta de inferencia), selección del mejor cuadro,
+│                       verificación de la lectura, OCR asíncrono
 ├── infraestructura/    Detectores YOLO, motores OCR y verificador, rectificador, atributos del vehículo
 │                       (CLIP), fuentes de video, acceso al backend, métricas, transmisión, registro, config
 ├── interfaz/api.py     Servidor HTTP y WebSocket (FastAPI): verifica el acceso y delega en el motor

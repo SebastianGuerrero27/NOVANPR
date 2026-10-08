@@ -36,10 +36,12 @@ frontend arma el menú, las rutas y las acciones con `puede(...)` a partir de lo
 
 ## Reconocimiento: cuadro de la placa y autorización automática
 
-Cada placa en seguimiento se dibuja desde que aparece y sigue al vehículo: ámbar con
+Cada placa en movimiento se dibuja desde que aparece y sigue al vehículo: ámbar con
 "ESCANEANDO OCR" mientras se lee, verde con la placa al leerla y el color del estado cuando
-el backend decide, con el cuadrilátero ajustado a sus bordes y la zona de movimiento (MOG2).
-El mismo HUD se usa en el video WebRTC y en el modo de prueba con la webcam. Cada lectura
+el backend decide, con el cuadrilátero ajustado a sus bordes y la zona de movimiento (MOG2);
+un objeto quieto solo se enmarca si hay evidencia de placa. Con la escena quieta el detector
+descansa (compuerta de movimiento) y el OCR solo lee placas completas, no cortadas por el
+borde. El mismo HUD se usa en el video WebRTC y en el modo de prueba con la webcam. Cada lectura
 lleva un veredicto de validez (formato, placa completa, fila de caracteres, consenso) que
 decide si una placa del padrón se autoriza sola.
 Método, regla de decisión y protocolo de evaluación: [METODO_VERIFICACION_LECTURA.md](METODO_VERIFICACION_LECTURA.md).

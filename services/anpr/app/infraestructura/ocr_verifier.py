@@ -25,6 +25,7 @@ from app.infraestructura.config import (
     OCR_VERIFIER_ENGINE,
     OCR_VERIFIER_MAX_MS,
     OCR_VERIFIER_MODEL,
+    OCR_VERIFIER_THREADS,
 )
 from app.infraestructura.logger import get_logger
 
@@ -76,6 +77,10 @@ class PlateOcrVerifier:
             "Det.limit_side_len": 64,
             "Det.box_thresh": 0.6,
             "Det.unclip_ratio": 1.5,
+            # Hilos acotados y prioridad a la latencia de una sola lectura (no al rendimiento por lotes)
+            "EngineConfig.openvino.inference_num_threads": max(1, OCR_VERIFIER_THREADS),
+            "EngineConfig.openvino.performance_hint": "LATENCY",
+            "EngineConfig.onnxruntime.intra_op_num_threads": max(1, OCR_VERIFIER_THREADS),
         })
         self._lock = threading.Lock()  # OpenVINO compila por sesión; serializar evita sobresuscribir la CPU
         self.max_ms = max_ms

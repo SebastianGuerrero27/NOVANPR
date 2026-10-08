@@ -20,7 +20,7 @@ from __future__ import annotations
 import os
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Any, Callable, Optional
 
@@ -34,6 +34,7 @@ from app.aplicacion.verificacion_placa import (
     cuadrilatero_placa,
     evaluar_lectura,
     recorte_con_margen,
+    toca_borde_lateral,
 )
 from app.dominio.credenciales import sin_credenciales
 from app.dominio.ecuador_plate_validator import validate_ecuadorian_plate
@@ -41,9 +42,20 @@ from app.dominio.memoria import purgar_expirados
 
 # Ventana en la que un mismo vehículo (track o placa) no se registra dos veces
 PLATE_DEBOUNCE_SECONDS = 35.0
-# Enfriamiento entre lecturas OCR rápidas de un mismo track (RTSP y navegador)
-ENFRIAMIENTO_OCR_S = 0.6
-ENFRIAMIENTO_OCR_NAVEGADOR_S = 0.5
+# Enfriamiento entre lecturas OCR rápidas de un mismo track (RTSP y navegador). El OCR rápido
+# cuesta ~25 ms: con 0,25 s el consenso de 2–3 lecturas se forma en menos de medio segundo.
+ENFRIAMIENTO_OCR_S = 0.25
+ENFRIAMIENTO_OCR_NAVEGADOR_S = 0.25
+# Capturas de un mismo track: si la foto elegida resulta ilegible, el selector elige otro cuadro
+# del mismo paso en lugar de perder el vehículo (hasta este número de intentos)
+MAX_INTENTOS_CAPTURA = 3
+
+
+def _medido(funcion: Callable, *args, **kwargs) -> tuple[Any, float]:
+    """Resultado de la función y su duración en milisegundos."""
+    t0 = time.perf_counter()
+    resultado = funcion(*args, **kwargs)
+    return resultado, (time.perf_counter() - t0) * 1000.0
 
 
 @dataclass(frozen=True)
@@ -60,6 +72,16 @@ class ConfigMotor:
     ventana_local: bool
     #: Peso del voto del verificador PP-OCRv6 frente a una lectura rápida
     peso_voto_verificador: float
+    # Registro del paso (docs/METODO_VERIFICACION_LECTURA.md §2.5). Los valores por omisión son los
+    # de producción; scripts/evaluar_latencia.py los cambia para la ablación pareada.
+    #: OCR profundo, verificador y vehículo en paralelo (False: uno tras otro)
+    registro_paralelo: bool = True
+    #: Análisis del vehículo iniciado al aparecer la placa completa (False: al registrar)
+    vehiculo_anticipado: bool = True
+    #: Fotos de un mismo track que se prueban antes de descartarlo (1: sin reintento)
+    intentos_captura: int = MAX_INTENTOS_CAPTURA
+    #: Enfriamiento entre lecturas OCR rápidas de un track RTSP
+    enfriamiento_ocr_s: float = ENFRIAMIENTO_OCR_S
 
 
 @dataclass
@@ -94,6 +116,17 @@ def nitidez_recorte(frame: np.ndarray, plate_bbox: list[int]) -> Optional[float]
         return compute_crop_sharpness(frame[max(0, y1):min(h, y2), max(0, x1):min(w, x2)])
     except Exception:
         return None
+
+
+def leible(plate_bbox: list[int], frame: np.ndarray, ancho_min: int, alto_min: int) -> bool:
+    """
+    La placa tiene tamaño suficiente para el OCR y no está cortada por el borde izquierdo o
+    derecho del cuadro. Una placa que entra por un lado se lee truncada ("SY589" en vez de
+    "PSY589") y, si el texto truncado tiene formato ANT, votaría por una placa equivocada en el
+    consenso del track. (La validez de la lectura exige además que no toque ningún borde, E2.)
+    """
+    x1, y1, x2, y2 = plate_bbox
+    return (x2 - x1) >= ancho_min and (y2 - y1) >= alto_min and not toca_borde_lateral(plate_bbox, frame.shape[1])
 
 
 def recorte_con_holgura(frame: np.ndarray, plate_bbox: list[int], pad_x: float = 0.10, pad_y: float = 0.15) -> np.ndarray:
@@ -134,6 +167,8 @@ class MotorAnpr:
 
         self._ejecutor_disco = ThreadPoolExecutor(max_workers=2, thread_name_prefix="DiskIO")
         self._ejecutor_ocr = ThreadPoolExecutor(max_workers=2, thread_name_prefix="AsyncOCR")
+        #: Etapas del registro que se ejecutan en paralelo (OCR profundo, verificador, vehículo)
+        self._ejecutor_etapas = ThreadPoolExecutor(max_workers=3, thread_name_prefix="Registro")
         #: Detección YOLO de cuadros del navegador (aislada del OCR y del disco)
         self.ejecutor_navegador = ThreadPoolExecutor(max_workers=2, thread_name_prefix="BrowserYOLO")
 
@@ -143,6 +178,10 @@ class MotorAnpr:
         self._ultimo_intento_ocr: dict[int, float] = {}
         self._capturas_por_track: dict[int, float] = {}
         self._placas_registradas: dict[str, float] = {}
+        #: Capturas fallidas por track: (intentos, hora del último)
+        self._intentos_captura: dict[int, tuple[int, float]] = {}
+        #: Análisis del vehículo iniciado por adelantado para cada track en movimiento: (futuro, hora)
+        self._vehiculos: dict[int, tuple[Future, float]] = {}
 
         # Cuadro compartido entre el productor y el consumidor
         self._candado_cuadro = threading.Lock()
@@ -187,6 +226,8 @@ class MotorAnpr:
             "camera_source": sin_credenciales(self.fuente_camara),
             "capture_fps": round(self._fps_captura, 1),
             "tracker_fps": round(self._pipeline.fps if self._pipeline else 0.0, 1),
+            # Cuadros en que la compuerta de movimiento omitió el detector (escena quieta)
+            "inferencias_omitidas_pct": round(100 * self._pipeline.proporcion_omitida("rtsp"), 1) if self._pipeline else None,
             **self.info_modelos(),
             "architecture": "Two-Phase: Fast Capture + Async OCR",
         }
@@ -271,6 +312,7 @@ class MotorAnpr:
             self._hilo_captura.join(timeout=2.0)
         self._ejecutor_disco.shutdown(wait=False)
         self._ejecutor_ocr.shutdown(wait=False)
+        self._ejecutor_etapas.shutdown(wait=False)
         self.ejecutor_navegador.shutdown(wait=False)
         self._http.close()
         self._log.info("Servicio ANPR cerrado limpiamente.")
@@ -280,7 +322,7 @@ class MotorAnpr:
     def encolar_ocr(self, tracking_id: int, frame_copy: np.ndarray, plate_bbox: list[int]) -> None:
         """OCR rápido de un track en un pool aparte, con enfriamiento: el seguimiento y el video
         nunca esperan al OCR."""
-        self._encolar(tracking_id, tracking_id, frame_copy, plate_bbox, ENFRIAMIENTO_OCR_S, navegador=False)
+        self._encolar(tracking_id, tracking_id, frame_copy, plate_bbox, self._config.enfriamiento_ocr_s, navegador=False)
 
     def encolar_ocr_navegador(self, tracking_id: int, frame_copy: np.ndarray, plate_bbox: list[int]) -> None:
         """OCR del flujo WebSocket del navegador. Escribe en el espacio de tracks del navegador para
@@ -346,21 +388,46 @@ class MotorAnpr:
                 rois = pipeline.detect_and_track(frame, imgsz=512)
                 activos = {roi.tracking_id for roi in rois}
                 self._m.update_tracking_active(len(activos))
+                self._m.record_inference("rtsp", pipeline.inferencia_omitida("rtsp"))
 
                 # 2. OCR asíncrono de cada track hasta reunir 3 lecturas concordantes: son la
                 #    evidencia de consenso multi-cuadro que exige la validez de la lectura.
                 for roi in rois:
                     info = pipeline.get_track_info(roi.tracking_id)
-                    if info.get("lecturas", 0) < 3 and info.get("status") not in _ESTADOS_FINALES:
-                        bx1, by1, bx2, by2 = roi.plate_bbox
-                        if (bx2 - bx1) >= 16 and (by2 - by1) >= 6:
-                            self.encolar_ocr(roi.tracking_id, frame.copy(), roi.plate_bbox)
+                    if (info.get("lecturas", 0) < 3 and info.get("status") not in _ESTADOS_FINALES
+                            and leible(roi.plate_bbox, frame, ancho_min=16, alto_min=6)):
+                        self.encolar_ocr(roi.tracking_id, frame.copy(), roi.plate_bbox)
+                    self._anticipar_vehiculo(roi, frame)
 
                 # 3. Calidad del cuadro y disparo de la captura fotográfica
                 self._evaluar_capturas(selector, rois, frame, idx)
             except Exception as e:
                 self._log.error("Error en hilo de detección desacoplado: %s", e)
                 self._m.record_detection_error("deteccion")
+
+    def _anticipar_vehiculo(self, roi: Any, frame: np.ndarray) -> None:
+        """
+        Inicia el análisis del vehículo (tipo, color, marca) en cuanto un track en movimiento tiene
+        la placa completa dentro del cuadro, en paralelo con la espera del mejor cuadro de la placa:
+        el resultado no depende de esa foto y así no alarga el registro (era su etapa más lenta).
+        """
+        tid = roi.tracking_id
+        if not self._config.vehiculo_anticipado or not getattr(roi, "en_movimiento", False) or tid in self._vehiculos:
+            return
+        if not leible(roi.plate_bbox, frame, ancho_min=30, alto_min=10):
+            return
+        alto, ancho = frame.shape[:2]
+        x1, y1, x2, y2 = roi.plate_bbox
+        if y1 <= 2 or y2 >= alto - 2:
+            return
+        reconocedor = self._dep.reconocedor_vehiculo()
+        if reconocedor is None:
+            return
+        caja = [int(v) for v in roi.plate_bbox]
+        with self._candado:
+            if tid in self._vehiculos:
+                return
+            self._vehiculos[tid] = (self._ejecutor_etapas.submit(_medido, reconocedor.analyze, frame.copy(), caja), time.time())
 
     def _evaluar_capturas(self, selector: Any, rois: list, frame: np.ndarray, idx: int) -> None:
         """Mejor cuadro de cada track y tracks que salieron de cuadro → compuerta de captura."""
@@ -447,12 +514,13 @@ class MotorAnpr:
         espacio de tracks del navegador y captura automática)."""
         pipeline = self._pipeline
         ahora = time.time()
+        self._m.record_inference("navegador", pipeline.inferencia_omitida("navegador"))
         datos = []
         for r in rois:
             info = pipeline.get_browser_track_info(r.tracking_id)
-            bx1, by1, bx2, by2 = r.plate_bbox
-            if (bx2 - bx1) >= 16 and (by2 - by1) >= 6:
+            if leible(r.plate_bbox, frame, ancho_min=16, alto_min=6):
                 self.encolar_ocr_navegador(r.tracking_id, frame.copy(), r.plate_bbox)
+            lecturas = int(info.get("lecturas", 0))
             datos.append({
                 "tracking_id": r.tracking_id,
                 "confidence": round(r.confidence, 3),
@@ -463,11 +531,14 @@ class MotorAnpr:
                 "plate": info.get("plate", ""),
                 "status": info.get("status", ""),
                 "plate_confidence": round(info.get("confidence", 0.0), 3),
-                "lecturas": int(info.get("lecturas", 0)),
+                "lecturas": lecturas,
+                "en_movimiento": r.en_movimiento,
+                # Mismo criterio que el video RTSP: placa en movimiento o con una lectura ANT
+                "mostrar": r.en_movimiento or lecturas >= 1,
             })
         if self._selector and self._trabajador_ocr:
             self._evaluar_capturas(self._selector, rois, frame, int(ahora * 30))
-        caja, porcentaje, vehiculo = pipeline.get_motion_info() if pipeline else (None, 0, False)
+        caja, porcentaje, vehiculo = pipeline.get_motion_info("navegador")
         return {"rois": datos, "motion_bbox": caja, "motion_pct": porcentaje, "motion_vehicle_detected": vehiculo}
 
     def procesar_cuadro_http(self, frame: np.ndarray, rois: list) -> dict:
@@ -475,14 +546,12 @@ class MotorAnpr:
         pipeline = self._pipeline
         for roi in rois:
             info = pipeline.get_track_info(roi.tracking_id) if pipeline else {}
-            if not info.get("plate"):
-                bx1, by1, bx2, by2 = roi.plate_bbox
-                if (bx2 - bx1) >= 20 and (by2 - by1) >= 8:
-                    self.encolar_ocr(roi.tracking_id, frame.copy(), roi.plate_bbox)
+            if not info.get("plate") and leible(roi.plate_bbox, frame, ancho_min=20, alto_min=8):
+                self.encolar_ocr(roi.tracking_id, frame.copy(), roi.plate_bbox)
         if self._selector and self._trabajador_ocr:
             self._evaluar_capturas(self._selector, rois, frame, int(time.time() * 30))
 
-        caja, porcentaje, vehiculo = pipeline.get_motion_info() if pipeline else (None, 0, False)
+        caja, porcentaje, vehiculo = pipeline.get_motion_info("navegador") if pipeline else (None, 0, False)
         datos = []
         for r in rois:
             info = pipeline.get_browser_track_info(r.tracking_id) if pipeline else {}
@@ -623,7 +692,26 @@ class MotorAnpr:
         except Exception:
             pass
 
+    def _liberar_para_reintento(self, tracking_id: int) -> bool:
+        """
+        La foto elegida no permitió leer la placa: el track queda libre para que el selector elija
+        otro cuadro del mismo paso (más nítido o más cerca), hasta `intentos_captura`. Antes,
+        una sola foto ilegible hacía perder el vehículo completo. True si queda otro intento.
+        """
+        ahora = time.time()
+        with self._candado:
+            intentos = self._intentos_captura.get(tracking_id, (0, ahora))[0] + 1
+            self._intentos_captura[tracking_id] = (intentos, ahora)
+            if intentos >= self._config.intentos_captura:
+                return False
+            self._capturas_por_track.pop(tracking_id, None)
+        if self._selector is not None:
+            self._selector.liberar(tracking_id)
+        return True
+
     def _verificar_y_registrar(self, candidato: Any, tracking_id: int, frame: np.ndarray, ahora: float) -> None:
+        etapas: dict[str, Any] = {}
+        propio: Optional[Future] = None  # análisis del vehículo lanzado por este intento
         try:
             pipeline = self._pipeline
             trabajador = self._trabajador_ocr
@@ -649,11 +737,36 @@ class MotorAnpr:
             # veces el mismo cuadro con el OCR profundo y el verificador)
             conteo_previo = pipeline.conteo_lecturas(tracking_id) if pipeline else {}
 
-            # 2. Segunda verificación OCR en alta fidelidad (homografía + binarización adaptativa)
+            # 2. OCR profundo (homografía + binarización adaptativa), segundo OCR (PP-OCRv6) y
+            #    atributos del vehículo EN PARALELO: los tres parten de la misma foto y, uno tras
+            #    otro, eran la mayor parte de la latencia del registro.
+            agente = getattr(trabajador, "_agent", None) if trabajador else None
+            verificador = self._dep.verificador()
+            reconocedor = self._dep.reconocedor_vehiculo()
+            caja_placa = [int(v) for v in candidato.plate_bbox]
+
+            def lanzar(funcion: Callable, *args, **kwargs) -> Future:
+                futuro = self._ejecutor_etapas.submit(_medido, funcion, *args, **kwargs)
+                if not self._config.registro_paralelo:
+                    futuro.exception()  # ablación: cada etapa espera a que termine la anterior
+                return futuro
+
+            if agente:
+                etapas["ocr_profundo"] = lanzar(agente.process_image, frame, initial_bbox=candidato.plate_bbox, fast_mode=False)
+            if verificador is not None:
+                etapas["verificador"] = lanzar(verificador.read, recorte_con_holgura(frame, candidato.plate_bbox))
+            with self._candado:
+                anticipado = self._vehiculos.get(tracking_id)
+            if anticipado is not None and not anticipado[0].cancelled():
+                etapas["vehiculo"] = anticipado[0]  # iniciado al aparecer el vehículo
+            elif reconocedor is not None and len(caja_placa) == 4:
+                etapas["vehiculo"] = lanzar(reconocedor.analyze, frame, caja_placa)
+                propio = etapas["vehiculo"]
+
             placa, conf = "", 0.0
             profundo = None
-            if trabajador and getattr(trabajador, "_agent", None):
-                profundo = trabajador._agent.process_image(frame, initial_bbox=candidato.plate_bbox, fast_mode=False)
+            if "ocr_profundo" in etapas:
+                profundo, _ = etapas["ocr_profundo"].result()
                 if profundo.placa and profundo.estado == "procesado":
                     placa, conf = profundo.placa, profundo.confianza
                 elif profundo.placa and len(profundo.placa.replace("-", "").strip()) >= 4:
@@ -664,15 +777,12 @@ class MotorAnpr:
             # 2.1 Segunda lectura con PP-OCRv6 sobre la mejor foto: más precisa pero demasiado lenta
             #     para cada cuadro, así que solo una vez por vehículo
             placa_verificador, conf_verificador = "", 0.0
-            verificador = self._dep.verificador()
-            if verificador is not None:
-                ver = verificador.read(recorte_con_holgura(frame, candidato.plate_bbox))
+            if "verificador" in etapas:
+                ver, _ = etapas["verificador"].result()
                 if ver.plate and ver.within_budget:
                     es_valida, formateada, _ = validate_ecuadorian_plate(ver.plate)
                     if es_valida:
                         placa_verificador, conf_verificador = formateada, ver.confidence
-                        if not placa:
-                            placa, conf = formateada, ver.confidence
                 self._log.info(
                     "[VERIFICADOR %s] Track #%d | lectura '%s' (%.2f) en %.0f ms%s",
                     verificador.description, tracking_id, ver.plate or "-", ver.confidence, ver.elapsed_ms,
@@ -681,18 +791,19 @@ class MotorAnpr:
 
             # Consenso temporal: la lectura profunda suma un voto al consenso del track (lecturas de
             # varios cuadros) en lugar de reemplazarlo: un único cuadro mal leído no decide la placa.
-            if pipeline and placa:
+            if pipeline and (placa or placa_verificador):
                 usa_navegador = bool(info_navegador)
                 votar = pipeline.update_browser_track_plate if usa_navegador else pipeline.update_track_plate
                 consultar = pipeline.get_browser_track_info if usa_navegador else pipeline.get_track_info
                 nitidez = nitidez_recorte(frame, candidato.plate_bbox)
-                votar(tracking_id, placa, conf, "", quality=nitidez)
+                if placa:
+                    votar(tracking_id, placa, conf, "", quality=nitidez)
                 if placa_verificador:
                     # El verificador pesa más que una lectura rápida
                     votar(tracking_id, placa_verificador, conf_verificador * self._config.peso_voto_verificador, "", quality=nitidez)
                 consenso = consultar(tracking_id)
                 placa_consenso = consenso.get("plate", "")
-                if placa_consenso and placa_consenso != placa.replace("-", "").upper():
+                if placa and placa_consenso and placa_consenso != placa.replace("-", "").upper():
                     es_valida, formateada, _ = validate_ecuadorian_plate(placa_consenso)
                     if es_valida:
                         self._log.info(
@@ -708,10 +819,26 @@ class MotorAnpr:
                 if es_valida:
                     placa, conf = formateada, max(conf_previa, puntaje)
 
+            # Placa final: la del verificador PP-OCRv6 cuando lee una placa ANT, porque es el lector
+            # más preciso (96 % frente a 90 % del OCR rápido en placas reales, models/MODEL_CARD.md);
+            # si no lee, la del OCR (consenso multi-cuadro, OCR profundo o lectura preliminar). Antes
+            # varios votos de un error sistemático del OCR rápido (Y→V) podían imponerse a él.
+            limpia_verificador = placa_verificador.replace("-", "").upper() if placa_verificador else ""
+            limpia_profunda = (profundo.placa or "").replace("-", "").upper() if profundo else ""
+            if placa_verificador:
+                if placa and placa.replace("-", "").upper() != limpia_verificador:
+                    self._log.info("[VERIFICADOR] Track #%d | el OCR leyó '%s'; se registra la lectura del verificador '%s'",
+                                   tracking_id, placa, placa_verificador)
+                placa, conf = placa_verificador, conf_verificador
+
             # 3. Compuerta estricta: sin matrícula ANT válida se audita el descarte
             limpia = placa.replace("-", "").strip().upper() if placa else ""
             if not limpia or len(limpia) < 4:
                 texto = (profundo.placa if profundo else placa_previa) or ""
+                if self._liberar_para_reintento(tracking_id):
+                    self._log.info("[SEGUNDA VERIFICACIÓN OCR] Track #%d: foto ilegible (texto: '%s'); se intentará con otro cuadro", tracking_id, texto)
+                    return
+                # Sin más intentos: se audita una sola vez por track como falso positivo prevenido
                 self._log.info("[SEGUNDA VERIFICACIÓN OCR] Falso positivo prevenido | Track #%d descartado (texto: '%s')", tracking_id, texto)
                 self._descartar(tracking_id, "segunda_verificacion_ocr_no_valido", texto or None, profundo.confianza if profundo else conf_previa)
                 return
@@ -728,11 +855,12 @@ class MotorAnpr:
             previo = pipeline.mejor_analisis(tracking_id) if pipeline else None
             if previo and (previo.valida, previo.caracteres, previo.puntaje) > (analisis.valida, analisis.caracteres, analisis.puntaje):
                 analisis = previo
-            limpia_verificador = placa_verificador.replace("-", "").upper() if placa_verificador else ""
-            limpia_profunda = (profundo.placa or "").replace("-", "").upper() if profundo else ""
-            verificador_coincide = limpia_verificador == limpia
-            este_cuadro = 1 if limpia in (limpia_verificador, limpia_profunda) else 0
-            lecturas = int(conteo_previo.get(limpia, 0)) + este_cuadro
+            # E4 · confirmación. Lecturas: cuadros del track leídos por el OCR con esta placa (más la
+            # del OCR profundo de esta foto). El verificador confirma solo si coincide con alguna
+            # lectura OCR independiente: una lectura no se confirma a sí misma.
+            lecturas = int(conteo_previo.get(limpia, 0)) + (1 if limpia_profunda == limpia else 0)
+            verificador_coincide = bool(limpia_verificador) and (
+                limpia_verificador == limpia_profunda or int(conteo_previo.get(limpia_verificador, 0)) >= 1)
             validez = evaluar_lectura(
                 formato_valido=validate_ecuadorian_plate(placa)[0],
                 bbox=caja, ancho_img=ancho, alto_img=alto, analisis=analisis,
@@ -747,9 +875,10 @@ class MotorAnpr:
             # Compuerta "no es placa": sin fila de caracteres y sin ninguna confirmación (rótulos,
             # rejillas, franja "ECUADOR"…). Se libera el track para que un cuadro posterior lo intente.
             if analisis.caracteres < 3 and lecturas < 2 and not verificador_coincide:
+                if self._liberar_para_reintento(tracking_id):
+                    self._log.info("[VALIDEZ] Track #%d: foto sin fila de caracteres ('%s'); se intentará con otro cuadro", tracking_id, placa)
+                    return
                 self._log.info("[VALIDEZ] Track #%d descartado: región sin fila de caracteres ('%s')", tracking_id, placa)
-                with self._candado:
-                    self._capturas_por_track.pop(tracking_id, None)
                 self._descartar(tracking_id, "region_sin_caracteres", placa, conf)
                 return
 
@@ -776,6 +905,8 @@ class MotorAnpr:
                     purgar_expirados(self._placas_registradas, momento, horizonte)
                     purgar_expirados(self._capturas_por_track, momento, horizonte)
                     purgar_expirados(self._ultimo_intento_ocr, momento, horizonte)
+                    self._intentos_captura = {k: v for k, v in self._intentos_captura.items() if momento - v[1] <= horizonte}
+                    self._vehiculos = {k: v for k, v in self._vehiculos.items() if momento - v[1] <= horizonte}
             if hace is not None:
                 self._log.info(
                     "[ANTI-DUPLICADO OCR] Track #%d placa confirmada '%s' ya registrada hace %.1fs. Omitiendo duplicado.",
@@ -789,13 +920,19 @@ class MotorAnpr:
                 pipeline.update_track_plate(tracking_id, "", 0.0, "confirmada")
                 pipeline.update_browser_track_plate(tracking_id, "", 0.0, "confirmada")
 
-            self._registrar_en_backend(candidato, tracking_id, frame, placa, conf, placa_verificador, validez, evidencia, ahora)
+            self._registrar_en_backend(candidato, tracking_id, frame, placa, conf, placa_verificador, validez, evidencia, ahora, etapas)
         except Exception as e:
             self._log.error("Error en compuerta de captura para track #%d: %s", tracking_id, e)
             self._m.record_detection_error("compuerta_captura")
+        finally:
+            # Si el intento se descartó, el análisis del vehículo que lanzó ya no hace falta (el
+            # anticipado se conserva para un reintento del mismo track)
+            if propio is not None:
+                propio.cancel()
 
     def _registrar_en_backend(self, candidato: Any, tracking_id: int, frame: np.ndarray, placa: str, conf: float,
-                              placa_verificador: str, validez: Any, evidencia: dict, ahora: float) -> None:
+                              placa_verificador: str, validez: Any, evidencia: dict, ahora: float,
+                              etapas: Optional[dict] = None) -> None:
         """4. Evidencia fotográfica en disco y 5. registro en dos fases en el backend."""
         pipeline = self._pipeline
         sello = time.strftime("%Y%m%d_%H%M%S")
@@ -819,15 +956,22 @@ class MotorAnpr:
         # de los modelos produjo cada lectura (reproducibilidad)
         nacimiento, velocidad = pipeline.track_eval_info(tracking_id) if pipeline else (None, None)
         modelos = self.info_modelos()
-        # Segundo factor: tipo, color, marca y modelo del vehículo (una vez por vehículo)
+        # Segundo factor: tipo, color, marca y modelo del vehículo (calculado en paralelo con el OCR)
+        etapas = etapas or {}
+        duraciones: dict[str, int] = {}
+        for nombre, futuro in etapas.items():
+            if nombre != "vehiculo" and futuro.done() and not futuro.cancelled() and futuro.exception() is None:
+                duraciones[nombre] = int(futuro.result()[1])
         vehiculo = None
-        reconocedor = self._dep.reconocedor_vehiculo()
-        if reconocedor is not None and caja and len(caja) == 4:
+        if "vehiculo" in etapas:
             try:
-                vehiculo = reconocedor.analyze(frame, list(caja)).to_dict()
+                atributos, ms = etapas["vehiculo"].result()
+                vehiculo = atributos.to_dict()
+                duraciones["vehiculo"] = int(ms)
                 self._log.info("[VEHÍCULO] Track #%d | %s", tracking_id, vehiculo)
             except Exception as e:
                 self._log.warning("No se pudieron obtener atributos del vehículo (track #%d): %s", tracking_id, e)
+        evidencia = {**evidencia, "etapas_ms": duraciones}
         ingreso = {
             "tracking_id": tracking_id,
             "placa": placa,
@@ -865,6 +1009,10 @@ class MotorAnpr:
         # Latencia de principio a fin: desde que el vehículo apareció (nacimiento del track) hasta
         # que su lectura queda registrada; sin track, desde la captura del mejor cuadro.
         inicio = nacimiento or getattr(candidato, "timestamp", None) or ahora
+        latencia_s = time.time() - inicio
+        self._m.record_recognition_latency(latencia_s)
+        self._log.info("[LATENCIA] Track #%d | %.0f ms desde que apareció | etapas (en paralelo): %s",
+                       tracking_id, latencia_s * 1000, duraciones)
         res_ocr = self._http.post(f"{self._config.backend_url}/api/detecciones/completar-ocr", json={
             "ingreso_id": ingreso_id,
             "placa_reconocida": placa,
@@ -872,7 +1020,7 @@ class MotorAnpr:
             "ruta_imagen_placa": ruta_placa,
             "estado_procesamiento": "procesado",
             "lectura_verificador": placa_verificador or None,
-            "latencia_ms": int((time.time() - inicio) * 1000),
+            "latencia_ms": int(latencia_s * 1000),
             "lectura_valida": validez.valido,
             "evidencia_lectura": evidencia,
         })

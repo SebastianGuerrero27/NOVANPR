@@ -15,7 +15,6 @@ import numpy as np
 from app.dominio.models import Detection
 from app.infraestructura.detectors import MockDetector
 from app.aplicacion.detector import (
-    _COLOR_ESCANEANDO,
     _COLOR_LEIDA,
     DetectionPipeline,
     TrackedPlateROI,
@@ -128,21 +127,6 @@ class TestDetectionPipelineDI(unittest.TestCase):
         self.assertEqual(len(self.pipeline._browser_trackers), 0)
         self.assertEqual(self.pipeline.get_track_info(1), {})
         self.assertEqual(self.pipeline.get_browser_track_info(1), {})
-
-    def test_pista_sin_lectura_se_dibuja_desde_el_primer_cuadro(self):
-        """
-        Cada pista se dibuja desde que aparece, aunque todavía no se haya comprobado que es una
-        placa ni tenga lectura: la caja sigue a la placa y la insignia indica que el OCR escanea.
-        """
-        rois = self.pipeline.detect_and_track(self.frame)
-        overlays = self.pipeline._current_overlays
-        self.assertEqual([o.tracking_id for o in overlays], [r.tracking_id for r in rois])
-        ov = overlays[0]
-        self.assertFalse(ov.verificada)  # cuadro uniforme: sin fila de caracteres
-        self.assertEqual(ov.placa, "")
-        self.assertTrue(ov.label.startswith("ESCANEANDO OCR"), ov.label)
-        self.assertEqual(ov.color, _COLOR_ESCANEANDO)
-        self.assertGreater(ov.confianza, 0.0)
 
     def test_pista_leida_muestra_la_placa_y_luego_el_estado_del_backend(self):
         tid = self.pipeline.detect_and_track(self.frame)[0].tracking_id

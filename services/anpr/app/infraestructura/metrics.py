@@ -109,6 +109,20 @@ tracking_active = Gauge(
     registry=registry
 )
 
+recognition_latency = Histogram(
+    'anpr_recognition_latency_seconds',
+    'Tiempo desde que aparece la placa (nacimiento del track) hasta su registro con la lectura',
+    buckets=(0.25, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0, 5.0),
+    registry=registry
+)
+
+inferences_total = Counter(
+    'anpr_inferences_total',
+    'Cuadros analizados por fuente: el detector se ejecutó o la compuerta de movimiento lo omitió',
+    ['source', 'result'],
+    registry=registry
+)
+
 # =============================================================================
 # Métricas de Errores
 # =============================================================================
@@ -215,6 +229,14 @@ def record_plate_recognized(validation_status: str):
 def update_tracking_active(count: int):
     """Actualiza el número de tracks activos"""
     tracking_active.set(count)
+
+def record_recognition_latency(seconds: float):
+    """Registra la latencia de reconocimiento de punta a punta de un paso"""
+    recognition_latency.observe(seconds)
+
+def record_inference(source: str, skipped: bool):
+    """Registra un cuadro analizado: detector ejecutado u omitido por la compuerta de movimiento"""
+    inferences_total.labels(source=source, result='skipped' if skipped else 'executed').inc()
 
 def record_detection_confidence(confidence: float):
     """Registra la confianza de detección"""

@@ -48,6 +48,7 @@ from app.infraestructura.config import (
 from app.dominio.models import Detection
 from app.infraestructura.detectors import BaseDetector, create_detector
 from app.infraestructura.ocr_engine import create_ocr_engine
+from app.aplicacion.movimiento import CompuertaInferencia, DetectorMovimiento, Movimiento
 from app.aplicacion.verificacion_placa import (
     MIN_CARACTERES,
     AnalisisCaracteres,
@@ -82,6 +83,11 @@ _MIN_SHARPNESS_VARIANCE = 35.0
 # Verificación geométrica por track: el análisis de caracteres (≈3–5 ms) se repite como
 # máximo 4 veces por segundo por track; entre análisis se reutiliza el cuadrilátero.
 _INTERVALO_ANALISIS_S = 0.25
+
+# Fuentes de cuadros con seguimiento independiente: cámara RTSP y webcam del navegador
+_FUENTES = ("rtsp", "navegador")
+# Fracción de la caja de un track que debe cambiar (MOG2) para considerarlo en movimiento
+_FRACCION_PISTA_EN_MOVIMIENTO = 0.15
 
 # Estados que decide el backend (o la confirmación del registro): una lectura OCR posterior
 # ("leida"/"escaneando") no debe sobrescribirlos.
@@ -439,6 +445,8 @@ class TrackedPlateROI:
     quality: float = 0.0
     # Polígono orientado de 4 vértices [[x1,y1],[x2,y2],[x3,y3],[x4,y4]] estilo Rekor Scout / OpenALPR
     oriented_box: list[list[int]] = field(default_factory=list)
+    # True si el track se ha movido (MOG2): distingue vehículos de objetos quietos
+    en_movimiento: bool = False
 
 
 @dataclass
@@ -484,9 +492,12 @@ class DetectionPipeline:
         self,
         detector: BaseDetector,
         browser_detector: Optional[BaseDetector] = None,
+        compuerta: Optional[CompuertaInferencia] = None,
     ) -> None:
         self.detector = detector
         self.browser_detector = browser_detector or detector
+        # Sin compuerta explícita el detector se ejecuta en cada cuadro (comportamiento base)
+        self._compuerta = compuerta or CompuertaInferencia(activa=False)
 
         logger.info("Inicializando DetectionPipeline con detectores inyectados (DI).")
 
@@ -511,12 +522,18 @@ class DetectionPipeline:
         self._browser_trackers: list[KalmanBoxTracker] = []
         self._browser_lock = threading.Lock()
 
-        # 4. OpenALPR Motion Detector (MOG2) para Zonas de Interés
-        self._bg_subtractor = cv2.createBackgroundSubtractorMOG2(history=120, varThreshold=25, detectShadows=False)
-        self._last_motion_bbox: Optional[list[int]] = None
-        self._last_motion_pct: int = 0
-        # True solo cuando la zona de movimiento contiene una detección YOLO de placa/vehículo
-        self._last_motion_vehicle_detected: bool = False
+        # 4. Movimiento (MOG2) por fuente: la cámara RTSP y la webcam del navegador tienen escenas
+        #    distintas y cada una necesita su propio modelo de fondo. Por fuente se guarda la
+        #    zona de movimiento vigente (caja, porcentaje, ¿contiene una placa detectada?), los
+        #    tracks que se han movido, la última respuesta (para los cuadros sin inferencia) y
+        #    los conteos de la compuerta.
+        self._movimiento = {f: DetectorMovimiento() for f in _FUENTES}
+        self._zona_movimiento: dict[str, tuple[Optional[list[int]], int, bool]] = {f: (None, 0, False) for f in _FUENTES}
+        self._pistas_movidas: dict[str, set[int]] = {f: set() for f in _FUENTES}
+        self._ultimos_rois_navegador: list[TrackedPlateROI] = []
+        self._cuadros_sin_inferir = {f: 0 for f in _FUENTES}
+        self._omitida = {f: False for f in _FUENTES}
+        self.inferencias = {f: {"ejecutadas": 0, "omitidas": 0} for f in _FUENTES}
 
         # 5. Verificación geométrica por track (análisis de caracteres estilo OpenALPR):
         #    id -> {"t", "mejor": AnalisisCaracteres, "quad_rel", "es_placa"}
@@ -610,14 +627,58 @@ class DetectionPipeline:
             self._analisis[tid] = nuevo
         return nuevo
 
-    def get_motion_info(self) -> tuple[Optional[list[int]], int, bool]:
+    def get_motion_info(self, fuente: str = "rtsp") -> tuple[Optional[list[int]], int, bool]:
         """
-        Retorna (motion_bbox, motion_pct, vehicle_detected) detectado por MOG2.
+        Retorna (motion_bbox, motion_pct, vehicle_detected) de la fuente ("rtsp" o "navegador").
         vehicle_detected=True SOLO si la zona de movimiento se superpone con una
         detección YOLO válida (placa de vehículo), eliminando falsos positivos por
         personas, sombras o cambios de iluminación.
         """
-        return self._last_motion_bbox, self._last_motion_pct, self._last_motion_vehicle_detected
+        return self._zona_movimiento[fuente]
+
+    def inferencia_omitida(self, fuente: str = "rtsp") -> bool:
+        """True si en el último cuadro de la fuente la compuerta de movimiento omitió el detector."""
+        return self._omitida[fuente]
+
+    def proporcion_omitida(self, fuente: str = "rtsp") -> float:
+        """Fracción de cuadros de la fuente en que se omitió el detector (0–1)."""
+        c = self.inferencias[fuente]
+        total = c["ejecutadas"] + c["omitidas"]
+        return c["omitidas"] / total if total else 0.0
+
+    def _pasar_compuerta(self, fuente: str, mov: Movimiento, pistas: list[KalmanBoxTracker]) -> bool:
+        """
+        Compuerta de inferencia: True si el detector debe ejecutarse en este cuadro. Se ejecuta si
+        la compuerta está desactivada, si la escena cambió desde la última inferencia (más de
+        `umbral` del área: algo apareció, se movió o desapareció), si alguna pista no se encontró
+        en la última inferencia (el objeto salió o quedó tapado: hay que confirmarlo o darla de
+        baja, no congelarla) o si ya se omitieron `max_omitidos` cuadros seguidos (inferencia de
+        control). Al ejecutarse, el cuadro pasa a ser la nueva referencia.
+        """
+        c = self._compuerta
+        perdidas = any(t.time_since_update > 0 for t in pistas)
+        if not c.activa or mov.cambio >= c.umbral or perdidas or self._cuadros_sin_inferir[fuente] >= c.max_omitidos:
+            self._movimiento[fuente].fijar_referencia()
+            self._cuadros_sin_inferir[fuente] = 0
+            self._omitida[fuente] = False
+            self.inferencias[fuente]["ejecutadas"] += 1
+            return True
+        self._cuadros_sin_inferir[fuente] += 1
+        self._omitida[fuente] = True
+        self.inferencias[fuente]["omitidas"] += 1
+        return False
+
+    def _registrar_movimiento(self, fuente: str, mov: Movimiento, det_boxes: list[list[float]]) -> None:
+        """Zona de movimiento vigente: solo se activa si contiene una detección de placa."""
+        vehiculo = self._is_vehicle_motion(mov.caja, det_boxes)
+        self._zona_movimiento[fuente] = (mov.caja if vehiculo else None, mov.porcentaje, vehiculo)
+
+    def _marcar_si_se_mueve(self, fuente: str, tid: int, bbox: list[int], mov: Movimiento) -> bool:
+        """True si el track se ha movido alguna vez (parte de su caja cambió en algún cuadro)."""
+        movidas = self._pistas_movidas[fuente]
+        if tid not in movidas and mov.fraccion_en(bbox) >= _FRACCION_PISTA_EN_MOVIMIENTO:
+            movidas.add(tid)
+        return tid in movidas
 
     @staticmethod
     def _is_vehicle_motion(
@@ -800,6 +861,13 @@ class DetectionPipeline:
             self._current_overlays.clear()
             self._analisis.clear()
             self._retirados.clear()
+        # Escena nueva (p. ej. otra cámara): se olvida el fondo aprendido y el estado de la compuerta
+        self._ultimos_rois_navegador = []
+        for f in _FUENTES:
+            self._movimiento[f].reiniciar()
+            self._zona_movimiento[f] = (None, 0, False)
+            self._pistas_movidas[f].clear()
+            self._cuadros_sin_inferir[f] = 0
         logger.info("Pipeline ANPR: Memoria de tracking y overlays reiniciada por completo.")
 
     def detect_fast(self, frame: np.ndarray) -> list[TrackedPlateROI]:
@@ -812,33 +880,11 @@ class DetectionPipeline:
         """
         orig_h, orig_w = frame.shape[:2]
 
-        # OpenALPR Motion Detection (MOG2) para Zonas de Interés
-        # NOTA: La zona de movimiento se valida DESPUÉS de la inferencia YOLO
-        # para que solo se active cuando hay una detección de placa/vehículo real.
-        _raw_motion_bbox: Optional[list[int]] = None
-        try:
-            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-            fg_mask = self._bg_subtractor.apply(gray)
-            _, fg_thresh = cv2.threshold(fg_mask, 128, 255, cv2.THRESH_BINARY)
-            kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
-            fg_clean = cv2.morphologyEx(fg_thresh, cv2.MORPH_OPEN, kernel)
-            fg_clean = cv2.dilate(fg_clean, kernel, iterations=2)
-            motion_pixels = cv2.countNonZero(fg_clean)
-            self._last_motion_pct = int(min(100, (motion_pixels / float(orig_w * orig_h)) * 100 * 6))
-            contours, _ = cv2.findContours(fg_clean, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-            if contours:
-                valid_cnts = [c for c in contours if cv2.contourArea(c) > 1200]
-                if valid_cnts:
-                    all_pts = np.vstack(valid_cnts)
-                    mx, my, mw, mh = cv2.boundingRect(all_pts)
-                    mx = max(0, mx - int(mw * 0.10))
-                    my = max(0, my - int(mh * 0.10))
-                    mw = min(orig_w - mx, int(mw * 1.20))
-                    mh = min(orig_h - my, int(mh * 1.20))
-                    _raw_motion_bbox = [mx, my, mx + mw, my + mh]
-        except Exception:
-            self._last_motion_bbox = None
-            self._last_motion_pct = 0
+        # Movimiento (MOG2) y compuerta: con la escena quieta se reutiliza la última respuesta
+        mov = self._movimiento["navegador"].analizar(frame)
+        if not self._pasar_compuerta("navegador", mov, self._browser_trackers):
+            self._zona_movimiento["navegador"] = (None, mov.porcentaje, False)
+            return list(self._ultimos_rois_navegador)
 
         conf_thresh, _ = byte_track_thresholds()
         det_boxes: list[list[float]] = []
@@ -899,13 +945,7 @@ class DetectionPipeline:
         # Validación inteligente de movimiento: solo activar si hay un vehículo/placa
         # dentro de la zona de movimiento MOG2. Elimina falsos positivos por personas,
         # sombras, cambios de luz o cualquier objeto que no sea un auto.
-        if _raw_motion_bbox is not None:
-            vehicle_in_motion = self._is_vehicle_motion(_raw_motion_bbox, det_boxes)
-            self._last_motion_bbox = _raw_motion_bbox if vehicle_in_motion else None
-            self._last_motion_vehicle_detected = vehicle_in_motion
-        else:
-            self._last_motion_bbox = None
-            self._last_motion_vehicle_detected = False
+        self._registrar_movimiento("navegador", mov, det_boxes)
 
         # Si no hay detecciones en este cuadro, avanzar Kalman y no destruir los tracks de golpe
         if not det_boxes:
@@ -930,8 +970,11 @@ class DetectionPipeline:
                                 velocity=[float(trk.kf.statePost[4, 0]), float(trk.kf.statePost[5, 0])],
                                 quality=0.0,
                                 oriented_box=[[bx1, by1], [bx2, by1], [bx2, by2], [bx1, by2]],
+                                en_movimiento=trk.id in self._pistas_movidas["navegador"],
                             ))
                 self._browser_trackers = surviving
+                self._pistas_movidas["navegador"] &= {t.id for t in surviving}
+            self._ultimos_rois_navegador = rois_lost
             return rois_lost
 
         # Asociación ligera con tracking ID estable y predicción Kalman
@@ -1018,6 +1061,7 @@ class DetectionPipeline:
                     velocity=[vx, vy],
                     quality=round(sharpness, 1),
                     oriented_box=oriented_box,
+                    en_movimiento=self._marcar_si_se_mueve("navegador", tid, [bx1, by1, bx2, by2], mov),
                 ))
 
             # Mantener en memoria trackers previos con poca edad que no fueron emparejados en este frame
@@ -1040,10 +1084,13 @@ class DetectionPipeline:
                                 velocity=[float(trk.kf.statePost[4, 0]), float(trk.kf.statePost[5, 0])],
                                 quality=0.0,
                                 oriented_box=[[bx1, by1], [bx2, by1], [bx2, by2], [bx1, by2]],
+                                en_movimiento=trk.id in self._pistas_movidas["navegador"],
                             ))
 
             self._browser_trackers = new_trackers
+            self._pistas_movidas["navegador"] &= {t.id for t in new_trackers}
 
+        self._ultimos_rois_navegador = tracked_rois
         return tracked_rois
 
     def detect_and_track(self, frame: np.ndarray, imgsz: int = 512) -> list[TrackedPlateROI]:
@@ -1056,34 +1103,24 @@ class DetectionPipeline:
         """
 
         t0 = time.perf_counter()
-        orig_h, orig_w = frame.shape[:2]
 
-        # OpenALPR Motion Detection (MOG2) para Zonas de Interés Dinámicas
-        # La validación contra YOLO se aplica DESPUÉS de la inferencia para filtrar
-        # movimiento que no corresponde a vehículos (personas, sombras, etc.).
-        _raw_motion_bbox_rtsp: Optional[list[int]] = None
-        try:
-            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-            fg_mask = self._bg_subtractor.apply(gray)
-            _, fg_thresh = cv2.threshold(fg_mask, 128, 255, cv2.THRESH_BINARY)
-            kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
-            fg_clean = cv2.morphologyEx(fg_thresh, cv2.MORPH_OPEN, kernel)
-            fg_clean = cv2.dilate(fg_clean, kernel, iterations=2)
-            motion_pixels = cv2.countNonZero(fg_clean)
-            self._last_motion_pct = int(min(100, (motion_pixels / float(orig_w * orig_h)) * 100 * 6))
-            contours, _ = cv2.findContours(fg_clean, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-            if contours:
-                valid_cnts = [c for c in contours if cv2.contourArea(c) > 1200]
-                if valid_cnts:
-                    all_pts = np.vstack(valid_cnts)
-                    mx, my, mw, mh = cv2.boundingRect(all_pts)
-                    mx = max(0, mx - int(mw * 0.10))
-                    my = max(0, my - int(mh * 0.10))
-                    mw = min(orig_w - mx, int(mw * 1.20))
-                    mh = min(orig_h - my, int(mh * 1.20))
-                    _raw_motion_bbox_rtsp = [mx, my, mx + mw, my + mh]
-        except Exception:
-            pass
+        # 0. Movimiento (MOG2, solo dentro de la región de interés) y compuerta de inferencia:
+        #    con la escena quieta los tracks no se movieron, así que no se ejecuta YOLO y los
+        #    tracks quedan congelados (sin predecir ni envejecer) hasta el próximo cambio o la
+        #    inferencia de control. Las pistas y su dibujo se reconstruyen en cada cuadro, de
+        #    modo que una lectura OCR o una decisión del backend se ven al instante.
+        mov = self._movimiento["rtsp"].analizar(frame, self._roi_norm)
+        if self._pasar_compuerta("rtsp", mov, self._trackers):
+            self._actualizar_pistas(frame, mov)
+        else:
+            self._zona_movimiento["rtsp"] = (None, mov.porcentaje, False)
+        tracked_rois = self._construir_pistas(frame, mov)
+        self._medir_fps(t0)
+        return tracked_rois
+
+    def _actualizar_pistas(self, frame: np.ndarray, mov: Movimiento) -> None:
+        """Pasos 1–6 (ByteTrack): predicción de Kalman, detección YOLO, asociación en dos fases y altas/bajas de tracks."""
+        orig_h, orig_w = frame.shape[:2]
 
         # 1. Paso de Predicción del Filtro de Kalman para todos los tracks activos
         predicted_boxes: list[list[float]] = []
@@ -1169,14 +1206,7 @@ class DetectionPipeline:
 
         # Validación inteligente de movimiento para stream RTSP: activar zona de movimiento
         # SOLO cuando hay una detección YOLO de placa/vehículo en esa zona.
-        _all_det_boxes_rtsp = det_high_boxes + det_low_boxes
-        if _raw_motion_bbox_rtsp is not None:
-            _vehicle_in_motion_rtsp = self._is_vehicle_motion(_raw_motion_bbox_rtsp, _all_det_boxes_rtsp)
-            self._last_motion_bbox = _raw_motion_bbox_rtsp if _vehicle_in_motion_rtsp else None
-            self._last_motion_vehicle_detected = _vehicle_in_motion_rtsp
-        else:
-            self._last_motion_bbox = None
-            self._last_motion_vehicle_detected = False
+        self._registrar_movimiento("rtsp", mov, det_high_boxes + det_low_boxes)
 
         # 3. Asociación ByteTrack FASE 1: Detecciones con DIoU (tolerante a movimiento rápido).
         # Umbral -0.25: ahora que compute_diou_matrix descarta por escala inconsistente
@@ -1221,6 +1251,12 @@ class DetectionPipeline:
                 self._retirados[t_id] = (time.time(), self._track_plates.pop(t_id, None), self._analisis.pop(t_id, None))
                 for k in [k for k, v in self._retirados.items() if time.time() - v[0] > 20.0]:
                     del self._retirados[k]
+            self._pistas_movidas["rtsp"].discard(t_id)
+
+    def _construir_pistas(self, frame: np.ndarray, mov: Movimiento) -> list[TrackedPlateROI]:
+        """Paso 7: regiones rastreadas del cuadro y recuadros del HUD a partir del estado de los tracks."""
+        orig_h, orig_w = frame.shape[:2]
+        _, raw_pred_thresh = byte_track_thresholds()
 
         # 7. Construcción de ROIs y Overlays Visuales Tácticos (Respuesta Inmediata al Movimiento)
         tracked_rois: list[TrackedPlateROI] = []
@@ -1290,6 +1326,7 @@ class DetectionPipeline:
                     ]
                 plate_crop = frame[y1:y2, x1:x2]
                 sharpness = compute_crop_sharpness(plate_crop)
+                en_movimiento = self._marcar_si_se_mueve("rtsp", trk.id, [x1, y1, x2, y2], mov)
 
                 roi = TrackedPlateROI(
                     tracking_id=trk.id,
@@ -1300,15 +1337,21 @@ class DetectionPipeline:
                     velocity=[round(vx_px_s, 2), round(vy_px_s, 2)],
                     quality=round(sharpness, 1),
                     oriented_box=oriented_box,
+                    en_movimiento=en_movimiento,
                 )
                 tracked_rois.append(roi)
 
-                # 7.3. Cada pista se dibuja desde el primer cuadro: la caja sigue a la placa en
-                # movimiento mientras el OCR la lee. Sin lectura muestra "ESCANEANDO OCR" (o el
-                # texto parcial) con la confianza del detector; con lectura ANT, la placa por
-                # consenso; con la decisión del backend, su estado. Qué se registra lo sigue
-                # decidiendo la verificación en dos fases, no este dibujo.
+                # 7.3. Qué se dibuja: una pista en movimiento (un vehículo) se dibuja desde el
+                # primer cuadro y la caja la sigue mientras el OCR la lee; una pista quieta solo
+                # cuando hay evidencia de placa (fila de caracteres o una lectura ANT), para no
+                # enmarcar rótulos o rejillas que el detector confunde con placas. Sin lectura
+                # muestra "ESCANEANDO OCR" (o el texto parcial) con la confianza del detector;
+                # con lectura ANT, la placa por consenso; con la decisión del backend, su estado.
+                # Qué se registra lo sigue decidiendo la verificación en dos fases, no este dibujo.
                 lecturas = int(plate_info.get("lecturas", 0)) if plate_info else 0
+                verificada = bool(verif["es_placa"] or lecturas >= 2)
+                if not (en_movimiento or verificada or lecturas >= 1):
+                    continue
                 texto_ocr = plate_info.get("plate", "") if plate_info else ""
                 placa = texto_ocr if lecturas >= 1 else ""
                 parcial = "" if placa else texto_ocr[:8]
@@ -1341,24 +1384,23 @@ class DetectionPipeline:
                     confianza=float(trk.confidence),
                     confianza_placa=confianza_placa,
                     velocidad=(round(vx_px_s, 2), round(vy_px_s, 2)),
-                    verificada=bool(verif["es_placa"] or lecturas >= 2),
+                    verificada=verificada,
                 ))
 
         with self._overlays_lock:
             self._current_overlays = new_overlays
 
-        # Medición de FPS
-        t_elapsed = time.perf_counter() - t0
-        self._fps_window.append(t_elapsed)
+        return tracked_rois
+
+    def _medir_fps(self, t0: float) -> None:
+        """Cuadros por segundo que procesa el seguimiento (media de los últimos 20 cuadros)."""
+        self._fps_window.append(time.perf_counter() - t0)
         if len(self._fps_window) > 20:
             self._fps_window.pop(0)
-
         if time.time() - self._last_fps_calc >= 1.0:
             avg_time = sum(self._fps_window) / max(1, len(self._fps_window))
             self._fps = 1.0 / avg_time if avg_time > 0 else 0.0
             self._last_fps_calc = time.time()
-
-        return tracked_rois
 
     def draw_overlays(
         self,
@@ -1379,8 +1421,9 @@ class DetectionPipeline:
         # 0. Zona de Movimiento MOG2 translúcida — SOLO si hay un vehículo/placa
         # detectado por YOLO en esa zona (vehicle_detected=True). Elimina el cuadro
         # verde que aparecía con personas, sombras o cualquier movimiento que no sea un auto.
-        if self._last_motion_bbox and self._last_motion_pct > 3 and self._last_motion_vehicle_detected:
-            mx1, my1, mx2, my2 = self._last_motion_bbox
+        caja_mov, pct_mov, vehiculo_mov = self._zona_movimiento["rtsp"]
+        if caja_mov and pct_mov > 3 and vehiculo_mov:
+            mx1, my1, mx2, my2 = caja_mov
             overlay = out_frame.copy()
             cv2.rectangle(overlay, (mx1, my1), (mx2, my2), (40, 190, 70), -1)
             cv2.addWeighted(overlay, 0.18, out_frame, 0.82, 0, out_frame)
@@ -1388,7 +1431,7 @@ class DetectionPipeline:
             # Etiqueta táctica con el porcentaje de movimiento de la zona
             cv2.putText(
                 out_frame,
-                f"VEHICULO - MOV {self._last_motion_pct}%",
+                f"VEHICULO - MOV {pct_mov}%",
                 (mx1 + 4, my1 + 14),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.40,
@@ -1493,6 +1536,10 @@ def create_detection_pipeline(
 
     from app.infraestructura.config import (
         DETECTOR_BACKEND,
+        TORCH_THREADS,
+        MOTION_GATE_ENABLED,
+        MOTION_GATE_MAX_SKIP,
+        MOTION_GATE_MIN_FRACTION,
         PLATE_DETECTOR_ARCH,
         PLATE_MODEL_PATH,
         PLATE_CONFIDENCE_THRESHOLD,
@@ -1500,9 +1547,8 @@ def create_detection_pipeline(
     import torch
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    num_threads = min(4, max(2, (os.cpu_count() or 4) // 2))
     try:
-        torch.set_num_threads(num_threads)
+        torch.set_num_threads(max(1, TORCH_THREADS))
     except Exception:
         pass
 
@@ -1550,4 +1596,7 @@ def create_detection_pipeline(
     browser_det.warmup()
 
     logger.info("Detectores YOLO creados [RTSP=512px / Browser=512px (Distancia)] en device=%s", device)
-    return DetectionPipeline(detector=rtsp_det, browser_detector=browser_det)
+    compuerta = CompuertaInferencia(activa=MOTION_GATE_ENABLED, umbral=MOTION_GATE_MIN_FRACTION, max_omitidos=MOTION_GATE_MAX_SKIP)
+    logger.info("Compuerta de movimiento: %s (umbral %.3f, control cada %d cuadros)",
+                "activa" if compuerta.activa else "desactivada", compuerta.umbral, compuerta.max_omitidos)
+    return DetectionPipeline(detector=rtsp_det, browser_detector=browser_det, compuerta=compuerta)

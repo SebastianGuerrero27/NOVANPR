@@ -24,6 +24,7 @@ from app.infraestructura.config import (
     FASTALPR_OCR_MODEL,
     OCR_CONFIDENCE_THRESHOLD,
     OCR_ENGINE,
+    OCR_THREADS,
     OPENCV_CLAHE_ENABLED,
     OPENCV_UNSHARP_ENABLED,
     PLATE_OCR_CONFIG_PATH,
@@ -150,16 +151,21 @@ class FastPlateOcrEngine(OcrEngine):
     """
 
     def __init__(self, model_name: Optional[str] = None, preprocess: Optional[bool] = None) -> None:
+        import onnxruntime as ort
         from fast_plate_ocr import LicensePlateRecognizer
 
         self._preprocess = PLATE_OCR_PREPROCESS if preprocess is None else preprocess
+        # Hilos acotados: el modelo es pequeño y se ejecuta junto al detector y al verificador
+        sesion = ort.SessionOptions()
+        sesion.intra_op_num_threads = max(1, OCR_THREADS)
+        sesion.inter_op_num_threads = 1
         onnx_path = _resolve_service_path(PLATE_OCR_ONNX_PATH)
         config_path = _resolve_service_path(PLATE_OCR_CONFIG_PATH)
 
         if model_name is None and os.path.exists(onnx_path) and os.path.exists(config_path):
             # Modelo afinado con placas ecuatorianas (scripts/train_ocr.py)
             self._recognizer = LicensePlateRecognizer(
-                onnx_model_path=onnx_path, plate_config_path=config_path, device="cpu"
+                onnx_model_path=onnx_path, plate_config_path=config_path, device="cpu", sess_options=sesion
             )
             self.model_id = os.path.basename(onnx_path)
             logger.info("FastPlateOcrEngine con modelo afinado Ecuador: %s", onnx_path)
@@ -167,11 +173,11 @@ class FastPlateOcrEngine(OcrEngine):
 
         model = model_name or PLATE_OCR_HUB_MODEL
         try:
-            self._recognizer = LicensePlateRecognizer(hub_ocr_model=model, device="cpu")
+            self._recognizer = LicensePlateRecognizer(hub_ocr_model=model, device="cpu", sess_options=sesion)
             self.model_id = model
         except Exception as e:
             logger.warning("Fallo al cargar '%s' (%s). Usando 'cct-s-v2-global-model'.", model, e)
-            self._recognizer = LicensePlateRecognizer(hub_ocr_model="cct-s-v2-global-model", device="cpu")
+            self._recognizer = LicensePlateRecognizer(hub_ocr_model="cct-s-v2-global-model", device="cpu", sess_options=sesion)
             self.model_id = "cct-s-v2-global-model"
         logger.info("FastPlateOcrEngine con modelo del hub '%s' (preprocesado=%s).", self.model_id, self._preprocess)
 

@@ -122,7 +122,6 @@ services:
       - REDIS_HOST=redis
       - REDIS_PORT=6379
       - REDIS_PASSWORD=
-      - CACHE_TTL_SECONDS=3600
       # Centro de notificaciones: Socket.IO con adaptador Redis (varias instancias) y Web Push
       - SOCKET_REDIS_ADAPTER=true
       - VAPID_PUBLIC_KEY=${VAPID_PUBLIC_KEY:-}

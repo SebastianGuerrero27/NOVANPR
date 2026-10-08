@@ -1,0 +1,1298 @@
+{
+  "fps": 15,
+  "variantes": {
+    "base": {
+      "registro_paralelo": false,
+      "vehiculo_anticipado": false,
+      "intentos_captura": 1,
+      "enfriamiento_ocr_s": 0.6
+    },
+    "optimizada": {}
+  },
+  "resumen": {
+    "cruce 1.5 s, desenfoque 3 px · base": {
+      "pasos": 12,
+      "registrados": 10,
+      "aciertos": 10,
+      "lecturas_validas": 9,
+      "latencia_mediana_ms": 1323.0,
+      "latencia_p90_ms": 1837,
+      "latencia_max_ms": 2264,
+      "captura_mediana_ms": 242.0,
+      "ocr_profundo_mediana_ms": 61.9,
+      "verificador_mediana_ms": 260.3,
+      "vehiculo_mediana_ms": 678.2
+    },
+    "cruce 1.5 s, desenfoque 3 px · optimizada": {
+      "pasos": 12,
+      "registrados": 10,
+      "aciertos": 10,
+      "lecturas_validas": 8,
+      "latencia_mediana_ms": 1108.5,
+      "latencia_p90_ms": 1531,
+      "latencia_max_ms": 1813,
+      "captura_mediana_ms": 318.0,
+      "ocr_profundo_mediana_ms": 96.3,
+      "verificador_mediana_ms": 275.3,
+      "vehiculo_mediana_ms": 870.8
+    },
+    "cruce 1.5 s, desenfoque 8 px · base": {
+      "pasos": 12,
+      "registrados": 6,
+      "aciertos": 5,
+      "lecturas_validas": 5,
+      "latencia_mediana_ms": 1556.0,
+      "latencia_p90_ms": 1618,
+      "latencia_max_ms": 1706,
+      "captura_mediana_ms": 347.5,
+      "ocr_profundo_mediana_ms": 63.2,
+      "verificador_mediana_ms": 165.8,
+      "vehiculo_mediana_ms": 630.0
+    },
+    "cruce 1.5 s, desenfoque 8 px · optimizada": {
+      "pasos": 12,
+      "registrados": 7,
+      "aciertos": 6,
+      "lecturas_validas": 4,
+      "latencia_mediana_ms": 1182,
+      "latencia_p90_ms": 1496,
+      "latencia_max_ms": 2260,
+      "captura_mediana_ms": 377.5,
+      "ocr_profundo_mediana_ms": 384.3,
+      "verificador_mediana_ms": 200.1,
+      "vehiculo_mediana_ms": 937.5
+    }
+  },
+  "comparacion": {
+    "cruce 1.5 s, desenfoque 3 px": {
+      "pares": 10,
+      "reduccion_mediana_ms": 198.0,
+      "ic95_ms": [
+        33.5,
+        366.5
+      ],
+      "pares_mas_rapidos_optimizada": 8,
+      "wilcoxon_p": 0.037109375
+    },
+    "cruce 1.5 s, desenfoque 8 px": {
+      "pares": 5,
+      "reduccion_mediana_ms": 322.0,
+      "ic95_ms": [
+        -682.0,
+        440.0
+      ],
+      "pares_mas_rapidos_optimizada": 4,
+      "wilcoxon_p": 0.625
+    }
+  },
+  "detalle": [
+    {
+      "archivo": "ingreso_20260909_235421_96_740.jpg",
+      "placa": "PSY589",
+      "escenario": "1.5:3",
+      "variante": "base",
+      "placa_registrada": "PSY589",
+      "acierto": true,
+      "lectura_valida": true,
+      "registros": 1,
+      "latencia_ms": 2264,
+      "captura_ms": 171,
+      "ingreso_ms": 2264,
+      "latencia_motor_ms": 2487,
+      "etapas_ms": {
+        "ocr_profundo": [
+          65.0
+        ],
+        "verificador": [
+          916.9
+        ],
+        "vehiculo": [
+          1082.8
+        ]
+      }
+    },
+    {
+      "archivo": "ingreso_20260909_235421_96_740.jpg",
+      "placa": "PSY589",
+      "escenario": "1.5:3",
+      "variante": "optimizada",
+      "placa_registrada": "PSY589",
+      "acierto": true,
+      "lectura_valida": true,
+      "registros": 1,
+      "latencia_ms": 1098,
+      "captura_ms": 407,
+      "ingreso_ms": 1097,
+      "latencia_motor_ms": 1094,
+      "etapas_ms": {
+        "ocr_profundo": [
+          62.6
+        ],
+        "vehiculo": [
+          624.3
+        ],
+        "verificador": [
+          662.0
+        ]
+      }
+    },
+    {
+      "archivo": "ingreso_20260910_000418_149_5920.jpg",
+      "placa": "PSY589",
+      "escenario": "1.5:3",
+      "variante": "optimizada",
+      "placa_registrada": "PSY589",
+      "acierto": true,
+      "lectura_valida": true,
+      "registros": 1,
+      "latencia_ms": 1040,
+      "captura_ms": 319,
+      "ingreso_ms": 1039,
+      "latencia_motor_ms": 912,
+      "etapas_ms": {
+        "ocr_profundo": [
+          74.7,
+          98.5
+        ],
+        "verificador": [
+          306.1,
+          544.9
+        ],
+        "vehiculo": [
+          720.6,
+          920.0
+        ]
+      }
+    },
+    {
+      "archivo": "ingreso_20260910_000418_149_5920.jpg",
+      "placa": "PSY589",
+      "escenario": "1.5:3",
+      "variante": "base",
+      "placa_registrada": "PSY589",
+      "acierto": true,
+      "lectura_valida": true,
+      "registros": 1,
+      "latencia_ms": 1366,
+      "captura_ms": 264,
+      "ingreso_ms": 1366,
+      "latencia_motor_ms": 1109,
+      "etapas_ms": {
+        "ocr_profundo": [
+          61.9,
+          98.2
+        ],
+        "verificador": [
+          260.3,
+          483.5
+        ],
+        "vehiculo": [
+          739.8,
+          708.2
+        ]
+      }
+    },
+    {
+      "archivo": "ingreso_20260910_014500_314_737.jpg",
+      "placa": "PSY589",
+      "escenario": "1.5:3",
+      "variante": "base",
+      "placa_registrada": null,
+      "acierto": false,
+      "lectura_valida": null,
+      "registros": 0,
+      "latencia_ms": null,
+      "captura_ms": null,
+      "ingreso_ms": null,
+      "latencia_motor_ms": null,
+      "etapas_ms": {}
+    },
+    {
+      "archivo": "ingreso_20260910_014500_314_737.jpg",
+      "placa": "PSY589",
+      "escenario": "1.5:3",
+      "variante": "optimizada",
+      "placa_registrada": null,
+      "acierto": false,
+      "lectura_valida": null,
+      "registros": 0,
+      "latencia_ms": null,
+      "captura_ms": null,
+      "ingreso_ms": null,
+      "latencia_motor_ms": null,
+      "etapas_ms": {}
+    },
+    {
+      "archivo": "ingreso_20260910_014616_241_6646.jpg",
+      "placa": "PSY589",
+      "escenario": "1.5:3",
+      "variante": "optimizada",
+      "placa_registrada": "PSY589",
+      "acierto": true,
+      "lectura_valida": true,
+      "registros": 1,
+      "latencia_ms": 1119,
+      "captura_ms": 244,
+      "ingreso_ms": 1118,
+      "latencia_motor_ms": 1059,
+      "etapas_ms": {
+        "ocr_profundo": [
+          78.3
+        ],
+        "verificador": [
+          639.8
+        ],
+        "vehiculo": [
+          873.9
+        ]
+      }
+    },
+    {
+      "archivo": "ingreso_20260910_014616_241_6646.jpg",
+      "placa": "PSY589",
+      "escenario": "1.5:3",
+      "variante": "base",
+      "placa_registrada": "PSY589",
+      "acierto": true,
+      "lectura_valida": true,
+      "registros": 1,
+      "latencia_ms": 1280,
+      "captura_ms": 178,
+      "ingreso_ms": 1280,
+      "latencia_motor_ms": 1280,
+      "etapas_ms": {
+        "ocr_profundo": [
+          51.1
+        ],
+        "verificador": [
+          443.5
+        ],
+        "vehiculo": [
+          584.0
+        ]
+      }
+    },
+    {
+      "archivo": "ingreso_20260910_014736_209_9386.jpg",
+      "placa": "PSY589",
+      "escenario": "1.5:3",
+      "variante": "base",
+      "placa_registrada": "PSY589",
+      "acierto": true,
+      "lectura_valida": true,
+      "registros": 1,
+      "latencia_ms": 1468,
+      "captura_ms": 234,
+      "ingreso_ms": 1468,
+      "latencia_motor_ms": 1726,
+      "etapas_ms": {
+        "ocr_profundo": [
+          52.3
+        ],
+        "verificador": [
+          584.8
+        ],
+        "vehiculo": [
+          575.3
+        ]
+      }
+    },
+    {
+      "archivo": "ingreso_20260910_014736_209_9386.jpg",
+      "placa": "PSY589",
+      "escenario": "1.5:3",
+      "variante": "optimizada",
+      "placa_registrada": "PSY589",
+      "acierto": true,
+      "lectura_valida": true,
+      "registros": 1,
+      "latencia_ms": 1353,
+      "captura_ms": 208,
+      "ingreso_ms": 1352,
+      "latencia_motor_ms": 1336,
+      "etapas_ms": {
+        "ocr_profundo": [
+          104.4
+        ],
+        "verificador": [
+          908.8
+        ],
+        "vehiculo": [
+          1144.3
+        ]
+      }
+    },
+    {
+      "archivo": "ingreso_20260914_225624_153_9050.jpg",
+      "placa": "PSY589",
+      "escenario": "1.5:3",
+      "variante": "optimizada",
+      "placa_registrada": "PSY589",
+      "acierto": true,
+      "lectura_valida": true,
+      "registros": 1,
+      "latencia_ms": 1009,
+      "captura_ms": 317,
+      "ingreso_ms": 1009,
+      "latencia_motor_ms": 851,
+      "etapas_ms": {
+        "ocr_profundo": [
+          65.7,
+          86.5
+        ],
+        "verificador": [
+          275.3,
+          263.7
+        ],
+        "vehiculo": [
+          693.0,
+          735.1
+        ]
+      }
+    },
+    {
+      "archivo": "ingreso_20260914_225624_153_9050.jpg",
+      "placa": "PSY589",
+      "escenario": "1.5:3",
+      "variante": "base",
+      "placa_registrada": "PSY589",
+      "acierto": true,
+      "lectura_valida": true,
+      "registros": 1,
+      "latencia_ms": 1144,
+      "captura_ms": 356,
+      "ingreso_ms": 1144,
+      "latencia_motor_ms": 963,
+      "etapas_ms": {
+        "ocr_profundo": [
+          42.3
+        ],
+        "verificador": [
+          131.7
+        ],
+        "vehiculo": [
+          601.0
+        ]
+      }
+    },
+    {
+      "archivo": "ingreso_20260915_001517_41_6159.jpg",
+      "placa": "PSY589",
+      "escenario": "1.5:3",
+      "variante": "base",
+      "placa_registrada": "PSY589",
+      "acierto": true,
+      "lectura_valida": false,
+      "registros": 1,
+      "latencia_ms": 1093,
+      "captura_ms": 227,
+      "ingreso_ms": 1093,
+      "latencia_motor_ms": 1027,
+      "etapas_ms": {
+        "ocr_profundo": [
+          53.0
+        ],
+        "verificador": [
+          174.7
+        ],
+        "vehiculo": [
+          603.5
+        ]
+      }
+    },
+    {
+      "archivo": "ingreso_20260915_001517_41_6159.jpg",
+      "placa": "PSY589",
+      "escenario": "1.5:3",
+      "variante": "optimizada",
+      "placa_registrada": "PSY589",
+      "acierto": true,
+      "lectura_valida": false,
+      "registros": 1,
+      "latencia_ms": 1161,
+      "captura_ms": 743,
+      "ingreso_ms": 1160,
+      "latencia_motor_ms": 1113,
+      "etapas_ms": {
+        "ocr_profundo": [
+          96.3,
+          105.1
+        ],
+        "verificador": [
+          204.5,
+          212.8
+        ],
+        "vehiculo": [
+          764.9,
+          831.3
+        ]
+      }
+    },
+    {
+      "archivo": "ingreso_20260915_003138_97_5375.jpg",
+      "placa": "PSY589",
+      "escenario": "1.5:3",
+      "variante": "optimizada",
+      "placa_registrada": "PSY589",
+      "acierto": true,
+      "lectura_valida": true,
+      "registros": 1,
+      "latencia_ms": 851,
+      "captura_ms": 246,
+      "ingreso_ms": 851,
+      "latencia_motor_ms": 610,
+      "etapas_ms": {
+        "ocr_profundo": [
+          69.0,
+          118.6,
+          80.7
+        ],
+        "verificador": [
+          155.9,
+          216.1,
+          187.2
+        ],
+        "vehiculo": [
+          604.6,
+          867.7,
+          1034.1
+        ]
+      }
+    },
+    {
+      "archivo": "ingreso_20260915_003138_97_5375.jpg",
+      "placa": "PSY589",
+      "escenario": "1.5:3",
+      "variante": "base",
+      "placa_registrada": "PSY589",
+      "acierto": true,
+      "lectura_valida": true,
+      "registros": 1,
+      "latencia_ms": 1086,
+      "captura_ms": 250,
+      "ingreso_ms": 1086,
+      "latencia_motor_ms": 840,
+      "etapas_ms": {
+        "ocr_profundo": [
+          52.2,
+          99.4,
+          81.7
+        ],
+        "verificador": [
+          122.4,
+          239.5,
+          166.7
+        ],
+        "vehiculo": [
+          632.9,
+          776.4,
+          1093.0
+        ]
+      }
+    },
+    {
+      "archivo": "ingreso_20260915_010750_100_8315.jpg",
+      "placa": "PSY589",
+      "escenario": "1.5:3",
+      "variante": "base",
+      "placa_registrada": "PSY589",
+      "acierto": true,
+      "lectura_valida": true,
+      "registros": 1,
+      "latencia_ms": 1276,
+      "captura_ms": 343,
+      "ingreso_ms": 1276,
+      "latencia_motor_ms": 1123,
+      "etapas_ms": {
+        "ocr_profundo": [
+          61.5
+        ],
+        "verificador": [
+          243.0
+        ],
+        "vehiculo": [
+          609.0
+        ]
+      }
+    },
+    {
+      "archivo": "ingreso_20260915_010750_100_8315.jpg",
+      "placa": "PSY589",
+      "escenario": "1.5:3",
+      "variante": "optimizada",
+      "placa_registrada": "PSY589",
+      "acierto": true,
+      "lectura_valida": true,
+      "registros": 1,
+      "latencia_ms": 849,
+      "captura_ms": 466,
+      "ingreso_ms": 848,
+      "latencia_motor_ms": 621,
+      "etapas_ms": {
+        "ocr_profundo": [
+          62.0
+        ],
+        "verificador": [
+          161.1
+        ],
+        "vehiculo": [
+          615.1
+        ]
+      }
+    },
+    {
+      "archivo": "ingreso_20260915_013734_219_9726.jpg",
+      "placa": "PSY589",
+      "escenario": "1.5:3",
+      "variante": "optimizada",
+      "placa_registrada": "PSY589",
+      "acierto": true,
+      "lectura_valida": true,
+      "registros": 1,
+      "latencia_ms": 1531,
+      "captura_ms": 371,
+      "ingreso_ms": 1530,
+      "latencia_motor_ms": 1559,
+      "etapas_ms": {
+        "ocr_profundo": [
+          77.4
+        ],
+        "verificador": [
+          1068.4
+        ],
+        "vehiculo": [
+          1112.3
+        ]
+      }
+    },
+    {
+      "archivo": "ingreso_20260915_013734_219_9726.jpg",
+      "placa": "PSY589",
+      "escenario": "1.5:3",
+      "variante": "base",
+      "placa_registrada": "PSY589",
+      "acierto": true,
+      "lectura_valida": true,
+      "registros": 1,
+      "latencia_ms": 1837,
+      "captura_ms": 342,
+      "ingreso_ms": 1836,
+      "latencia_motor_ms": 1717,
+      "etapas_ms": {
+        "ocr_profundo": [
+          63.6
+        ],
+        "verificador": [
+          632.9
+        ],
+        "vehiculo": [
+          728.6
+        ]
+      }
+    },
+    {
+      "archivo": "ingreso_20260917_221551_542_7287.jpg",
+      "placa": "PSY589",
+      "escenario": "1.5:3",
+      "variante": "base",
+      "placa_registrada": null,
+      "acierto": false,
+      "lectura_valida": null,
+      "registros": 0,
+      "latencia_ms": null,
+      "captura_ms": null,
+      "ingreso_ms": null,
+      "latencia_motor_ms": null,
+      "etapas_ms": {}
+    },
+    {
+      "archivo": "ingreso_20260917_221551_542_7287.jpg",
+      "placa": "PSY589",
+      "escenario": "1.5:3",
+      "variante": "optimizada",
+      "placa_registrada": null,
+      "acierto": false,
+      "lectura_valida": null,
+      "registros": 0,
+      "latencia_ms": null,
+      "captura_ms": null,
+      "ingreso_ms": null,
+      "latencia_motor_ms": null,
+      "etapas_ms": {}
+    },
+    {
+      "archivo": "ingreso_20260923_011950_464_9716.jpg",
+      "placa": "TBD7724",
+      "escenario": "1.5:3",
+      "variante": "optimizada",
+      "placa_registrada": "TBD7724",
+      "acierto": true,
+      "lectura_valida": false,
+      "registros": 1,
+      "latencia_ms": 1813,
+      "captura_ms": -1227,
+      "ingreso_ms": 1812,
+      "latencia_motor_ms": 1322,
+      "etapas_ms": {
+        "verificador": [
+          220.9,
+          193.9,
+          882.3,
+          383.2,
+          460.0
+        ],
+        "ocr_profundo": [
+          433.3,
+          716.1,
+          110.9,
+          795.0,
+          646.7
+        ],
+        "vehiculo": [
+          881.5,
+          862.6,
+          1286.4,
+          1772.4,
+          917.9,
+          2262.4
+        ]
+      }
+    },
+    {
+      "archivo": "ingreso_20260923_011950_464_9716.jpg",
+      "placa": "TBD7724",
+      "escenario": "1.5:3",
+      "variante": "base",
+      "placa_registrada": "TBD7724",
+      "acierto": true,
+      "lectura_valida": true,
+      "registros": 1,
+      "latencia_ms": 1532,
+      "captura_ms": -1164,
+      "ingreso_ms": 1532,
+      "latencia_motor_ms": 1457,
+      "etapas_ms": {
+        "ocr_profundo": [
+          313.7,
+          57.0,
+          384.2
+        ],
+        "verificador": [
+          90.3,
+          365.2,
+          304.1
+        ],
+        "vehiculo": [
+          528.5,
+          749.5,
+          678.2
+        ]
+      }
+    },
+    {
+      "archivo": "ingreso_20260909_235421_96_740.jpg",
+      "placa": "PSY589",
+      "escenario": "1.5:8",
+      "variante": "base",
+      "placa_registrada": "PSY589",
+      "acierto": true,
+      "lectura_valida": true,
+      "registros": 1,
+      "latencia_ms": 1534,
+      "captura_ms": 296,
+      "ingreso_ms": 1533,
+      "latencia_motor_ms": 1601,
+      "etapas_ms": {
+        "ocr_profundo": [
+          58.5
+        ],
+        "verificador": [
+          474.9
+        ],
+        "vehiculo": [
+          666.8
+        ]
+      }
+    },
+    {
+      "archivo": "ingreso_20260909_235421_96_740.jpg",
+      "placa": "PSY589",
+      "escenario": "1.5:8",
+      "variante": "optimizada",
+      "placa_registrada": "PSY589",
+      "acierto": true,
+      "lectura_valida": false,
+      "registros": 1,
+      "latencia_ms": 1094,
+      "captura_ms": 380,
+      "ingreso_ms": 1094,
+      "latencia_motor_ms": 1111,
+      "etapas_ms": {
+        "ocr_profundo": [
+          86.7
+        ],
+        "verificador": [
+          261.8
+        ],
+        "vehiculo": [
+          713.9
+        ]
+      }
+    },
+    {
+      "archivo": "ingreso_20260910_000418_149_5920.jpg",
+      "placa": "PSY589",
+      "escenario": "1.5:8",
+      "variante": "optimizada",
+      "placa_registrada": "PSY589",
+      "acierto": true,
+      "lectura_valida": false,
+      "registros": 2,
+      "latencia_ms": 1496,
+      "captura_ms": 375,
+      "ingreso_ms": 1495,
+      "latencia_motor_ms": 1126,
+      "etapas_ms": {
+        "ocr_profundo": [
+          83.2,
+          126.7,
+          91.8,
+          449.2
+        ],
+        "verificador": [
+          177.7,
+          313.4,
+          432.3,
+          55.3
+        ],
+        "vehiculo": [
+          757.5,
+          1054.5
+        ]
+      }
+    },
+    {
+      "archivo": "ingreso_20260910_000418_149_5920.jpg",
+      "placa": "PSY589",
+      "escenario": "1.5:8",
+      "variante": "base",
+      "placa_registrada": null,
+      "acierto": false,
+      "lectura_valida": null,
+      "registros": 0,
+      "latencia_ms": null,
+      "captura_ms": 483,
+      "ingreso_ms": null,
+      "latencia_motor_ms": null,
+      "etapas_ms": {
+        "ocr_profundo": [
+          41.9
+        ],
+        "verificador": [
+          135.1
+        ],
+        "vehiculo": [
+          534.0
+        ]
+      }
+    },
+    {
+      "archivo": "ingreso_20260910_014500_314_737.jpg",
+      "placa": "PSY589",
+      "escenario": "1.5:8",
+      "variante": "base",
+      "placa_registrada": null,
+      "acierto": false,
+      "lectura_valida": null,
+      "registros": 0,
+      "latencia_ms": null,
+      "captura_ms": null,
+      "ingreso_ms": null,
+      "latencia_motor_ms": null,
+      "etapas_ms": {}
+    },
+    {
+      "archivo": "ingreso_20260910_014500_314_737.jpg",
+      "placa": "PSY589",
+      "escenario": "1.5:8",
+      "variante": "optimizada",
+      "placa_registrada": null,
+      "acierto": false,
+      "lectura_valida": null,
+      "registros": 0,
+      "latencia_ms": null,
+      "captura_ms": null,
+      "ingreso_ms": null,
+      "latencia_motor_ms": null,
+      "etapas_ms": {}
+    },
+    {
+      "archivo": "ingreso_20260910_014616_241_6646.jpg",
+      "placa": "PSY589",
+      "escenario": "1.5:8",
+      "variante": "optimizada",
+      "placa_registrada": "PSY589",
+      "acierto": true,
+      "lectura_valida": true,
+      "registros": 1,
+      "latencia_ms": 1085,
+      "captura_ms": 383,
+      "ingreso_ms": 1084,
+      "latencia_motor_ms": 1132,
+      "etapas_ms": {
+        "ocr_profundo": [
+          85.9
+        ],
+        "verificador": [
+          304.4
+        ],
+        "vehiculo": [
+          702.1
+        ]
+      }
+    },
+    {
+      "archivo": "ingreso_20260910_014616_241_6646.jpg",
+      "placa": "PSY589",
+      "escenario": "1.5:8",
+      "variante": "base",
+      "placa_registrada": "PSY589",
+      "acierto": true,
+      "lectura_valida": true,
+      "registros": 1,
+      "latencia_ms": 1285,
+      "captura_ms": 311,
+      "ingreso_ms": 1285,
+      "latencia_motor_ms": 1344,
+      "etapas_ms": {
+        "ocr_profundo": [
+          66.8
+        ],
+        "verificador": [
+          277.7
+        ],
+        "vehiculo": [
+          609.2
+        ]
+      }
+    },
+    {
+      "archivo": "ingreso_20260910_014736_209_9386.jpg",
+      "placa": "PSY589",
+      "escenario": "1.5:8",
+      "variante": "base",
+      "placa_registrada": "PSY589",
+      "acierto": true,
+      "lectura_valida": true,
+      "registros": 1,
+      "latencia_ms": 1510,
+      "captura_ms": 392,
+      "ingreso_ms": 1509,
+      "latencia_motor_ms": 1532,
+      "etapas_ms": {
+        "ocr_profundo": [
+          54.7
+        ],
+        "verificador": [
+          415.8
+        ],
+        "vehiculo": [
+          619.0
+        ]
+      }
+    },
+    {
+      "archivo": "ingreso_20260910_014736_209_9386.jpg",
+      "placa": "PSY589",
+      "escenario": "1.5:8",
+      "variante": "optimizada",
+      "placa_registrada": "PSY589",
+      "acierto": true,
+      "lectura_valida": true,
+      "registros": 1,
+      "latencia_ms": 1182,
+      "captura_ms": 336,
+      "ingreso_ms": 1182,
+      "latencia_motor_ms": 1243,
+      "etapas_ms": {
+        "ocr_profundo": [
+          98.9
+        ],
+        "verificador": [
+          574.7
+        ],
+        "vehiculo": [
+          846.3
+        ]
+      }
+    },
+    {
+      "archivo": "ingreso_20260914_225624_153_9050.jpg",
+      "placa": "PSY589",
+      "escenario": "1.5:8",
+      "variante": "optimizada",
+      "placa_registrada": null,
+      "acierto": false,
+      "lectura_valida": null,
+      "registros": 0,
+      "latencia_ms": null,
+      "captura_ms": 581,
+      "ingreso_ms": null,
+      "latencia_motor_ms": null,
+      "etapas_ms": {
+        "verificador": [
+          214.4,
+          250.0,
+          245.1,
+          34.7
+        ],
+        "vehiculo": [
+          724.2,
+          965.9
+        ],
+        "ocr_profundo": [
+          562.4,
+          771.9,
+          633.8,
+          369.4
+        ]
+      }
+    },
+    {
+      "archivo": "ingreso_20260914_225624_153_9050.jpg",
+      "placa": "PSY589",
+      "escenario": "1.5:8",
+      "variante": "base",
+      "placa_registrada": null,
+      "acierto": false,
+      "lectura_valida": null,
+      "registros": 0,
+      "latencia_ms": null,
+      "captura_ms": 519,
+      "ingreso_ms": null,
+      "latencia_motor_ms": null,
+      "etapas_ms": {
+        "ocr_profundo": [
+          272.3
+        ],
+        "verificador": [
+          131.1
+        ],
+        "vehiculo": [
+          662.3
+        ]
+      }
+    },
+    {
+      "archivo": "ingreso_20260915_001517_41_6159.jpg",
+      "placa": "PSY589",
+      "escenario": "1.5:8",
+      "variante": "base",
+      "placa_registrada": null,
+      "acierto": false,
+      "lectura_valida": null,
+      "registros": 0,
+      "latencia_ms": null,
+      "captura_ms": 329,
+      "ingreso_ms": null,
+      "latencia_motor_ms": null,
+      "etapas_ms": {
+        "ocr_profundo": [
+          46.4
+        ],
+        "verificador": [
+          38.0
+        ],
+        "vehiculo": [
+          554.5
+        ]
+      }
+    },
+    {
+      "archivo": "ingreso_20260915_001517_41_6159.jpg",
+      "placa": "PSY589",
+      "escenario": "1.5:8",
+      "variante": "optimizada",
+      "placa_registrada": "ZCW588",
+      "acierto": false,
+      "lectura_valida": false,
+      "registros": 1,
+      "latencia_ms": 1104,
+      "captura_ms": 473,
+      "ingreso_ms": 1104,
+      "latencia_motor_ms": 887,
+      "etapas_ms": {
+        "verificador": [
+          52.4,
+          44.2
+        ],
+        "ocr_profundo": [
+          83.2,
+          58.9
+        ],
+        "vehiculo": [
+          544.0
+        ]
+      }
+    },
+    {
+      "archivo": "ingreso_20260915_003138_97_5375.jpg",
+      "placa": "PSY589",
+      "escenario": "1.5:8",
+      "variante": "optimizada",
+      "placa_registrada": null,
+      "acierto": false,
+      "lectura_valida": null,
+      "registros": 0,
+      "latencia_ms": null,
+      "captura_ms": 250,
+      "ingreso_ms": null,
+      "latencia_motor_ms": null,
+      "etapas_ms": {
+        "verificador": [
+          185.7,
+          73.2,
+          334.4,
+          38.5,
+          42.6
+        ],
+        "ocr_profundo": [
+          540.2,
+          901.1,
+          997.8,
+          528.9,
+          538.3
+        ],
+        "vehiculo": [
+          793.4,
+          937.5
+        ]
+      }
+    },
+    {
+      "archivo": "ingreso_20260915_003138_97_5375.jpg",
+      "placa": "PSY589",
+      "escenario": "1.5:8",
+      "variante": "base",
+      "placa_registrada": "PSY150",
+      "acierto": false,
+      "lectura_valida": false,
+      "registros": 1,
+      "latencia_ms": 1618,
+      "captura_ms": 307,
+      "ingreso_ms": 1617,
+      "latencia_motor_ms": 1315,
+      "etapas_ms": {
+        "ocr_profundo": [
+          408.3,
+          537.7
+        ],
+        "verificador": [
+          150.2,
+          181.4
+        ],
+        "vehiculo": [
+          728.1,
+          641.1
+        ]
+      }
+    },
+    {
+      "archivo": "ingreso_20260915_010750_100_8315.jpg",
+      "placa": "PSY589",
+      "escenario": "1.5:8",
+      "variante": "base",
+      "placa_registrada": null,
+      "acierto": false,
+      "lectura_valida": null,
+      "registros": 0,
+      "latencia_ms": null,
+      "captura_ms": 652,
+      "ingreso_ms": null,
+      "latencia_motor_ms": null,
+      "etapas_ms": {
+        "ocr_profundo": [
+          94.4
+        ],
+        "verificador": [
+          45.9
+        ],
+        "vehiculo": [
+          530.3
+        ]
+      }
+    },
+    {
+      "archivo": "ingreso_20260915_010750_100_8315.jpg",
+      "placa": "PSY589",
+      "escenario": "1.5:8",
+      "variante": "optimizada",
+      "placa_registrada": null,
+      "acierto": false,
+      "lectura_valida": null,
+      "registros": 0,
+      "latencia_ms": null,
+      "captura_ms": 549,
+      "ingreso_ms": null,
+      "latencia_motor_ms": null,
+      "etapas_ms": {
+        "verificador": [
+          185.8,
+          36.1
+        ],
+        "ocr_profundo": [
+          399.2,
+          200.0
+        ],
+        "vehiculo": [
+          688.5
+        ]
+      }
+    },
+    {
+      "archivo": "ingreso_20260915_013734_219_9726.jpg",
+      "placa": "PSY589",
+      "escenario": "1.5:8",
+      "variante": "optimizada",
+      "placa_registrada": "PSY589",
+      "acierto": true,
+      "lectura_valida": true,
+      "registros": 1,
+      "latencia_ms": 1384,
+      "captura_ms": 211,
+      "ingreso_ms": 1384,
+      "latencia_motor_ms": 1377,
+      "etapas_ms": {
+        "ocr_profundo": [
+          74.9
+        ],
+        "vehiculo": [
+          1016.2
+        ],
+        "verificador": [
+          1106.3
+        ]
+      }
+    },
+    {
+      "archivo": "ingreso_20260915_013734_219_9726.jpg",
+      "placa": "PSY589",
+      "escenario": "1.5:8",
+      "variante": "base",
+      "placa_registrada": "PSY589",
+      "acierto": true,
+      "lectura_valida": true,
+      "registros": 1,
+      "latencia_ms": 1706,
+      "captura_ms": 366,
+      "ingreso_ms": 1705,
+      "latencia_motor_ms": 1728,
+      "etapas_ms": {
+        "ocr_profundo": [
+          53.4
+        ],
+        "verificador": [
+          571.0
+        ],
+        "vehiculo": [
+          676.9
+        ]
+      }
+    },
+    {
+      "archivo": "ingreso_20260917_221551_542_7287.jpg",
+      "placa": "PSY589",
+      "escenario": "1.5:8",
+      "variante": "base",
+      "placa_registrada": null,
+      "acierto": false,
+      "lectura_valida": null,
+      "registros": 0,
+      "latencia_ms": null,
+      "captura_ms": null,
+      "ingreso_ms": null,
+      "latencia_motor_ms": null,
+      "etapas_ms": {}
+    },
+    {
+      "archivo": "ingreso_20260917_221551_542_7287.jpg",
+      "placa": "PSY589",
+      "escenario": "1.5:8",
+      "variante": "optimizada",
+      "placa_registrada": null,
+      "acierto": false,
+      "lectura_valida": null,
+      "registros": 0,
+      "latencia_ms": null,
+      "captura_ms": null,
+      "ingreso_ms": null,
+      "latencia_motor_ms": null,
+      "etapas_ms": {}
+    },
+    {
+      "archivo": "ingreso_20260923_011950_464_9716.jpg",
+      "placa": "TBD7724",
+      "escenario": "1.5:8",
+      "variante": "optimizada",
+      "placa_registrada": "TBD7724",
+      "acierto": true,
+      "lectura_valida": true,
+      "registros": 1,
+      "latencia_ms": 2260,
+      "captura_ms": -1193,
+      "ingreso_ms": 2259,
+      "latencia_motor_ms": 1764,
+      "etapas_ms": {
+        "verificador": [
+          133.6,
+          135.9,
+          670.8,
+          993.8,
+          232.7
+        ],
+        "ocr_profundo": [
+          637.9,
+          517.4,
+          131.7,
+          167.8,
+          790.5
+        ],
+        "vehiculo": [
+          984.9,
+          991.1,
+          1718.6,
+          2111.5,
+          1174.2
+        ]
+      }
+    },
+    {
+      "archivo": "ingreso_20260923_011950_464_9716.jpg",
+      "placa": "TBD7724",
+      "escenario": "1.5:8",
+      "variante": "base",
+      "placa_registrada": "TBD7724",
+      "acierto": true,
+      "lectura_valida": true,
+      "registros": 1,
+      "latencia_ms": 1578,
+      "captura_ms": -1218,
+      "ingreso_ms": 1577,
+      "latencia_motor_ms": 1595,
+      "etapas_ms": {
+        "ocr_profundo": [
+          301.8,
+          59.7
+        ],
+        "verificador": [
+          79.8,
+          454.2
+        ],
+        "vehiculo": [
+          493.6,
+          648.6
+        ]
+      }
+    }
+  ]
+}
