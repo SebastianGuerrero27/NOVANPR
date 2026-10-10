@@ -1,5 +1,5 @@
 import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
-import api, { EVENTO_SESION_EXPIRADA, guardarToken, leerToken } from '../infraestructura/api';
+import api, { cuerpoError, EVENTO_SESION_EXPIRADA, guardarToken, leerToken, respuestaError } from '../infraestructura/api';
 import type { Permiso, Rol } from '../dominio/permisos';
 import { desvincularPush } from '../infraestructura/push';
 
@@ -122,12 +122,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       const res = await api.post('/auth/login', { email: email.trim().toLowerCase(), password });
       establecerSesion(res.data.token, res.data.user);
       return res.data.user;
-    } catch (error: any) {
-      const d = error.response?.data;
+    } catch (error) {
+      const d = cuerpoError(error);
+      const respuesta = respuestaError(error);
       throw new ErrorAcceso(
-        d?.error || (error.response ? 'Error al iniciar sesión.' : 'Sin conexión con el servidor.'),
+        d?.error || (respuesta ? 'Error al iniciar sesión.' : 'Sin conexión con el servidor.'),
         d?.codigo,
-        error.response?.status,
+        respuesta?.status,
       );
     }
   };

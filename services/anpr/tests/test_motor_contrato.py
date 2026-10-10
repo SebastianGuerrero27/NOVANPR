@@ -231,7 +231,7 @@ def test_estado_del_servicio_sin_iniciar_y_sin_credenciales(servicio):
     r = servicio.client.get("/status").json()
     assert r == {
         "status": "online", "running": False, "camera_source": "rtsp://anpr:******@mediamtx:8554/cam_1",
-        "capture_fps": 0.0, "tracker_fps": 0.0, "inferencias_omitidas_pct": None, "detector": None,
+        "capture_fps": 0.0, "tracker_fps": 0.0, "inferencias_omitidas_pct": None, "enlace_video": None, "detector": None,
         "detector_arquitectura": None, "ocr_engine": None, "ocr_verifier": None,
         "architecture": "Two-Phase: Fast Capture + Async OCR",
     }
@@ -281,6 +281,7 @@ def test_pistas_por_websocket_con_zona_de_movimiento(servicio, monkeypatch):
         }],
         "roi": None,
         "movimiento": {"caja": [0.1, 0.1, 0.5, 0.5], "porcentaje": 42},
+        "aspecto": 1.3333,
     }
 
 

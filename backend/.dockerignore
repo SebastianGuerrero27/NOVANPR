@@ -1,0 +1,11 @@
+# Contexto de backend/Dockerfile (desarrollo con docker-compose); producción usa Dockerfile.prod
+node_modules
+dist
+coverage
+logs
+media
+
+# Secretos y configuración local: nunca dentro de la imagen
+.env
+.env.*
+!.env.example

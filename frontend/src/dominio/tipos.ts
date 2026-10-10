@@ -84,6 +84,8 @@ export interface Camara {
   ip: string;
   ubicacion: string;
   rtsp_url: string;
+  /** Flujo secundario para la vista en vivo (contraseña enmascarada); null: la vista usa el principal */
+  rtsp_url_vista: string | null;
   tiene_credenciales: boolean;
   activa: boolean;
   estado: 'EN_LINEA' | 'SIN_CONEXION' | 'SIN_VERIFICAR';
@@ -117,6 +119,16 @@ export interface ResumenPanel {
   exactitud_ocr: { validadas: number; correctas: number };
 }
 
+/** Enlace del motor con el flujo principal de la cámara (lo informa el lector RTSP del motor). */
+export interface EnlaceVideo {
+  codec: string | null;
+  ancho: number | null;
+  alto: number | null;
+  fps_recibidos: number | null;
+  reconexiones: number | null;
+  ultimo_cuadro_hace_s: number | null;
+}
+
 export interface EstadoAnpr {
   en_linea: boolean;
   fps_captura?: number;
@@ -125,6 +137,7 @@ export interface EstadoAnpr {
   ocr?: string | null;
   verificador?: string | null;
   camara_activa?: { id: number; conectada: boolean } | null;
+  enlace?: EnlaceVideo | null;
   /** true si el motor procesa una fuente que no corresponde a ninguna cámara registrada */
   fuente_externa?: boolean;
   error?: string;

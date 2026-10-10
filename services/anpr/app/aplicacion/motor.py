@@ -39,6 +39,7 @@ from app.aplicacion.verificacion_placa import (
 from app.dominio.credenciales import sin_credenciales
 from app.dominio.ecuador_plate_validator import validate_ecuadorian_plate
 from app.dominio.memoria import purgar_expirados
+from app.dominio.tasa_cuadros import TasaCuadros
 
 # Ventana en la que un mismo vehículo (track o placa) no se registra dos veces
 PLATE_DEBOUNCE_SECONDS = 35.0
@@ -228,9 +229,22 @@ class MotorAnpr:
             "tracker_fps": round(self._pipeline.fps if self._pipeline else 0.0, 1),
             # Cuadros en que la compuerta de movimiento omitió el detector (escena quieta)
             "inferencias_omitidas_pct": round(100 * self._pipeline.proporcion_omitida("rtsp"), 1) if self._pipeline else None,
+            "enlace_video": self._enlace_video(),
             **self.info_modelos(),
             "architecture": "Two-Phase: Fast Capture + Async OCR",
         }
+
+    def _enlace_video(self) -> Optional[dict]:
+        """Salud del enlace con la fuente RTSP: códec, resolución, cuadros recibidos y reconexiones."""
+        try:
+            info = self._fuente.source_info if self._fuente is not None else None
+        except Exception:
+            info = None
+        if not info or info.get("type") != "rtsp":
+            return None
+        return {"codec": info.get("codec"), "ancho": info.get("width"), "alto": info.get("height"),
+                "fps_recibidos": info.get("fps_recibidos"), "reconexiones": info.get("reconexiones"),
+                "ultimo_cuadro_hace_s": info.get("ultimo_cuadro_hace_s")}
 
     def camara_activa(self) -> dict:
         conectada = self._fuente.is_connected if self._fuente else False
@@ -275,7 +289,9 @@ class MotorAnpr:
         movimiento = None
         if caja and vehiculo and porcentaje > 3:
             movimiento = {"caja": [n(caja[0], w), n(caja[1], h), n(caja[2], w), n(caja[3], h)], "porcentaje": porcentaje}
-        return {"pistas": pistas, "roi": pipeline.roi, "movimiento": movimiento}
+        # Proporción del cuadro que analiza el motor: el navegador avisa si la vista (flujo
+        # secundario) tiene otra y los recuadros no coincidirían con el video
+        return {"pistas": pistas, "roi": pipeline.roi, "movimiento": movimiento, "aspecto": round(w / h, 4)}
 
     # ─── Ciclo de vida ──────────────────────────────────────────────────────
 
@@ -455,7 +471,10 @@ class MotorAnpr:
         threading.Thread(target=self._hilo_deteccion, args=(pipeline, selector), daemon=True, name="ANPR-Detection-Worker").start()
 
         cuadros = 0
-        inicio_fps = time.time()
+        # Cuadros por segundo de la fuente: solo cuadros nuevos (read_frame puede repetir el último
+        # hasta 3 s) y 0 si dejan de llegar, para que el estado de la cámara no quede congelado
+        tasa = TasaCuadros()
+        ultimo_seq = None
         ventana = self._config.ventana_local
         fallos_seguidos = 0
         os.makedirs(self._dir_media, exist_ok=True)
@@ -468,6 +487,7 @@ class MotorAnpr:
 
             ok, frame = fuente.read_frame()
             if not ok or frame is None:
+                self._fps_captura = round(tasa.valor, 1)
                 fallos_seguidos += 1
                 if fallos_seguidos >= 40 and fallos_seguidos % 30 == 0:
                     self.buffer_video.update(self._dep.cuadro_espera(getattr(fuente, "_name", "Canal Activo")))
@@ -476,6 +496,10 @@ class MotorAnpr:
 
             fallos_seguidos = 0
             cuadros += 1
+            seq = getattr(fuente, "frame_seq", None)
+            if seq is None or seq != ultimo_seq:
+                tasa.registrar()
+                ultimo_seq = seq
             self.tamano_fuente["h"], self.tamano_fuente["w"] = frame.shape[:2]
 
             with self._candado_cuadro:
@@ -483,14 +507,9 @@ class MotorAnpr:
                 self._indice_cuadro = cuadros
             self._cuadro_nuevo.set()
 
-            # FPS con media móvil cada 10 cuadros
             if cuadros % 10 == 0:
-                transcurrido = time.time() - inicio_fps
-                if transcurrido > 0:
-                    instantaneo = 10.0 / transcurrido
-                    self._fps_captura = round(0.7 * self._fps_captura + 0.3 * instantaneo if self._fps_captura > 0 else instantaneo, 1)
-                    self._m.update_fps(self._fps_captura, str(self.camara_id))
-                inicio_fps = time.time()
+                self._fps_captura = round(tasa.valor, 1)
+                self._m.update_fps(self._fps_captura, str(self.camara_id))
 
             # HUD y buffer de video solo si alguien lo mira (ahorra CPU sin espectadores)
             if self._config.hud_activo and (ventana or self.buffer_video.viewers > 0):

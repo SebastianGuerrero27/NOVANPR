@@ -28,10 +28,16 @@ let contexto: AudioContext | null = null;
  * clic o tecla en la página se crea y activa el contexto de audio para que los avisos que
  * llegan después por tiempo real suenen de inmediato.
  */
+/** AudioContext (con prefijo webkit en Safari antiguos). */
+function nuevoContextoAudio(): AudioContext {
+  const Clase = window.AudioContext ?? (window as Window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+  return new Clase();
+}
+
 if (typeof window !== 'undefined') {
   const desbloquear = () => {
     try {
-      contexto ??= new (window.AudioContext || (window as any).webkitAudioContext)();
+      contexto ??= nuevoContextoAudio();
       contexto.resume().catch(() => undefined);
       const a = new Audio('/acceso_denegado.mp3');
       a.muted = true;
@@ -45,7 +51,7 @@ if (typeof window !== 'undefined') {
 }
 function audio(): AudioContext | null {
   try {
-    contexto ??= new (window.AudioContext || (window as any).webkitAudioContext)();
+    contexto ??= nuevoContextoAudio();
     if (contexto.state === 'suspended') contexto.resume().catch(() => undefined);
     return contexto;
   } catch {

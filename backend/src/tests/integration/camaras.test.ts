@@ -3,13 +3,16 @@
  * (crearApp), con una base de datos simulada en memoria y sin red (MediaMTX, motor ANPR y
  * diagnóstico RTSP/ICMP son dobles). Comprueba el contrato que consumen el frontend y
  * MediaMTX: rutas, permisos, códigos de estado y formato de las respuestas, y que la
- * contraseña RTSP nunca sale de la API aunque el formulario la devuelva enmascarada.
+ * contraseña RTSP nunca sale de la API aunque el formulario la devuelva enmascarada y se guarda
+ * cifrada (AES-256-GCM).
  */
 import request from 'supertest';
 import jwt from 'jsonwebtoken';
 import type { Express } from 'express';
+import { proteger, revelar } from '../../infraestructura/servicios/custodiaCredenciales';
 
 process.env.ANPR_SERVICE_TOKEN = 'token-de-prueba';
+process.env.CAMARAS_CLAVE_CIFRADO = Buffer.alloc(32, 7).toString('base64');
 
 const CLAVE = 'S3cr$&t';
 const URL_GUARDADA = `rtsp://admin:${CLAVE}@192.168.1.64:554/Streaming/Channels/101`;
@@ -42,7 +45,7 @@ jest.mock('../../infraestructura/db', () => {
         }
         if (/FROM Camaras c WHERE c\.id = @id/.test(texto)) return resultado(c ? [c] : []);
         if (/FROM Camaras c ORDER BY c\.nombre/.test(texto)) return resultado([...mockBase.camaras.values()]);
-        if (/SELECT id, nombre, ip, rtsp_url, activa FROM Camaras WHERE id = @id/.test(texto)) return resultado(c ? [c] : []);
+        if (/SELECT id, nombre, ip, rtsp_url, rtsp_url_vista, activa FROM Camaras WHERE id = @id/.test(texto)) return resultado(c ? [c] : []);
         if (/SELECT id, nombre, rtsp_url, ip FROM Camaras WHERE activa = 1/.test(texto)) {
           return resultado([...mockBase.camaras.values()].filter(x => x.activa));
         }
@@ -50,14 +53,17 @@ jest.mock('../../infraestructura/db', () => {
         if (/INSERT INTO Camaras \(/.test(texto)) {
           const nuevo = mockBase.siguienteId++;
           mockBase.camaras.set(nuevo, {
-            id: nuevo, nombre: entradas.nombre, ip: entradas.ip, rtsp_url: entradas.rtsp, ubicacion: entradas.ubicacion,
+            id: nuevo, nombre: entradas.nombre, ip: entradas.ip, rtsp_url: entradas.rtsp, rtsp_url_vista: entradas.vista,
+            ubicacion: entradas.ubicacion,
             activa: true, estado: 'SIN_VERIFICAR', ultimo_ping: null, tiempo_respuesta_ms: null, mensaje_ping: null,
             created_at: '2026-10-04T10:00:00.000Z', roi: null, detecciones: 0,
           });
           return resultado([{ id: nuevo }]);
         }
         if (/UPDATE Camaras SET nombre = @nombre/.test(texto)) {
-          if (c) Object.assign(c, { nombre: entradas.nombre, ip: entradas.ip, rtsp_url: entradas.rtsp, ubicacion: entradas.ubicacion });
+          if (c) {
+            Object.assign(c, { nombre: entradas.nombre, ip: entradas.ip, rtsp_url: entradas.rtsp, rtsp_url_vista: entradas.vista, ubicacion: entradas.ubicacion });
+          }
           return resultado();
         }
         if (/UPDATE Camaras SET activa = CASE/.test(texto)) {
@@ -125,7 +131,8 @@ const consultas = (patron: RegExp) => mockBase.consultas.filter(q => patron.test
 function reiniciar() {
   mockBase.camaras.clear();
   mockBase.camaras.set(3, {
-    id: 3, nombre: 'Garita norte', ip: '192.168.1.64', rtsp_url: URL_GUARDADA, ubicacion: 'Acceso vehicular norte', activa: true,
+    // Guardada como queda tras la migración v9: contraseña cifrada
+    id: 3, nombre: 'Garita norte', ip: '192.168.1.64', rtsp_url: proteger(URL_GUARDADA), ubicacion: 'Acceso vehicular norte', activa: true,
     estado: 'EN_LINEA', ultimo_ping: null, tiempo_respuesta_ms: 9, mensaje_ping: 'Flujo de video disponible',
     created_at: '2026-10-01T08:00:00.000Z', roi: null, detecciones: 0,
   });
@@ -212,7 +219,11 @@ describe('API · cámaras, monitoreo y medios', () => {
         .send({ nombre: 'Garita norte', ubicacion: 'Acceso vehicular norte', rtsp_url: URL_ENMASCARADA, ip: '' }).expect(200);
       expect(r.body.message).toBe('Cámara actualizada.');
       expect(r.body.camera.rtsp_url).toBe(URL_ENMASCARADA);
-      expect(consultas(/UPDATE Camaras SET nombre = @nombre/)[0].entradas.rtsp).toBe(URL_GUARDADA);
+      // Conserva la contraseña guardada: cifrada en la base y, descifrada, la URL real
+      const guardada = consultas(/UPDATE Camaras SET nombre = @nombre/)[0].entradas.rtsp;
+      expect(guardada).toMatch(/^rtsp:\/\/admin:enc\.v1\./);
+      expect(guardada).not.toContain(CLAVE);
+      expect(revelar(guardada)).toBe(URL_GUARDADA);
       expect(consultas(/INSERT INTO AuditoriaOperaciones/)[0].entradas)
         .toMatchObject({ accion: 'CAMARA_EDICION', eid: 3, detalle: 'Garita norte: sin cambios' });
       // 404 antes de validar
@@ -253,7 +264,7 @@ describe('API · cámaras, monitoreo y medios', () => {
     it('video: 409 deshabilitada; ruta y ticket; un fallo del servidor de video → 502', async () => {
       await request(app).post('/api/camaras/5/video').set(como('Guardia')).expect(409, { error: 'Habilite la cámara para reproducir su video.' });
       const v = await request(app).post('/api/camaras/3/video').set(como('Guardia')).expect(200);
-      expect(v.body).toEqual({ ruta: 'cam_3', ticket: expect.any(String), webrtc: expect.any(String) });
+      expect(v.body).toEqual({ ruta: 'cam_3', ruta_vista: null, ticket: expect.any(String), webrtc: expect.any(String) });
       medios.sincronizarRutas.mockRejectedValueOnce(new Error('MediaMTX caído'));
       await request(app).post('/api/camaras/3/video').set(como('Guardia')).expect(502, { error: 'El servidor de video no respondió.' });
     });

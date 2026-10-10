@@ -1,0 +1,38 @@
+# Cámara Hikvision simulada para la prueba de punta a punta (MediaMTX 1.21 con FFmpeg).
+# Solo RTSP en el 554, autenticación Digest como una Hikvision y las rutas del fabricante:
+#   /Streaming/Channels/101  principal  H.265 1920×1080 25 fps, GOP 25, sin B-frames
+#   /Streaming/Channels/102  secundario H.264 640×360  25 fps
+logLevel: info
+rtsp: yes
+rtspTransports: [tcp]
+rtspAddress: :554
+rtspAuthMethods: [digest]
+rtmp: no
+hls: no
+webrtc: no
+srt: no
+moq: no
+api: no
+metrics: no
+playback: no
+
+authMethod: internal
+authInternalUsers:
+  - user: admin
+    pass: "Ecu911@Garita#26"
+    ips: []
+    permissions:
+      - action: read
+  - user: any
+    pass:
+    ips: ['127.0.0.1', '::1']
+    permissions:
+      - action: publish
+
+paths:
+  Streaming/Channels/101:
+    runOnInit: ffmpeg -hide_banner -loglevel error -re -stream_loop -1 -i /w/principal_h265.mp4 -c copy -f rtsp -rtsp_transport tcp rtsp://127.0.0.1:554/Streaming/Channels/101
+    runOnInitRestart: yes
+  Streaming/Channels/102:
+    runOnInit: ffmpeg -hide_banner -loglevel error -re -stream_loop -1 -i /w/vista_h264.mp4 -c copy -f rtsp -rtsp_transport tcp rtsp://127.0.0.1:554/Streaming/Channels/102
+    runOnInitRestart: yes

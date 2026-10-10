@@ -46,7 +46,7 @@ export const TiempoRealProvider: React.FC<{ children: React.ReactNode }> = ({ ch
 export const useTiempoReal = () => useContext(TiempoRealContext);
 
 /** Suscribe un manejador a un evento; el manejador puede cambiar entre renders sin resuscribir. */
-export function useEvento<T = any>(evento: string, manejador: (datos: T) => void) {
+export function useEvento<T = unknown>(evento: string, manejador: (datos: T) => void) {
   const { socket } = useTiempoReal();
   const ref = useRef(manejador);
   ref.current = manejador;

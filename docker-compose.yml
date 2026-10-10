@@ -74,7 +74,7 @@ services:
       - prometheus
 
   mediamtx:
-    image: bluenviron/mediamtx:1.6.0
+    image: bluenviron/mediamtx:1.21.1
     container_name: anpr-mediamtx
     environment:
       # IP del equipo (host) que el navegador usa para WebRTC; agregar la IP de la LAN para
@@ -104,6 +104,10 @@ services:
       - DB_PORT=1433
       - DB_NAME=ANPR_ECU911
       - JWT_SECRET=${JWT_SECRET:?Defina JWT_SECRET en .env}
+      # Clave AES-256 de las contraseñas RTSP (openssl rand -base64 32); sin ella se deriva de JWT_SECRET.
+      # Al cambiarla, la anterior va en CAMARAS_CLAVE_CIFRADO_ANTERIOR: al arrancar se recifra todo
+      - CAMARAS_CLAVE_CIFRADO=${CAMARAS_CLAVE_CIFRADO:-}
+      - CAMARAS_CLAVE_CIFRADO_ANTERIOR=${CAMARAS_CLAVE_CIFRADO_ANTERIOR:-}
       - ANPR_SERVICE_TOKEN=${ANPR_SERVICE_TOKEN:?Defina ANPR_SERVICE_TOKEN en .env}
       - SMTP_HOST=${SMTP_HOST:-}
       - SMTP_PORT=${SMTP_PORT:-587}

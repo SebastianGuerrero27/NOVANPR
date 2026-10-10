@@ -24,12 +24,6 @@ WEBCAM_INDEX: int = int(os.getenv("WEBCAM_INDEX", "0"))
 RTSP_URL: str = os.getenv("RTSP_URL", os.getenv("RTSP_STREAM_URL", ""))
 DEBUG_SHOW_WINDOW: bool = os.getenv("DEBUG_SHOW_WINDOW", "false").lower() in ("true", "1", "yes")
 
-# Resiliencia RTSP
-RTSP_RECONNECT_DELAY_SEC: float = float(os.getenv("RTSP_RECONNECT_DELAY_SEC", "5"))
-RTSP_MAX_RECONNECT_DELAY_SEC: float = float(os.getenv("RTSP_MAX_RECONNECT_DELAY_SEC", "120"))
-RTSP_CONNECTION_TIMEOUT_SEC: float = float(os.getenv("RTSP_CONNECTION_TIMEOUT_SEC", "10"))
-RTSP_MAX_RETRIES: int = int(os.getenv("RTSP_MAX_RETRIES", "5"))
-
 # Resolución de captura
 FRAME_WIDTH: int = int(os.getenv("FRAME_WIDTH", "1280"))
 FRAME_HEIGHT: int = int(os.getenv("FRAME_HEIGHT", "720"))

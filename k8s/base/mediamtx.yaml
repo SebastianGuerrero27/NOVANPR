@@ -60,7 +60,7 @@ spec:
     spec:
       containers:
         - name: mediamtx
-          image: bluenviron/mediamtx:1.6.0
+          image: bluenviron/mediamtx:1.21.1
           env:
             - name: MTX_WEBRTCADDITIONALHOSTS
               valueFrom:

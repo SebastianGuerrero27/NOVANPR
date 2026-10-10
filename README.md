@@ -69,6 +69,7 @@ node backend/scripts/benchmark_notificaciones.js --api http://localhost:5000 --s
 | [docs/ROLES_Y_PERMISOS.md](docs/ROLES_Y_PERMISOS.md) | RBAC, separación de funciones, permisos de placa con horario (TRBAC) |
 | [docs/NOTIFICACIONES.md](docs/NOTIFICACIONES.md) | Centro de alarmas: tecnología, arquitectura, ciclo ISA-18.2, API y resultados |
 | [docs/SISTEMA_WEB.md](docs/SISTEMA_WEB.md) | Pantallas, tiempo real, video y seguridad |
+| [docs/CAMARA_HIKVISION_ANPR.md](docs/CAMARA_HIKVISION_ANPR.md) | Cámaras Hikvision (H.265/H.265+): estado del arte, doble flujo, credenciales cifradas, configuración, validación y lista de producción |
 | [docs/METODO_VERIFICACION_LECTURA.md](docs/METODO_VERIFICACION_LECTURA.md) | Validez de la lectura y regla de autorización |
 | [docs/EXPERIMENTO_MODELOS.md](docs/EXPERIMENTO_MODELOS.md) | Experimento de detectores y OCR, estadística |
 | [docs/BASE_DE_DATOS.md](docs/BASE_DE_DATOS.md) | Esquema v5 y reglas de negocio |

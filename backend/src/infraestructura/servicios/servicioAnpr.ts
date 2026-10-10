@@ -3,6 +3,8 @@
  * endpoints de control: el backend lo hace con el token de servicio y entrega al cliente
  * solo un ticket de corta duración para abrir el WebSocket de video.
  */
+import type { EnlaceVideo } from '../../aplicacion/camaras';
+
 const URL_INTERNA = () => (process.env.ANPR_SERVICE_URL || 'http://localhost:8000').replace(/\/$/, '');
 /** URL del servicio vista desde el navegador (para el WebSocket de video). */
 export const urlPublicaAnpr = () => (process.env.ANPR_PUBLIC_URL || 'http://localhost:8000').replace(/\/$/, '');
@@ -28,6 +30,7 @@ export interface EstadoAnpr {
   ocr?: string | null;
   verificador?: string | null;
   camara_activa?: { id: number; conectada: boolean } | null;
+  enlace?: EnlaceVideo | null;
   error?: string;
 }
 
@@ -39,6 +42,7 @@ export async function estadoServicioAnpr(): Promise<EstadoAnpr> {
       fps_captura: s.capture_fps, fps_procesamiento: s.tracker_fps,
       detector: s.detector, ocr: s.ocr_engine, verificador: s.ocr_verifier,
       camara_activa: c ? { id: c.camera_id, conectada: Boolean(c.is_connected) } : null,
+      enlace: s.enlace_video ?? null,
     };
   } catch (e: any) {
     return { en_linea: false, error: e.name === 'TimeoutError' ? 'Sin respuesta' : 'Servicio no disponible' };

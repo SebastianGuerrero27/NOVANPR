@@ -1,0 +1,43 @@
+# Dependencias DIRECTAS del motor (rangos). No se instalan tal cual: la imagen y el CI usan
+# requirements.txt, con las versiones exactas validadas (ver su cabecera para regenerarlo).
+# ==============================================================================
+# ECU 911 ANPR Microservice — Dependencias Python
+# ==============================================================================
+fastapi==0.115.12
+uvicorn==0.34.3
+python-dotenv==1.1.0
+
+# --- Visión por Computador ---
+opencv-python==4.11.0.86
+numpy>=1.26
+
+# --- Detección de Objetos (YOLOv11) ---
+ultralytics>=8.4          # YOLO26 (sin NMS) requiere 8.4+
+
+# --- OCR & ALPR ---
+easyocr==1.7.2
+pytesseract==0.3.13
+rapidocr-onnxruntime>=1.3.0
+# OCR especializado de placas (cct-s-v2) y verificador PP-OCRv6 con OpenVINO
+fast-plate-ocr[onnx]>=1.1
+rapidocr>=3.9
+openvino>=2025.0
+
+# --- Comunicación Async ---
+httpx==0.28.1
+python-socketio[asyncio_client]==5.16.2
+
+# --- Utilidades ---
+requests==2.32.3
+python-multipart==0.0.30
+
+# --- Optimización de Modelos ---
+onnx<1.20
+onnxruntime>=1.18.0
+# tensorrt==8.6.1  # Opcional, solo para GPUs NVIDIA
+
+# --- Monitoreo (Prometheus) ---
+prometheus-client>=0.20.0
+
+# Atributos del vehículo (marca, modelo, color) con CLIP zero-shot
+open_clip_torch>=3.0

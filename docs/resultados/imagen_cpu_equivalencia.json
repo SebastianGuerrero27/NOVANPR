@@ -1,0 +1,235 @@
+{
+ "fecha": "2026-10-08",
+ "objetivo": "Cambiar PyTorch de la rueda CUDA 13 (PyPI) a la solo CPU sin cambiar resultados ni velocidad del motor (despliegue sin GPU)",
+ "imagenes": {
+  "A": "anpr-anpr validada (torch 2.14.1+cu130, 16,9 GB)",
+  "B": "anpr-anpr con services/anpr/requirements.txt bloqueado (torch 2.14.1+cpu, 8,8 GB)"
+ },
+ "metodo": "Mismo código y modelos montados en ambas imágenes (services/anpr/scripts/equivalencia_imagen.py). Salidas: 107 capturas reales. Tiempos: 40 capturas x 2 pasadas por corrida, 8 rondas pareadas alternando el orden (A B en las rondas 1-3, B A en las 4-8), mismo portátil, CPU, 8 hilos de PyTorch.",
+ "equivalencia": {
+  "capturas": 107,
+  "con_placa": 106,
+  "diferencias": {
+   "cantidad_cajas": 0,
+   "texto_ocr": 0,
+   "texto_verificador": 0,
+   "etiquetas_vehiculo": 0
+  },
+  "iou_minima": 1.0,
+  "max_delta_confianza_detector": 0.0,
+  "max_delta_confianza_ocr": 0.0,
+  "max_delta_confianza_verificador": 0.0,
+  "max_delta_puntaje_vehiculo": 0.0,
+  "versiones_a": {
+   "torch": "2.14.1+cu130",
+   "cv2": "4.11.0",
+   "numpy": "2.5.3",
+   "ultralytics": "8.4.174",
+   "onnxruntime": "1.30.0",
+   "hilos_torch": 8,
+   "detector": "models/yolo26n_ecuador_candidato.pt",
+   "ocr": "fastalpr"
+  },
+  "versiones_b": {
+   "torch": "2.14.1+cpu",
+   "cv2": "4.11.0",
+   "numpy": "2.5.3",
+   "ultralytics": "8.4.174",
+   "onnxruntime": "1.30.0",
+   "hilos_torch": 8,
+   "detector": "models/yolo26n_ecuador_candidato.pt",
+   "ocr": "fastalpr"
+  }
+ },
+ "tiempos_ms_por_ronda": {
+  "1": {
+   "A": [
+    93.6,
+    342.9
+   ],
+   "B": [
+    120.4,
+    408.6
+   ]
+  },
+  "2": {
+   "A": [
+    117.4,
+    382.8
+   ],
+   "B": [
+    93.8,
+    336.5
+   ]
+  },
+  "3": {
+   "A": [
+    88.3,
+    321.4
+   ],
+   "B": [
+    105.1,
+    385.6
+   ]
+  },
+  "4": {
+   "A": [
+    78.1,
+    287.8
+   ],
+   "B": [
+    82.7,
+    285.2
+   ]
+  },
+  "5": {
+   "A": [
+    79.1,
+    269.8
+   ],
+   "B": [
+    73.6,
+    270.7
+   ]
+  },
+  "6": {
+   "A": [
+    77.5,
+    266.7
+   ],
+   "B": [
+    85.0,
+    280.5
+   ]
+  },
+  "7": {
+   "A": [
+    81.3,
+    282.4
+   ],
+   "B": [
+    79.6,
+    276.7
+   ]
+  },
+  "8": {
+   "A": [
+    77.7,
+    279.3
+   ],
+   "B": [
+    80.1,
+    281.0
+   ]
+  }
+ },
+ "tiempos_resumen": {
+  "detector": {
+   "mediana_A": 80.19999999999999,
+   "mediana_B": 83.85,
+   "dif_mediana": 3.5,
+   "dif_media": 3.4,
+   "b_mas_lenta": 5,
+   "rondas": 8,
+   "wilcoxon_W": 12,
+   "W_critico_5pct": 3,
+   "dif_media_rondas_estables": 1.5,
+   "dif_pct_estables": 1.9
+  },
+  "vehiculo": {
+   "mediana_A": 285.1,
+   "mediana_B": 283.1,
+   "dif_mediana": 1.3,
+   "dif_media": 11.5,
+   "b_mas_lenta": 5,
+   "rondas": 8,
+   "wilcoxon_W": 13,
+   "W_critico_5pct": 3,
+   "dif_media_rondas_estables": 1.6,
+   "dif_pct_estables": 0.6
+  }
+ },
+ "conclusion": "Salidas idénticas en las 107 capturas (cajas con IoU 1,0, mismos textos y confianzas). Sin diferencia de tiempo significativa (Wilcoxon pareado, n = 8: W = 12 en el detector y 13 en el vehículo, crítico 3 al 5 %); en las 5 rondas con el equipo estable, +1,9 % y +0,6 %. Se adopta la rueda solo CPU. En el motor completo, misma exactitud y latencia (ver latencia_motor_completo).",
+ "latencia_motor_completo": {
+  "metodo": "scripts/evaluar_latencia.py (motor de producción completo: captura, detección, OCR rápido y profundo, verificador, vehículo; cámara y backend simulados), 12 escenas reales, cruce de 1,5 s con 3 px de desenfoque, 2 rondas pareadas por imagen en orden A B / B A, contenedores aislados con el mismo código, modelos y OCR_ENGINE=plate",
+  "por_variante": {
+   "base": {
+    "B": {
+     "ronda1": {
+      "pasos": 12,
+      "registrados": 10,
+      "aciertos": 10,
+      "lecturas_validas": 9,
+      "latencia_mediana_ms": 1393.0,
+      "latencia_p90_ms": 2243
+     },
+     "ronda2": {
+      "pasos": 12,
+      "registrados": 10,
+      "aciertos": 10,
+      "lecturas_validas": 9,
+      "latencia_mediana_ms": 1602.5,
+      "latencia_p90_ms": 2655
+     }
+    },
+    "A": {
+     "ronda1": {
+      "pasos": 12,
+      "registrados": 10,
+      "aciertos": 10,
+      "lecturas_validas": 9,
+      "latencia_mediana_ms": 1691.5,
+      "latencia_p90_ms": 2021
+     },
+     "ronda2": {
+      "pasos": 12,
+      "registrados": 10,
+      "aciertos": 10,
+      "lecturas_validas": 9,
+      "latencia_mediana_ms": 1611.0,
+      "latencia_p90_ms": 1958
+     }
+    }
+   },
+   "optimizada": {
+    "B": {
+     "ronda1": {
+      "pasos": 12,
+      "registrados": 10,
+      "aciertos": 10,
+      "lecturas_validas": 8,
+      "latencia_mediana_ms": 1300.0,
+      "latencia_p90_ms": 1660
+     },
+     "ronda2": {
+      "pasos": 12,
+      "registrados": 10,
+      "aciertos": 10,
+      "lecturas_validas": 8,
+      "latencia_mediana_ms": 1214.0,
+      "latencia_p90_ms": 2028
+     }
+    },
+    "A": {
+     "ronda1": {
+      "pasos": 12,
+      "registrados": 10,
+      "aciertos": 10,
+      "lecturas_validas": 8,
+      "latencia_mediana_ms": 1253.5,
+      "latencia_p90_ms": 1693
+     },
+     "ronda2": {
+      "pasos": 12,
+      "registrados": 10,
+      "aciertos": 10,
+      "lecturas_validas": 9,
+      "latencia_mediana_ms": 1352.5,
+      "latencia_p90_ms": 1827
+     }
+    }
+   }
+  },
+  "conclusion": "Misma exactitud (10/12 registradas, 10 correctas en las 4 corridas) y misma latencia: variante de producción 1254 / 1353 ms (A) frente a 1300 / 1214 ms (B); la diferencia entre rondas de una misma imagen supera a la diferencia entre imágenes."
+ }
+}

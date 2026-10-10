@@ -7,6 +7,8 @@ import { type ReglaTexto, type Validado, validarEntero, validarHost, validarText
  *   nombre, ubicación  texto alfanumérico (3–100 y 3–150 caracteres)
  *   rtsp_url           rtsp:// o rtsps://, máximo 255 caracteres, sin espacios; la contraseña
  *                      nunca sale de la API (se enmascara y se recupera al editar)
+ *   rtsp_url_vista     opcional: flujo secundario (p. ej. Hikvision /Streaming/Channels/102) para
+ *                      la vista en vivo del navegador; mismas reglas que rtsp_url
  *   ip                 IPv4 o nombre de host para el ping (máximo 45); por omisión, el host de la URL
  *   roi                región de interés: polígono de 3 a 12 vértices normalizados (0–1)
  *
@@ -66,6 +68,17 @@ export function leerUrlRtsp(valor: unknown, guardada?: string | null): Validado<
   return { ok: true, valor: rtsp };
 }
 
+/**
+ * URL del flujo de vista (opcional; vacía = la vista usa el flujo principal). Si llega
+ * enmascarada se recupera la contraseña guardada de la vista o, si aún no había vista, la del
+ * flujo principal (las cámaras usan las mismas credenciales en ambos canales).
+ */
+export function leerUrlVista(valor: unknown, guardada?: string | null): Validado<string | null> {
+  if (valor === undefined || valor === null || (typeof valor === 'string' && !valor.trim())) return { ok: true, valor: null };
+  const r = leerUrlRtsp(valor, guardada);
+  return r.ok ? r : { ok: false, error: r.error.replace('URL RTSP', 'URL del flujo de vista') };
+}
+
 /** IP o host para el ping (opcional): validarHost y el largo de la columna Camaras.ip. */
 export function leerIp(valor: unknown): Validado<string | null> {
   const ip = validarHost(valor);
@@ -85,6 +98,8 @@ export interface EntradaCamara {
   nombre: string;
   ubicacion: string;
   rtsp: string;
+  /** Flujo de vista (null = la vista usa el principal) */
+  rtspVista: string | null;
   ip: string | null;
 }
 
@@ -93,11 +108,13 @@ export interface DatosCamara {
   nombre: string;
   ubicacion: string;
   rtsp: string;
+  rtspVista: string | null;
   ip: string;
 }
 
-/** Valida el alta o la edición; en la edición `rtspGuardada` permite conservar la contraseña. */
-export function leerCamara(entrada: Record<string, unknown> | null | undefined, rtspGuardada?: string | null): Validado<EntradaCamara> {
+/** Valida el alta o la edición; en la edición las URL guardadas permiten conservar la contraseña. */
+export function leerCamara(entrada: Record<string, unknown> | null | undefined, rtspGuardada?: string | null,
+  vistaGuardada?: string | null): Validado<EntradaCamara> {
   const body = entrada ?? {};
   const nombre = validarTexto(body.nombre, REGLAS_CAMARA.nombre);
   if (!nombre.ok) return nombre;
@@ -105,16 +122,23 @@ export function leerCamara(entrada: Record<string, unknown> | null | undefined, 
   if (!ubicacion.ok) return ubicacion;
   const rtsp = leerUrlRtsp(body.rtsp_url, rtspGuardada);
   if (!rtsp.ok) return rtsp;
+  const vista = leerUrlVista(body.rtsp_url_vista, vistaGuardada || rtspGuardada);
+  if (!vista.ok) return vista;
   const ip = leerIp(body.ip);
   if (!ip.ok) return ip;
-  return { ok: true, valor: { nombre: nombre.valor as string, ubicacion: ubicacion.valor as string, rtsp: rtsp.valor, ip: ip.valor } };
+  return {
+    ok: true,
+    valor: { nombre: nombre.valor as string, ubicacion: ubicacion.valor as string, rtsp: rtsp.valor, rtspVista: vista.valor, ip: ip.valor },
+  };
 }
 
 /** Campos que cambian en la edición (para la auditoría). */
-export function cambiosCamara(actual: { nombre: string; ubicacion: string; rtsp_url: string; ip: string }, nuevo: DatosCamara): string[] {
+export function cambiosCamara(actual: { nombre: string; ubicacion: string; rtsp_url: string; rtsp_url_vista?: string | null; ip: string },
+  nuevo: DatosCamara): string[] {
   return [
     actual.nombre !== nuevo.nombre && 'nombre', actual.ubicacion !== nuevo.ubicacion && 'ubicación',
-    actual.rtsp_url !== nuevo.rtsp && 'URL RTSP', actual.ip !== nuevo.ip && 'IP',
+    actual.rtsp_url !== nuevo.rtsp && 'URL RTSP', (actual.rtsp_url_vista ?? null) !== nuevo.rtspVista && 'URL de vista',
+    actual.ip !== nuevo.ip && 'IP',
   ].filter((c): c is string => Boolean(c));
 }
 
@@ -169,6 +193,7 @@ export interface CamaraGuardada {
   nombre: string;
   ip: string;
   rtsp_url: string;
+  rtsp_url_vista?: string | null;
   ubicacion: string;
   activa: boolean | number;
   estado: string | null;
@@ -189,6 +214,8 @@ export interface CamaraPublica {
   ubicacion: string;
   /** Con la contraseña enmascarada */
   rtsp_url: string;
+  /** Flujo de vista con la contraseña enmascarada (null = la vista usa el principal) */
+  rtsp_url_vista: string | null;
   tiene_credenciales: boolean;
   /** Habilitación administrativa */
   activa: boolean;
@@ -207,6 +234,7 @@ export function presentarCamara(c: CamaraGuardada): CamaraPublica {
   return {
     id: c.id, nombre: c.nombre, ip: c.ip, ubicacion: c.ubicacion,
     rtsp_url: enmascarar(c.rtsp_url || ''),
+    rtsp_url_vista: c.rtsp_url_vista ? enmascarar(c.rtsp_url_vista) : null,
     tiene_credenciales: tieneCredenciales(c.rtsp_url || ''),
     activa: Boolean(c.activa),
     estado: c.estado || 'SIN_VERIFICAR',
@@ -220,8 +248,8 @@ export function presentarCamara(c: CamaraGuardada): CamaraPublica {
 
 /** Ruta temporal de MediaMTX para probar una URL sin guardarla. */
 export const RE_RUTA_PRUEBA = /^prueba_[a-f0-9]{12}$/;
-/** Rutas de video consultables: cam_<id> de una cámara registrada o una ruta de prueba. */
-export const RE_RUTA_VIDEO = /^(cam_\d+|prueba_[a-f0-9]{12})$/;
+/** Rutas de video consultables: cam_<id> (flujo principal), cam_<id>_vista o una ruta de prueba. */
+export const RE_RUTA_VIDEO = /^(cam_\d+(_vista)?|prueba_[a-f0-9]{12})$/;
 
 /** stream: ver el video · webcam: enviar la webcam del navegador al motor (modo de prueba). */
 export const ALCANCES_TICKET = ['stream', 'webcam'] as const;

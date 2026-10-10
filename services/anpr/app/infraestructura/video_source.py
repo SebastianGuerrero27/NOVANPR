@@ -10,37 +10,36 @@ La selección se hace vía CAMERA_SOURCE en .env, nunca en código.
 
 from __future__ import annotations
 
+import os
 import threading
 import time
 from abc import ABC, abstractmethod
-from typing import Optional
+from typing import Any, Callable, Optional
 
 import cv2
 import numpy as np
 
-import os
-
-# Configuración global robusta para OpenCV FFmpeg (RTSP / IP Cameras)
-# Usa TCP para cero pérdida de paquetes y buffer cero para latencia mínima sin congelamiento
-os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = (
+# Opciones de FFmpeg para RTSP (OpenCV 4.10–4.11 incluye FFmpeg 5.1): transporte TCP (sin pérdida
+# de paquetes ni artefactos), sin búfer de entrada ni espera de reordenamiento (latencia mínima) y
+# límite de E/S del socket en microsegundos. En FFmpeg >= 5 esa opción se llama "timeout": la
+# antigua "stimeout" se ignoraba en silencio y una conexión estancada bloqueaba la lectura.
+OPCIONES_FFMPEG_RTSP = (
     "rtsp_transport;tcp"
     "|fflags;nobuffer"
     "|flags;low_delay"
     "|max_delay;100000"
-    "|stimeout;5000000"
+    "|timeout;5000000"
 )
+os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = OPCIONES_FFMPEG_RTSP
 
 from app.infraestructura.config import (
     CAMERA_SOURCE,
     FRAME_HEIGHT,
     FRAME_WIDTH,
-    RTSP_CONNECTION_TIMEOUT_SEC,
-    RTSP_MAX_RECONNECT_DELAY_SEC,
-    RTSP_MAX_RETRIES,
-    RTSP_RECONNECT_DELAY_SEC,
     RTSP_URL,
     WEBCAM_INDEX,
 )
+from app.dominio.tasa_cuadros import TasaCuadros
 from app.infraestructura.logger import get_logger
 
 logger = get_logger("video_source")
@@ -257,167 +256,148 @@ class WebcamSource(VideoSource):
 # =============================================================================
 
 
-def _is_host_reachable(url: str, timeout_sec: float = 0.5) -> bool:
-    """Verifica rápidamente por socket TCP si el host y puerto son alcanzables antes de llamar a OpenCV."""
+def _abrir_rtsp(url: str, abrir_ms: int, leer_ms: int) -> Optional[Any]:
+    """VideoCapture de FFmpeg con límites de espera propios de OpenCV al abrir y al leer: no dependen
+    del nombre de la opción en cada versión de FFmpeg y cortan una conexión estancada."""
     try:
-        import urllib.parse
-        import socket
-        parsed = urllib.parse.urlparse(url)
-        host = parsed.hostname
-        port = parsed.port or 554
-        if not host:
-            return True
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            s.settimeout(timeout_sec)
-            return s.connect_ex((host, port)) == 0
-    except Exception:
-        return False
+        cap = cv2.VideoCapture(url, cv2.CAP_FFMPEG,
+                               [cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, abrir_ms, cv2.CAP_PROP_READ_TIMEOUT_MSEC, leer_ms])
+        if cap.isOpened():
+            cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+            return cap
+        cap.release()
+    except Exception as e:
+        logger.debug("Excepción al abrir VideoCapture RTSP: %s", e)
+    return None
 
 
-def _send_rtsp_teardown(url: str) -> None:
-    """Envía un comando TEARDOWN rápido por TCP para cerrar sesiones zombies en servidores RTSP de celulares."""
+def _codec(cap: Any) -> Optional[str]:
+    """Códec del flujo (h264, hevc…) según el FOURCC que informa FFmpeg."""
     try:
-        import urllib.parse
-        import socket
-        parsed = urllib.parse.urlparse(url)
-        host = parsed.hostname
-        port = parsed.port or 554
-        if not host:
-            return
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            s.settimeout(0.4)
-            s.connect((host, port))
-            msg = f"TEARDOWN {url} RTSP/1.0\r\nCSeq: 99\r\nUser-Agent: ANPR-ECU911\r\n\r\n".encode()
-            s.sendall(msg)
-            s.recv(256)
+        valor = int(cap.get(cv2.CAP_PROP_FOURCC))
+        texto = "".join(chr((valor >> (8 * i)) & 0xFF) for i in range(4)).strip("\x00 ")
+        return texto.lower() or None
     except Exception:
-        pass
+        return None
 
 
 class RTSPSource(VideoSource):
     """
-    Fuente de video desde cámara IP vía RTSP.
+    Cámara IP por RTSP (en el sistema, la ruta cam_<id> de MediaMTX, que mantiene la conexión con
+    la cámara).
 
-    Implementa reconexión continua y Zero-Buffer Grabber para evitar
-    acumulación de fotogramas decodificados en el socket RTSP y garantizar
-    flujo ininterrumpido en el monitor en vivo ANPR.
+    - Un hilo lector drena el flujo y conserva solo el cuadro más reciente: el consumidor nunca
+      procesa cuadros atrasados ni acumula latencia.
+    - Límites de espera de OpenCV al abrir (8 s) y al leer (5 s): si la cámara o la red dejan de
+      enviar sin cerrar la sesión, la lectura no se bloquea; además un vigilante reconecta cuando
+      pasan `estancamiento_s` sin cuadros nuevos.
+    - Reconexión con espera creciente (1,5 s, 3 s, 6 s… hasta 10 s) mientras la fuente no responde.
+    - Salud del enlace en source_info: códec, resolución, cuadros por segundo recibidos,
+      reconexiones y antigüedad del último cuadro.
     """
 
-    def __init__(self, url: str = RTSP_URL) -> None:
+    def __init__(self, url: str = RTSP_URL, abrir_ms: int = 8000, leer_ms: int = 5000, estancamiento_s: float = 5.0,
+                 abrir: Optional[Callable[[str, int, int], Any]] = None) -> None:
         self._url = url
-        self._cap: Optional[cv2.VideoCapture] = None
-        self._consecutive_failures = 0
-        self._max_consecutive_read_failures = 60
-        self._last_disconnect_time: Optional[float] = None
+        self._abrir_ms, self._leer_ms, self._estancamiento_s = abrir_ms, leer_ms, estancamiento_s
+        self._abrir = abrir or _abrir_rtsp
+        self._cap: Optional[Any] = None
         self._lock = threading.Lock()
         self._latest_frame: Optional[np.ndarray] = None
         self._grab_running = False
         self._grab_thread: Optional[threading.Thread] = None
         self._new_frame_event = threading.Event()
         self._frame_seq = 0
+        #: Último cuadro recibido (estado del enlace y cuadros por segundo)
         self._last_frame_time = 0.0
+        #: Inicio de la conexión vigente (el vigilante cuenta desde aquí si aún no llegó un cuadro)
+        self._conectado_en = 0.0
+        self._consecutive_failures = 0
+        self._tasa = TasaCuadros()
+        self._codec: Optional[str] = None
+        self._conectada_antes = False
+        #: Reconexiones tras la primera conexión (pérdidas del enlace recuperadas)
+        self.reconexiones = 0
 
     def connect(self) -> bool:
-        safe_url = self._mask_credentials(self._url)
-        logger.info("Iniciando conexión RTSP y hilo grabber continuo: %s", safe_url)
-
-        # Configurar opciones optimizadas de captura FFmpeg para RTSP sin retrasos
-        os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = (
-            "rtsp_transport;tcp"
-            "|fflags;nobuffer"
-            "|flags;low_delay"
-            "|max_delay;100000"
-            "|stimeout;5000000"
-        )
-
+        logger.info("Iniciando conexión RTSP y hilo lector continuo: %s", self._mask_credentials(self._url))
         self._grab_running = True
         if self._grab_thread is None or not self._grab_thread.is_alive():
             self._grab_thread = threading.Thread(target=self._grab_loop, daemon=True, name="RTSPGrabber")
             self._grab_thread.start()
-
         return True
 
-    def _open_capture(self) -> Optional[cv2.VideoCapture]:
+    def _open_capture(self) -> Optional[Any]:
         if not self._url:
             return None  # sin cámara asignada: el backend la asigna al arrancar
-        try:
-            cap = cv2.VideoCapture(self._url, cv2.CAP_FFMPEG)
-            if cap.isOpened():
-                cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-                return cap
-            else:
+        return self._abrir(self._url, self._abrir_ms, self._leer_ms)
+
+    def _cerrar_captura(self) -> None:
+        cap, self._cap = self._cap, None
+        with self._lock:
+            self._latest_frame = None  # un cuadro de antes de la caída no debe parecer reciente
+        if cap is not None:
+            try:
                 cap.release()
-                return None
-        except Exception as e:
-            logger.debug("Excepción al abrir VideoCapture RTSP: %s", e)
-            return None
+            except Exception:
+                pass
 
     def _grab_loop(self) -> None:
-        """
-        Hilo grabber autónomo y continuo:
-        Mantiene la conexión abierta y drena activamente el socket RTSP con grab() y retrieve()
-        para que _latest_frame sea siempre el fotograma más fresco del sensor.
-        Se auto-reconecta automáticamente si la red o cámara se interrumpe.
-        """
-        last_connect_try = 0.0
+        """Hilo lector: conecta, drena el flujo, vigila el estancamiento y reconecta."""
         safe_url = self._mask_credentials(self._url)
-
+        intentos = 0
+        proximo_intento = 0.0
         while self._grab_running:
-            if self._cap is None or not self._cap.isOpened():
-                now = time.time()
-                if now - last_connect_try >= 1.5:
-                    last_connect_try = now
-                    new_cap = self._open_capture()
-                    if new_cap is not None:
-                        self._cap = new_cap
-                        logger.info("Stream RTSP conectado exitosamente a %s", safe_url)
-                        self._consecutive_failures = 0
-                time.sleep(0.04)
+            if self._cap is None:
+                if time.time() < proximo_intento or not self._url:
+                    time.sleep(0.05)
+                    continue
+                cap = self._open_capture()
+                if cap is None:
+                    intentos += 1
+                    proximo_intento = time.time() + min(10.0, 1.5 * 2 ** (intentos - 1))
+                    continue
+                intentos = 0
+                self._cap = cap
+                self._codec = _codec(cap)
+                self._conectado_en = time.time()
+                if self._conectada_antes:
+                    self.reconexiones += 1
+                self._conectada_antes = True
+                logger.info("Flujo RTSP conectado (%s): %s", self._codec or "códec desconocido", safe_url)
                 continue
 
             try:
-                ret = self._cap.grab()
-                if ret:
-                    ret, frame = self._cap.retrieve()
-                    if ret and frame is not None:
-                        with self._lock:
-                            self._latest_frame = frame
-                            self._last_frame_time = time.time()
-                            self._frame_seq += 1
-                        self._new_frame_event.set()
-                        self._consecutive_failures = 0
-                    else:
-                        self._consecutive_failures += 1
-                else:
-                    self._consecutive_failures += 1
+                ok = self._cap.grab()
+                frame = self._cap.retrieve()[1] if ok else None
             except Exception as e:
-                logger.debug("Error en grab RTSP: %s", e)
-                self._consecutive_failures += 1
+                logger.debug("Error en la lectura RTSP: %s", e)
+                ok, frame = False, None
+            ahora = time.time()
+            if ok and frame is not None:
+                self._tasa.registrar()
+                with self._lock:
+                    self._latest_frame = frame
+                    self._last_frame_time = ahora
+                    self._frame_seq += 1
+                self._new_frame_event.set()
+                self._consecutive_failures = 0
+                continue
 
-            if not self._grab_running:
-                break
-
-            if self._consecutive_failures >= 30:
-                # Si fallan 30 lecturas consecutivas, liberar y forzar reconexión limpia
-                if self._cap is not None:
-                    try:
-                        self._cap.release()
-                    except Exception:
-                        pass
-                    self._cap = None
-                time.sleep(0.1)
+            self._consecutive_failures += 1
+            sin_cuadros = ahora - max(self._last_frame_time, self._conectado_en)
+            if sin_cuadros >= self._estancamiento_s:
+                logger.warning("Flujo RTSP sin cuadros hace %.1f s: reconectando %s", sin_cuadros, safe_url)
+                self._cerrar_captura()
             else:
-                time.sleep(0.001)
+                time.sleep(0.01)
+        self._cerrar_captura()
 
     def read_frame(self, timeout: float = 0.01) -> tuple[bool, Optional[np.ndarray]]:
         if self._new_frame_event.wait(timeout=timeout):
             self._new_frame_event.clear()
-
         with self._lock:
-            if self._latest_frame is None:
-                return False, None
-            # Permitir que el último cuadro sea válido hasta por 3.0s antes de declarar frame muerto
-            if time.time() - self._last_frame_time > 3.0:
+            if self._latest_frame is None or time.time() - self._last_frame_time > 3.0:
                 return False, None
             return True, self._latest_frame.copy()
 
@@ -425,40 +405,43 @@ class RTSPSource(VideoSource):
         self._grab_running = False
         self._new_frame_event.set()
         if self._grab_thread and self._grab_thread.is_alive() and threading.current_thread() != self._grab_thread:
-            self._grab_thread.join(timeout=0.8)
-        with self._lock:
-            if self._cap is not None:
-                try:
-                    self._cap.release()
-                except Exception:
-                    pass
-                self._cap = None
-                self._latest_frame = None
-                logger.info("Conexión RTSP liberada.")
+            self._grab_thread.join(timeout=self._leer_ms / 1000.0 + 1.0)
+        self._cerrar_captura()
+        logger.info("Conexión RTSP liberada.")
 
     def reconnect_with_backoff(self) -> bool:
         self.release()
         return self.connect()
 
     @property
+    def frame_seq(self) -> int:
+        """Número del último cuadro recibido: el consumidor distingue un cuadro nuevo de uno repetido."""
+        return self._frame_seq
+
+    @property
     def is_connected(self) -> bool:
-        return (
-            self._cap is not None
-            and self._cap.isOpened()
-            and (time.time() - getattr(self, "_last_frame_time", 0.0) <= 3.0)
-        )
+        """Recibe cuadros por la conexión vigente (los de una conexión anterior no cuentan)."""
+        return (self._cap is not None and self._last_frame_time >= self._conectado_en
+                and time.time() - self._last_frame_time <= 3.0)
 
     @property
     def source_info(self) -> dict:
         info = {
             "type": "rtsp",
             "url": self._mask_credentials(self._url),
+            "codec": self._codec,
+            "fps_recibidos": round(self._tasa.valor, 1),
+            "reconexiones": self.reconexiones,
+            "ultimo_cuadro_hace_s": round(time.time() - self._last_frame_time, 1) if self._last_frame_time else None,
             "consecutive_failures": self._consecutive_failures,
         }
-        if self._cap and self._cap.isOpened():
-            info["width"] = int(self._cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-            info["height"] = int(self._cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-            info["fps"] = round(self._cap.get(cv2.CAP_PROP_FPS), 1)
+        cap = self._cap
+        if cap is not None:
+            try:
+                info["width"] = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+                info["height"] = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            except Exception:
+                pass
         return info
 
     @staticmethod
@@ -466,173 +449,6 @@ class RTSPSource(VideoSource):
         """Enmascara usuario:contraseña en la URL RTSP para logging seguro."""
         import re
         return re.sub(r"://([^:]+):([^@]+)@", r"://****:****@", url)
-
-
-# =============================================================================
-# Implementación: Pantalla de Espera Táctica (Cero Simulación)
-# =============================================================================
-
-
-class StandbyVideoSource(VideoSource):
-    """
-    Fuente de video estática de espera cuando la cámara física está desconectada.
-    NO genera vehículos ni placas simuladas, solo un cuadro informativo sin detecciones.
-    Garantiza CERO ingresos falsos en la base de datos.
-    """
-
-    def __init__(self, fps: float = 10.0, width: int = FRAME_WIDTH, height: int = FRAME_HEIGHT) -> None:
-        self._fps = fps
-        self._width = width
-        self._height = height
-        self._is_connected = False
-        self._last_time = time.time()
-
-    def connect(self) -> bool:
-        self._is_connected = True
-        logger.info("StandbyVideoSource: Modo espera táctico activo (Cero simulación).")
-        return True
-
-    def read_frame(self) -> tuple[bool, Optional[np.ndarray]]:
-        if not self._is_connected:
-            return False, None
-
-        target_interval = 1.0 / self._fps
-        t_now = time.time()
-        elapsed = t_now - self._last_time
-        if elapsed < target_interval:
-            time.sleep(target_interval - elapsed)
-        self._last_time = time.time()
-
-        h, w = self._height, self._width
-        frame = np.zeros((h, w, 3), dtype=np.uint8)
-        frame[:] = (24, 18, 14)  # Fondo navy oscuro
-
-        # Cuadrícula tenue de standby
-        for y in range(0, h, 40):
-            cv2.line(frame, (0, y), (w, y), (35, 25, 20), 1)
-        for x in range(0, w, 40):
-            cv2.line(frame, (x, 0), (x, h), (35, 25, 20), 1)
-
-        cv2.rectangle(frame, (0, 0), (w, 36), (15, 12, 10), -1)
-        cv2.putText(frame, "ECU 911 | CANAL EN ESPERA DE DISPOSITIVO FISICO", (20, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.52, (0, 220, 255), 1, cv2.LINE_AA)
-
-        cx, cy = w // 2, h // 2
-        cv2.rectangle(frame, (cx - 280, cy - 50), (cx + 280, cy + 50), (32, 22, 18), -1)
-        cv2.rectangle(frame, (cx - 280, cy - 50), (cx + 280, cy + 50), (0, 180, 255), 1)
-        cv2.putText(frame, "SIN SENAL DE VIDEO RTSP / HARDWARE", (cx - 240, cy - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (255, 255, 255), 2, cv2.LINE_AA)
-        cv2.putText(frame, "Modo simulacion desactivado. Esperando camara real...", (cx - 220, cy + 25), cv2.FONT_HERSHEY_SIMPLEX, 0.48, (160, 200, 220), 1, cv2.LINE_AA)
-
-        return True, frame
-
-    def release(self) -> None:
-        self._is_connected = False
-        logger.info("StandbyVideoSource liberado.")
-
-    @property
-    def is_connected(self) -> bool:
-        return self._is_connected
-
-    @property
-    def source_info(self) -> dict:
-        return {
-            "type": "standby",
-            "width": self._width,
-            "height": self._height,
-            "fps": self._fps,
-            "mode": "Sin señal (Cero simulación)"
-        }
-
-
-# =============================================================================
-# Implementación: Fuente Resiliente con Auto-Fallback
-# =============================================================================
-
-
-class ResilientVideoSource(VideoSource):
-    """
-    Fuente de video híbrida y autorreparable.
-    Intenta conectarse a la fuente primaria (RTSP o Webcam). Si no responde tras
-    los reintentos iniciales, conmuta a StandbyVideoSource mostrando pantalla táctica
-    de espera (CERO vehículos falsos ni simulación).
-    """
-
-    def __init__(self, primary_source: VideoSource) -> None:
-        self._primary = primary_source
-        self._fallback = StandbyVideoSource()
-        self._using_fallback = False
-        self._consecutive_read_failures = 0
-        self._max_consecutive_failures = 15
-        self._last_reconnect_attempt = 0.0
-
-    def connect(self) -> bool:
-        logger.info("ResilientVideoSource: Intentando conexión a fuente primaria...")
-        if self._primary.connect():
-            self._using_fallback = False
-            self._consecutive_read_failures = 0
-            logger.info("ResilientVideoSource: Fuente primaria conectada exitosamente.")
-            return True
-
-        logger.warning(
-            "ResilientVideoSource: Fuente primaria no disponible. "
-            "Activando modo de espera táctico (Cero simulación)..."
-        )
-        self._using_fallback = True
-        return self._fallback.connect()
-
-    def read_frame(self) -> tuple[bool, Optional[np.ndarray]]:
-        if not self._using_fallback:
-            ret, frame = self._primary.read_frame()
-            if ret and frame is not None:
-                self._consecutive_read_failures = 0
-                return True, frame
-
-            self._consecutive_read_failures += 1
-            if self._consecutive_read_failures >= self._max_consecutive_failures:
-                logger.warning(
-                    "Pérdida de señal en cámara física (%d cuadros). Conmutando a pantalla de espera...",
-                    self._consecutive_read_failures,
-                )
-                self._using_fallback = True
-                self._fallback.connect()
-                return self._fallback.read_frame()
-
-            return False, None
-
-        # Si estamos en modo fallback, intentar reconectar a la cámara física cada 15 segundos
-        now = time.time()
-        if now - self._last_reconnect_attempt >= 15.0:
-            self._last_reconnect_attempt = now
-            if self._primary.connect():
-                ret, frame = self._primary.read_frame()
-                if ret and frame is not None:
-                    logger.info("Cámara física restablecida. Retornando a stream de hardware en vivo.")
-                    self._using_fallback = False
-                    self._consecutive_read_failures = 0
-                    return True, frame
-
-        return self._fallback.read_frame()
-
-    def release(self) -> None:
-        if self._primary:
-            self._primary.release()
-        if self._fallback:
-            self._fallback.release()
-
-    @property
-    def is_connected(self) -> bool:
-        if self._using_fallback:
-            return self._fallback.is_connected
-        return self._primary.is_connected
-
-    @property
-    def source_info(self) -> dict:
-        if self._using_fallback:
-            info = self._fallback.source_info
-            info["status"] = "fallback_simulado"
-            return info
-        info = self._primary.source_info
-        info["status"] = "hardware_online"
-        return info
 
 
 # =============================================================================

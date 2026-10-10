@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   AlertTriangle, BarChart3, BellRing, Copy, Download, FileJson, FileSpreadsheet, FileText, FlaskConical, RefreshCw,
 } from 'lucide-react';
-import api, { mensajeError } from '../../infraestructura/api';
+import api, { cuerpoError, mensajeError } from '../../infraestructura/api';
 import type { MetricasNotificacion } from '../../dominio/tipos';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -274,8 +274,8 @@ const Evaluacion: React.FC = () => {
     try {
       const res = await api.get('/evaluacion/resumen', { params });
       setDatos(res.data);
-    } catch (e: any) {
-      setError(e.response?.data?.error || 'No se pudieron cargar las métricas de evaluación.');
+    } catch (e) {
+      setError(cuerpoError(e)?.error || 'No se pudieron cargar las métricas de evaluación.');
     } finally {
       setCargando(false);
     }

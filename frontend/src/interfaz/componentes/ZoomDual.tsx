@@ -51,7 +51,6 @@ const PanelZoom: React.FC<{ titulo: string; icono: React.ReactNode; ruta: string
     };
     el.addEventListener('wheel', rueda, { passive: false });
     return () => el.removeEventListener('wheel', rueda);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [src, error]);
 
   const boton = (onClick: () => void, deshabilitado: boolean, titulo: string, icono: React.ReactNode) => (

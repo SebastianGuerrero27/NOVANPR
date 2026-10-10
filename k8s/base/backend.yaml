@@ -88,6 +88,19 @@ spec:
                 secretKeyRef:
                   name: anpr-secrets
                   key: ANPR_SERVICE_TOKEN
+            # Clave AES-256 de las contraseñas RTSP de las cámaras (docs/CAMARA_HIKVISION_ANPR.md)
+            - name: CAMARAS_CLAVE_CIFRADO
+              valueFrom:
+                secretKeyRef:
+                  name: anpr-secrets
+                  key: CAMARAS_CLAVE_CIFRADO
+            # Solo durante una rotación: la clave anterior (para descifrar y volver a cifrar al arrancar)
+            - name: CAMARAS_CLAVE_CIFRADO_ANTERIOR
+              valueFrom:
+                secretKeyRef:
+                  name: anpr-secrets
+                  key: CAMARAS_CLAVE_CIFRADO_ANTERIOR
+                  optional: true
             - name: SMTP_PASSWORD
               valueFrom:
                 secretKeyRef:

@@ -42,3 +42,17 @@ def test_estado_confirmada_no_borra_la_placa():
     info = pipeline.get_track_info(3)
     assert info["plate"] == "PBA1234"
     assert info["status"] == "confirmada"
+
+
+def test_capacidad_de_analisis_baja_a_cero_sin_cuadros(monkeypatch):
+    """Con la cámara caída no se analiza nada: Monitoreo no debe mostrar el último valor."""
+    import app.aplicacion.detector as detector_mod
+    pipeline = DetectionPipeline(detector=MockDetector())
+    reloj = {"t": 1000.0}
+    monkeypatch.setattr(detector_mod.time, "time", lambda: reloj["t"])
+    pipeline._fps_window = [0.05] * 5
+    pipeline._last_fps_calc = 0.0
+    pipeline._medir_fps(detector_mod.time.perf_counter())
+    assert pipeline.fps > 0
+    reloj["t"] += 2.5
+    assert pipeline.fps == 0.0

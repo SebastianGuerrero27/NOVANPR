@@ -77,13 +77,28 @@ describe('migraciones de esquema', () => {
   describe('migración v8 · versión de las solicitudes (concurrencia optimista)', () => {
     const v8 = fs.readFileSync(path.join(DIR_DB, 'migration_v8_solicitudes_version.sql'), 'utf8');
 
-    it('es la última migración registrada', () => {
-      expect(MIGRACIONES[MIGRACIONES.length - 1]).toBe('migration_v8_solicitudes_version.sql');
+    it('se aplica antes de la v9', () => {
+      expect(MIGRACIONES.indexOf('migration_v8_solicitudes_version.sql')).toBe(MIGRACIONES.indexOf('migration_v9_camaras_vista_cifrado.sql') - 1);
     });
 
     it('agrega la columna una sola vez, no nula y con versión inicial 1', () => {
       expect(v8).toContain("IF COL_LENGTH('dbo.SolicitudesAcceso', 'version') IS NULL");
       expect(v8).toMatch(/ALTER TABLE SolicitudesAcceso ADD version INT NOT NULL CONSTRAINT DF_SolicitudesAcceso_version DEFAULT 1;/);
+    });
+  });
+
+  describe('migración v9 · flujo de vista y credenciales cifradas de las cámaras', () => {
+    const v9 = fs.readFileSync(path.join(DIR_DB, 'migration_v9_camaras_vista_cifrado.sql'), 'utf8');
+
+    it('es la última migración registrada', () => {
+      expect(MIGRACIONES[MIGRACIONES.length - 1]).toBe('migration_v9_camaras_vista_cifrado.sql');
+    });
+
+    it('amplía rtsp_url a 512 (el texto cifrado ocupa más) y agrega rtsp_url_vista, ambas idempotentes', () => {
+      expect(v9).toContain("IF COL_LENGTH('dbo.Camaras', 'rtsp_url') < 512");
+      expect(v9).toMatch(/ALTER TABLE Camaras ALTER COLUMN rtsp_url VARCHAR\(512\) NOT NULL;/);
+      expect(v9).toContain("IF COL_LENGTH('dbo.Camaras', 'rtsp_url_vista') IS NULL");
+      expect(v9).toMatch(/ALTER TABLE Camaras ADD rtsp_url_vista VARCHAR\(512\) NULL;/);
     });
   });
 });

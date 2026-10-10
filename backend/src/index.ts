@@ -6,6 +6,7 @@ import { crearApp } from './app';
 import { connectDB } from './infraestructura/db';
 import { initSocket } from './infraestructura/servicios/socket';
 import { iniciarSincronizacionMedios } from './infraestructura/servicios/medios';
+import { protegerCredencialesGuardadas } from './infraestructura/servicios/custodiaCredenciales';
 import { iniciarMonitorCamaras } from './infraestructura/servicios/conectividadCamaras';
 import { iniciarSincronizacionMotor } from './infraestructura/servicios/camaraMotor';
 import { iniciarWebPush } from './infraestructura/servicios/webPush';
@@ -19,6 +20,7 @@ async function startServer() {
   try {
     // Base de datos (con reintentos) y esquema; luego los canales de tiempo real y las tareas
     const pool = await connectDB();
+    await protegerCredencialesGuardadas(pool);
     await iniciarWebPush(pool);
 
     initSocket(server);

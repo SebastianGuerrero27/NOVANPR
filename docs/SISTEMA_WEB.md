@@ -60,12 +60,15 @@ Método, regla de decisión y protocolo de evaluación: [METODO_VERIFICACION_LEC
   para la pestaña cerrada ([NOTIFICACIONES.md](NOTIFICACIONES.md)).
 - **Video en vivo (WebRTC):** cámara → MediaMTX → navegador por WebRTC (WHEP), sin
   transcodificar: el H.264 de la cámara llega tal cual y el navegador lo decodifica por hardware,
-  con búfer de reproducción mínimo. Retardo típico en red local: 0,2–0,5 s (se muestra en el
+  con búfer de reproducción mínimo. **Doble flujo:** si la cámara tiene flujo secundario
+  (`rtsp_url_vista`, ruta `cam_<id>_vista`), el navegador muestra ese (H.264 640×360, ~0,5 Mb/s)
+  y el motor analiza el principal (1080p, H.265 o H.264); ver
+  [CAMARA_HIKVISION_ANPR.md](CAMARA_HIKVISION_ANPR.md). Retardo típico en red local: 0,2–0,5 s (se muestra en el
   visor). Las cajas de detección llegan aparte, como JSON (`/ws/pistas` del motor, ~10 envíos/s),
   y se dibujan sobre el video. El video se cierra al pausar u ocultar la pestaña.
 - **Una sola conexión por cámara:** MediaMTX abre la cámara bajo demanda y la reparte al motor
   ANPR (RTSP interno) y a todos los visores; útil para celulares y cámaras con límite de clientes.
-- **Modo compatibilidad:** si WebRTC no está disponible (UDP bloqueado, cámara en H.265), el
+- **Modo compatibilidad:** si WebRTC no está disponible (UDP bloqueado, cámara solo H.265 y sin flujo secundario), el
   visor cambia a JPEG por WebSocket desde el motor (480–960 px, 5–15 fps).
 - **Imágenes:** carga diferida (`loading="lazy"`) y caché de 6 h gracias a URLs firmadas estables.
 
@@ -76,9 +79,12 @@ Método, regla de decisión y protocolo de evaluación: [METODO_VERIFICACION_LEC
 - Evidencia fotográfica solo con enlace firmado HMAC con vencimiento (`/media/...?exp&firma`).
 - El navegador no llama a los endpoints de control del motor: el backend cambia la cámara con el
   token de servicio y entrega un **ticket de 60 s** para abrir el WebSocket de video.
-- Credenciales RTSP enmascaradas en la API, el video y los registros del motor.
+- Credenciales RTSP enmascaradas en la API, el video y los registros del motor, y **cifradas en la
+  base** (AES-256-GCM dentro de la URL, clave `CAMARAS_CLAVE_CIFRADO` con rotación); se descifran
+  solo en memoria para MediaMTX y el diagnóstico.
 - Diagnóstico de cámaras: **Ping** (ICMP con `execFile`, host validado, sin consola) y DESCRIBE
-  RTSP con autenticación Basic/Digest; **Play** reproduce el flujo real y muestra si el servidor de
+  RTSP con autenticación Digest (con `qop`, preferida cuando la cámara también anuncia Basic) o
+  Basic, de ambos flujos; **Play** reproduce el flujo real (principal o secundario) y muestra si el servidor de
   video lo está recibiendo, lectores conectados, resolución, fps, códec y retardo.
 - MediaMTX autoriza cada lectura contra el backend (`/api/medios/autorizar`): WebRTC con ticket de
   60 s y RTSP solo para el motor (token de servicio). Sus rutas se crean por API desde la tabla
@@ -97,5 +103,7 @@ Método, regla de decisión y protocolo de evaluación: [METODO_VERIFICACION_LEC
 | `CORS_ORIGINS` | Orígenes permitidos, separados por coma | `FRONTEND_URL` |
 | `MEDIA_SECRET` | Clave de firma de las imágenes | `JWT_SECRET` |
 | `CAMARAS_INTERVALO_S` | Intervalo del monitor de conectividad (0 = desactivado) | `60` |
+| `CAMARAS_CLAVE_CIFRADO` | Clave AES-256 (base64 de 32 bytes) de las contraseñas RTSP | derivada de `JWT_SECRET` (con aviso) |
+| `CAMARAS_CLAVE_CIFRADO_ANTERIOR` | Claves anteriores, solo durante una rotación (separadas por coma) | — |
 | `ZONA_HORARIA` | Zona para "hoy" y vencimientos | `America/Guayaquil` |
 | `UNIDAD_INSTITUCIONAL` | Unidad mostrada en la pantalla de acceso (también editable en Configuración) | `Coordinación Zonal 3 · Ambato` |

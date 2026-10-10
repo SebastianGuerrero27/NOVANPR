@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { ArrowLeft, CheckCircle2, Clock, Edit3, FileCheck2, FileSearch, MinusCircle, ShieldAlert, ShieldCheck, Trash2, UserSearch, XCircle } from 'lucide-react';
-import api, { mensajeError } from '../../infraestructura/api';
+import api, { mensajeError, respuestaError } from '../../infraestructura/api';
 import { useAuth } from '../../aplicacion/AuthContext';
 import { useEvento } from '../../aplicacion/tiempoReal';
 import { useConsulta } from '../../aplicacion/hooks';
@@ -29,8 +29,8 @@ const ConsultaPropietario: React.FC<{ d: DeteccionDetalle; onCerrar: () => void 
     try {
       const r = await api.post('/propietario/consulta', { placa: d.placa, motivo: motivo.trim(), deteccion_id: d.id });
       setResultado({ tipo: 'exito', texto: `${r.data.nombre}${r.data.identificacion ? ` (${r.data.identificacion})` : ''} · fuente: ${r.data.fuente}` });
-    } catch (e: any) {
-      setResultado({ tipo: e?.response?.status === 503 ? 'advertencia' : 'error', texto: mensajeError(e) });
+    } catch (e) {
+      setResultado({ tipo: respuestaError(e)?.status === 503 ? 'advertencia' : 'error', texto: mensajeError(e) });
     } finally {
       setEnviando(false);
     }

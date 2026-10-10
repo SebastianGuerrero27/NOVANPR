@@ -12,6 +12,9 @@ import type { Validado } from '../dominio/validacion';
  * habilitar o deshabilitar, fijar la región de interés, eliminar (solo sin historial),
  * diagnosticar la conectividad y reproducir el video por WebRTC.
  *
+ * La contraseña RTSP se guarda protegida (PuertoCustodiaCredenciales) y solo se revela para
+ * conectarse a la cámara: diagnóstico, ruta de prueba y servidor de medios.
+ *
  * Todo cambio queda en la auditoría y se difunde en tiempo real ('camara:actualizada' /
  * 'camara:eliminada'). La verificación de conectividad y la sincronización con MediaMTX y el
  * motor ANPR corren en segundo plano: la respuesta no las espera y un fallo no la afecta (se
@@ -25,8 +28,18 @@ export interface ConexionCamara {
   id: number;
   nombre: string;
   ip: string;
+  /** Con la contraseña protegida */
   rtsp_url: string;
+  rtsp_url_vista?: string | null;
   activa: boolean;
+}
+
+/** Contraseñas RTSP en reposo: protegidas al guardar y reveladas solo para conectarse. */
+export interface PuertoCustodiaCredenciales {
+  /** URL con la contraseña protegida (igual si no tiene contraseña o ya está protegida) */
+  proteger(url: string): string;
+  /** URL con la contraseña en claro */
+  revelar(url: string): string;
 }
 
 export interface RepositorioCamaras {
@@ -92,6 +105,8 @@ export interface EstadoRutaVideo {
 /** Servidor de medios (MediaMTX): una ruta cam_<id> por cámara habilitada y rutas de prueba. */
 export interface PuertoServidorVideo {
   rutaCamara(id: number): string;
+  /** Ruta del flujo de vista (cam_<id>_vista) */
+  rutaVista(id: number): string;
   /** URL con la que el motor ANPR lee una ruta (autenticado con el token de servicio) */
   urlLecturaMotor(ruta: string): string;
   /** URL WebRTC vista desde el navegador */
@@ -120,7 +135,19 @@ export interface EstadoMotor {
   ocr?: string | null;
   verificador?: string | null;
   camara_activa?: { id: number; conectada: boolean } | null;
+  /** Enlace con la cámara que procesa el motor (null sin fuente RTSP) */
+  enlace?: EnlaceVideo | null;
   error?: string;
+}
+
+/** Salud del enlace RTSP del motor: códec, resolución, cuadros recibidos y reconexiones. */
+export interface EnlaceVideo {
+  codec: string | null;
+  ancho: number | null;
+  alto: number | null;
+  fps_recibidos: number | null;
+  reconexiones: number | null;
+  ultimo_cuadro_hace_s: number | null;
 }
 
 /** Motor ANPR (microservicio de reconocimiento) y la cámara que procesa. */
@@ -144,6 +171,7 @@ export interface PuertoMotorAnpr {
 
 export interface DependenciasCamaras {
   repositorio: RepositorioCamaras;
+  custodia: PuertoCustodiaCredenciales;
   conectividad: PuertoConectividad;
   video: PuertoServidorVideo;
   tickets: PuertoTickets;
@@ -171,7 +199,7 @@ export function casosCamaras(d: DependenciasCamaras) {
 
   /** Verificación de conectividad tras el alta o el cambio de URL (avisa aunque no cambie el estado). */
   const verificar = (id: number, c: DatosCamara) =>
-    enSegundoPlano(async () => d.conectividad.registrar(id, await d.conectividad.probar(c.rtsp, c.ip), true));
+    enSegundoPlano(async () => d.conectividad.registrar(id, await d.conectividad.probar(d.custodia.revelar(c.rtsp), c.ip), true));
 
   /** MediaMTX publica las cámaras habilitadas y el motor retoma la cámara que le corresponde. */
   const sincronizar = () => enSegundoPlano(async () => {
@@ -185,9 +213,15 @@ export function casosCamaras(d: DependenciasCamaras) {
     return presentarCamara(c);
   }
 
-  /** Valida el formulario; el host del ping es la IP indicada o, si no hay, el de la URL. */
-  function validar(entrada: unknown, rtspGuardada?: string): DatosCamara {
-    const r = leerCamara(cuerpo(entrada), rtspGuardada);
+  /**
+   * Valida el formulario y protege las contraseñas; el host del ping es la IP indicada o, si no
+   * hay, el de la URL.
+   */
+  function validar(entrada: unknown, guardada?: { rtsp_url: string; rtsp_url_vista?: string | null }): DatosCamara {
+    // La contraseña guardada se recupera en claro: el largo máximo se mide sobre lo que se escribió,
+    // no sobre el texto cifrado (más largo)
+    const enClaro = (u?: string | null) => (u ? d.custodia.revelar(u) : u);
+    const r = leerCamara(cuerpo(entrada), enClaro(guardada?.rtsp_url), enClaro(guardada?.rtsp_url_vista));
     if (!r.ok) throw errorValidacion(r.error);
     const destino = d.conectividad.destino(r.valor.rtsp, r.valor.ip);
     if (!destino) throw errorValidacion('No se pudo determinar el host de la cámara. Revise la URL o la IP.');
@@ -195,19 +229,25 @@ export function casosCamaras(d: DependenciasCamaras) {
     if (!r.valor.ip && destino.host.length > LARGO_MAXIMO_IP) {
       throw errorValidacion(`El host de la URL supera los ${LARGO_MAXIMO_IP} caracteres: indique la IP de la cámara.`);
     }
-    return { nombre: r.valor.nombre, ubicacion: r.valor.ubicacion, rtsp: r.valor.rtsp, ip: r.valor.ip || destino.host };
+    return {
+      nombre: r.valor.nombre, ubicacion: r.valor.ubicacion, ip: r.valor.ip || destino.host,
+      rtsp: d.custodia.proteger(r.valor.rtsp),
+      rtspVista: r.valor.rtspVista ? d.custodia.proteger(r.valor.rtspVista) : null,
+    };
   }
 
   /**
-   * URL de una prueba (Ping o Play del formulario, sin guardar). Con `camara_id`, una URL
-   * enmascarada recupera la contraseña guardada de esa cámara.
+   * URL de una prueba (Ping o Play del formulario, sin guardar), con la contraseña en claro. Con
+   * `camara_id`, una URL enmascarada recupera la contraseña guardada de esa cámara (con
+   * `vista: true`, la del flujo de vista si existe).
    */
   async function urlDePrueba(b: Record<string, unknown>): Promise<Validado<string>> {
     const camaraId = leerIdCamara(b.camara_id);
     if (!camaraId.ok) throw errorValidacion(camaraId.error);
     const texto = typeof b.rtsp_url === 'string' ? b.rtsp_url : '';
-    const guardada = camaraId.valor && texto.includes(MASCARA) ? (await d.repositorio.conexion(camaraId.valor))?.rtsp_url : null;
-    return leerUrlRtsp(b.rtsp_url, guardada);
+    const c = camaraId.valor && texto.includes(MASCARA) ? await d.repositorio.conexion(camaraId.valor) : null;
+    const guardada = c ? (b.vista === true && c.rtsp_url_vista) || c.rtsp_url : null;
+    return leerUrlRtsp(b.rtsp_url, guardada && d.custodia.revelar(guardada));
   }
 
   /** Cámara registrada o 404. */
@@ -236,12 +276,12 @@ export function casosCamaras(d: DependenciasCamaras) {
     async editar(id: number, entrada: unknown, actor: Actor) {
       const actual = await d.repositorio.obtener(id);
       if (!actual) throw errorNoEncontrado('Cámara no encontrada.');
-      const c = validar(entrada, actual.rtsp_url);
+      const c = validar(entrada, actual);
       await d.repositorio.actualizar(id, c);
       const cambios = cambiosCamara(actual, c);
       await d.auditoria.operacion(actor, 'CAMARA_EDICION', 'camara', id, `${c.nombre}: ${cambios.join(', ') || 'sin cambios'}`);
-      if (actual.rtsp_url !== c.rtsp) {
-        verificar(id, c);
+      if (actual.rtsp_url !== c.rtsp) verificar(id, c);
+      if (actual.rtsp_url !== c.rtsp || (actual.rtsp_url_vista ?? null) !== c.rtspVista) {
         // MediaMTX reabre la cámara con la URL nueva; el motor sigue leyendo la misma ruta cam_<id>
         enSegundoPlano(() => d.video.sincronizarRutas());
       }
@@ -305,7 +345,7 @@ export function casosCamaras(d: DependenciasCamaras) {
     /** Ping ICMP (red) + diagnóstico RTSP de una cámara registrada; el resultado se guarda. */
     async diagnosticar(id: number) {
       const c = await conexion(id);
-      const r = await d.conectividad.diagnosticar(c.rtsp_url, c.ip);
+      const r = await d.conectividad.diagnosticar(d.custodia.revelar(c.rtsp_url), c.ip);
       await d.conectividad.registrar(id, r.rtsp, true);
       return r;
     },
@@ -313,19 +353,25 @@ export function casosCamaras(d: DependenciasCamaras) {
     async diagnosticarTodas() {
       const camaras = await d.repositorio.habilitadas();
       const detalles = await Promise.all(camaras.map(async c => {
-        const r = await d.conectividad.diagnosticar(c.rtsp_url, c.ip);
+        const r = await d.conectividad.diagnosticar(d.custodia.revelar(c.rtsp_url), c.ip);
         await d.conectividad.registrar(c.id, r.rtsp, true);
         return { id: c.id, nombre: c.nombre, ...r };
       }));
       return { total: detalles.length, en_linea: detalles.filter(x => x.rtsp.en_linea).length, detalles };
     },
 
-    /** Reproducción (“Play”) de una cámara registrada: su ruta cam_<id> y un ticket WebRTC. */
+    /**
+     * Reproducción (“Play”) de una cámara registrada: la ruta del flujo principal (la que lee el
+     * motor), la del flujo de vista si la cámara lo tiene y un ticket WebRTC.
+     */
     async video(id: number, actor: Actor) {
       const c = await conexion(id);
       if (!c.activa) throw errorConflicto('Habilite la cámara para reproducir su video.');
       await d.video.sincronizarRutas();
-      return { ruta: d.video.rutaCamara(id), ticket: d.tickets.emitir(actor.id, 'stream'), webrtc: d.video.urlWebrtc() };
+      return {
+        ruta: d.video.rutaCamara(id), ruta_vista: c.rtsp_url_vista ? d.video.rutaVista(id) : null,
+        ticket: d.tickets.emitir(actor.id, 'stream'), webrtc: d.video.urlWebrtc(),
+      };
     },
 
     /** Ruta temporal para reproducir una URL sin guardarla (se elimina al cerrar o a los 3 minutos). */

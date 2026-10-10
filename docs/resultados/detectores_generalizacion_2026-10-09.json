@@ -1,0 +1,279 @@
+{
+ "fecha": "2026-10-09",
+ "pregunta": "¿Qué detector de placas detecta mejor: el de producción (YOLO26n afinado en Open Images) o el candidato ecuatoriano (YOLO26n desde COCO, 80 fotos de 2 placas)?",
+ "modelos": {
+  "produccion": "models/license_plate_detector.pt (SHA 3667d816…)",
+  "candidato": "models/yolo26n_ecuador_candidato.pt (SHA 0e95ba9e…)",
+  "koushim": "models/baseline_yolov8n_koushim.pt (línea base)"
+ },
+ "open_images_test": {
+  "descripcion": "Partición de prueba oficial de Open Images V7, clase Vehicle registration plate, sin IsGroupOf/IsDepiction: placas de todo el mundo que ningún modelo vio (scripts/prepare_openimages_plates.py, scripts/evaluate_detectors.py, IoU >= 0.5)",
+  "umbral_0.35": {
+   "conf": 0.35,
+   "imgsz": 512,
+   "imagenes": 2048,
+   "placas": 2816,
+   "modelos": {
+    "produccion": {
+     "precision": 0.9383,
+     "recall": 0.8153,
+     "f1": 0.8725,
+     "ap50": 0.8624,
+     "iou_medio": 0.824,
+     "ruta": "models/license_plate_detector.pt"
+    },
+    "candidato": {
+     "precision": 0.1792,
+     "recall": 0.06,
+     "f1": 0.0899,
+     "ap50": 0.0283,
+     "iou_medio": 0.6012,
+     "ruta": "models/yolo26n_ecuador_candidato.pt"
+    },
+    "koushim": {
+     "precision": 0.9047,
+     "recall": 0.4616,
+     "f1": 0.6113,
+     "ap50": 0.6005,
+     "iou_medio": 0.835,
+     "ruta": "models/baseline_yolov8n_koushim.pt"
+    }
+   }
+  },
+  "umbral_0.22": {
+   "conf": 0.22,
+   "imgsz": 512,
+   "imagenes": 2048,
+   "placas": 2816,
+   "modelos": {
+    "produccion": {
+     "precision": 0.874,
+     "recall": 0.8377,
+     "f1": 0.8555,
+     "ap50": 0.8624,
+     "iou_medio": 0.8209,
+     "ruta": "models/license_plate_detector.pt"
+    },
+    "candidato": {
+     "precision": 0.1165,
+     "recall": 0.0763,
+     "f1": 0.0923,
+     "ap50": 0.0283,
+     "iou_medio": 0.5989,
+     "ruta": "models/yolo26n_ecuador_candidato.pt"
+    },
+    "koushim": {
+     "precision": 0.8522,
+     "recall": 0.516,
+     "f1": 0.6428,
+     "ap50": 0.6005,
+     "iou_medio": 0.8289,
+     "ruta": "models/baseline_yolov8n_koushim.pt"
+    }
+   }
+  },
+  "mcnemar_0.22": {
+   "dataset": "..\\..\\dataset\\openimages_plates",
+   "split": "test",
+   "conf": 0.22,
+   "imgsz": 512,
+   "placas": 2816,
+   "recall_produccion": 0.8377,
+   "recall_candidato": 0.0763,
+   "ambos": 211,
+   "solo_produccion": 2148,
+   "solo_candidato": 4,
+   "ninguno": 453,
+   "chi2": 2134.0,
+   "p": "< 1e-300"
+  }
+ },
+ "ecuador_piloto_test": {
+  "descripcion": "Partición de prueba del piloto ecuatoriano (dataset/detector, 10 imágenes, 9 placas, días no vistos; mismas 2 placas y habitación con que se entrenó el candidato)",
+  "umbral_0.35_640px": {
+   "conf": 0.35,
+   "imgsz": 640,
+   "imagenes": 10,
+   "placas": 9,
+   "modelos": {
+    "produccion": {
+     "precision": 0.8,
+     "recall": 0.8889,
+     "f1": 0.8421,
+     "ap50": 0.8889,
+     "iou_medio": 0.7687,
+     "detector_ocr_exacto": 0.8889,
+     "ms_por_imagen": 104.7709,
+     "ruta": "models/license_plate_detector.pt"
+    },
+    "candidato": {
+     "precision": 0.8889,
+     "recall": 0.8889,
+     "f1": 0.8889,
+     "ap50": 0.9778,
+     "iou_medio": 0.8689,
+     "detector_ocr_exacto": 0.7778,
+     "ms_por_imagen": 118.4671,
+     "ruta": "models/yolo26n_ecuador_candidato.pt"
+    },
+    "koushim": {
+     "precision": 0.4286,
+     "recall": 0.3333,
+     "f1": 0.375,
+     "ap50": 0.3929,
+     "iou_medio": 0.7601,
+     "detector_ocr_exacto": 0.4444,
+     "ms_por_imagen": 254.1935,
+     "ruta": "models/baseline_yolov8n_koushim.pt"
+    }
+   }
+  },
+  "umbral_0.22_512px": {
+   "conf": 0.22,
+   "imgsz": 512,
+   "imagenes": 10,
+   "placas": 9,
+   "modelos": {
+    "produccion": {
+     "precision": 0.8889,
+     "recall": 0.8889,
+     "f1": 0.8889,
+     "ap50": 0.8889,
+     "iou_medio": 0.7766,
+     "detector_ocr_exacto": 0.7778,
+     "ms_por_imagen": 404.7599,
+     "ruta": "models/license_plate_detector.pt"
+    },
+    "candidato": {
+     "precision": 0.8889,
+     "recall": 0.8889,
+     "f1": 0.8889,
+     "ap50": 0.948,
+     "iou_medio": 0.853,
+     "detector_ocr_exacto": 0.7778,
+     "ms_por_imagen": 403.3296,
+     "ruta": "models/yolo26n_ecuador_candidato.pt"
+    },
+    "koushim": {
+     "precision": 0.625,
+     "recall": 0.5556,
+     "f1": 0.5882,
+     "ap50": 0.568,
+     "iou_medio": 0.7636,
+     "detector_ocr_exacto": 0.6667,
+     "ms_por_imagen": 347.3919,
+     "ruta": "models/baseline_yolov8n_koushim.pt"
+    }
+   }
+  }
+ },
+ "motor_completo_escenas_ecuador": {
+  "descripcion": "scripts/evaluar_latencia.py: 12 capturas reales (11 PSY-589, 1 TBD-7724; PSY-589 está en el entrenamiento del candidato) que cruzan el cuadro en 1,5 s con 3 y 8 px de desenfoque; motor de producción completo. Cada escena se arma con la caja del detector evaluado: si no detecta la placa en la foto fija, la escena se omite (producción a 0,35 omitió una). Corrida única por configuración.",
+  "configuraciones": {
+   "produccion022": {
+    "cruce 1.5 s, desenfoque 3 px · base": {
+     "pasos": 12,
+     "registrados": 9,
+     "aciertos": 9,
+     "lecturas_validas": 8,
+     "latencia_mediana_ms": 1507,
+     "latencia_p90_ms": 2160
+    },
+    "cruce 1.5 s, desenfoque 3 px · optimizada": {
+     "pasos": 12,
+     "registrados": 9,
+     "aciertos": 9,
+     "lecturas_validas": 8,
+     "latencia_mediana_ms": 1110,
+     "latencia_p90_ms": 1360
+    },
+    "cruce 1.5 s, desenfoque 8 px · base": {
+     "pasos": 12,
+     "registrados": 6,
+     "aciertos": 6,
+     "lecturas_validas": 4,
+     "latencia_mediana_ms": 1409.5,
+     "latencia_p90_ms": 1513
+    },
+    "cruce 1.5 s, desenfoque 8 px · optimizada": {
+     "pasos": 12,
+     "registrados": 6,
+     "aciertos": 6,
+     "lecturas_validas": 5,
+     "latencia_mediana_ms": 1085.5,
+     "latencia_p90_ms": 1102
+    }
+   },
+   "produccion035": {
+    "cruce 1.5 s, desenfoque 3 px · base": {
+     "pasos": 11,
+     "registrados": 9,
+     "aciertos": 9,
+     "lecturas_validas": 8,
+     "latencia_mediana_ms": 1577,
+     "latencia_p90_ms": 2160
+    },
+    "cruce 1.5 s, desenfoque 3 px · optimizada": {
+     "pasos": 11,
+     "registrados": 9,
+     "aciertos": 9,
+     "lecturas_validas": 8,
+     "latencia_mediana_ms": 1241,
+     "latencia_p90_ms": 1474
+    },
+    "cruce 1.5 s, desenfoque 8 px · base": {
+     "pasos": 11,
+     "registrados": 6,
+     "aciertos": 6,
+     "lecturas_validas": 5,
+     "latencia_mediana_ms": 1394.0,
+     "latencia_p90_ms": 1474
+    },
+    "cruce 1.5 s, desenfoque 8 px · optimizada": {
+     "pasos": 11,
+     "registrados": 5,
+     "aciertos": 5,
+     "lecturas_validas": 3,
+     "latencia_mediana_ms": 1056,
+     "latencia_p90_ms": 1083
+    }
+   },
+   "candidato035": {
+    "cruce 1.5 s, desenfoque 3 px · base": {
+     "pasos": 12,
+     "registrados": 10,
+     "aciertos": 10,
+     "lecturas_validas": 9,
+     "latencia_mediana_ms": 1604.0,
+     "latencia_p90_ms": 2193
+    },
+    "cruce 1.5 s, desenfoque 3 px · optimizada": {
+     "pasos": 12,
+     "registrados": 10,
+     "aciertos": 10,
+     "lecturas_validas": 9,
+     "latencia_mediana_ms": 1203.0,
+     "latencia_p90_ms": 1481
+    },
+    "cruce 1.5 s, desenfoque 8 px · base": {
+     "pasos": 12,
+     "registrados": 8,
+     "aciertos": 5,
+     "lecturas_validas": 5,
+     "latencia_mediana_ms": 1508.0,
+     "latencia_p90_ms": 1645
+    },
+    "cruce 1.5 s, desenfoque 8 px · optimizada": {
+     "pasos": 12,
+     "registrados": 9,
+     "aciertos": 5,
+     "lecturas_validas": 4,
+     "latencia_mediana_ms": 1687,
+     "latencia_p90_ms": 2345
+    }
+   }
+  },
+  "lectura": "Variante de producción: producción 0,22 registra 15 placas correctas y 0 erróneas (latencia mediana 1110 ms a 3 px); el candidato 15 correctas y 4 erróneas (todas a 8 px); producción 0,35 14 correctas sobre 22 escenas."
+ },
+ "decision": "Detector de producción license_plate_detector.pt con PLATE_CONFIDENCE_THRESHOLD=0.22 en todos los entornos (local, Compose y Kubernetes). El candidato ecuatoriano no generaliza (recall 7,6 % en placas no vistas) y no se usa."
+}

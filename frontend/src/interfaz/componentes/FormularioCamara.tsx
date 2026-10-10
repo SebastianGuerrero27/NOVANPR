@@ -12,6 +12,10 @@ import { ReproductorPrueba } from './envivo';
  * Alta y edición de cámaras. El personal elige el tipo de equipo e ingresa IP, puerto,
  * usuario y contraseña; el enlace RTSP se arma solo (con la contraseña codificada para
  * URL) y se puede probar antes de guardar.
+ *
+ * En Hikvision y Dahua se arma también el enlace del flujo secundario (mismo equipo y
+ * credenciales) para la vista en vivo: el motor analiza el principal a máxima resolución y el
+ * navegador muestra el secundario.
  */
 
 type Perfil = 'hikvision' | 'dahua' | 'celular_rtsp' | 'ip_webcam' | 'generica' | 'manual';
@@ -19,7 +23,7 @@ type Perfil = 'hikvision' | 'dahua' | 'celular_rtsp' | 'ip_webcam' | 'generica' 
 const PERFILES: Record<Perfil, { etiqueta: string; puerto: number; ruta: string; credenciales: 'si' | 'no' | 'opcional'; ayuda: string }> = {
   hikvision: {
     etiqueta: 'Cámara Hikvision', puerto: 554, ruta: '/Streaming/Channels/101', credenciales: 'si',
-    ayuda: 'Canal 101 = flujo principal (más nitidez); 102 = flujo secundario (menos consumo). Usuario habitual: admin.',
+    ayuda: 'Canal 101 = flujo principal (lo analiza el motor); 102 = flujo secundario (vista en vivo). Usuario habitual: admin. En la cámara use H.264 o H.265 sin «+» (los códecs inteligentes H.265+/H.264+ espacian los cuadros clave y retrasan la imagen tras una reconexión).',
   },
   dahua: {
     etiqueta: 'Cámara Dahua / Imou', puerto: 554, ruta: '/cam/realmonitor?channel=1&subtype=0', credenciales: 'si',
@@ -53,6 +57,7 @@ const MENSAJE_URL_RTSP = 'Ingrese una URL RTSP válida (rtsp://…).';
 const REGLA_HOST: ReglaTexto = { etiqueta: 'IP o nombre del equipo', tipo: 'libre', max: LARGO_MAXIMO_IP, requerido: true };
 const REGLA_RUTA: ReglaTexto = { etiqueta: 'Ruta del flujo', tipo: 'libre', max: 120 };
 const REGLA_URL: ReglaTexto = { etiqueta: 'URL RTSP', tipo: 'libre', max: LARGO_MAXIMO_RTSP, requerido: true };
+const REGLA_URL_VISTA: ReglaTexto = { etiqueta: 'URL del flujo de vista', tipo: 'libre', max: LARGO_MAXIMO_RTSP };
 const reglaUsuario = (requerido: boolean): ReglaTexto => ({ etiqueta: 'Usuario', tipo: 'libre', max: 60, requerido });
 
 /** IP o nombre del equipo: solo letras, números, puntos y guiones (sin rtsp:// ni puerto). */
@@ -89,6 +94,22 @@ function errorUrlRtsp(url: string): string | null {
   if (!partes) return 'URL RTSP inválida.';
   return errorDe(validarHost(partes.host, 'Host de la URL'));
 }
+
+/**
+ * Ruta del flujo secundario del mismo equipo, derivada de la del principal: Hikvision
+ * /Streaming/Channels/<canal>01 → <canal>02 (también /ISAPI/…) y Dahua subtype=0 → subtype=1.
+ * null si la ruta no es la de un flujo principal reconocible.
+ */
+function rutaSecundaria(ruta: string): string | null {
+  const hikvision = ruta.match(/^(.*\/Streaming\/Channels\/\d*?)01((?:[/?].*)?)$/i);
+  if (hikvision) return `${hikvision[1]}02${hikvision[2]}`;
+  const dahua = ruta.match(/^(\/cam\/realmonitor\?(?:.*&)?subtype=)0((?:&.*)?)$/i);
+  if (dahua) return `${dahua[1]}1${dahua[2]}`;
+  return null;
+}
+
+/** Ruta del flujo con la barra inicial ("/" si está vacía). */
+const conBarra = (ruta: string) => (ruta.trim() ? (ruta.trim().startsWith('/') ? ruta.trim() : `/${ruta.trim()}`) : '/');
 
 function detectarPerfil(puerto: number, ruta: string): Perfil {
   if (/^\/Streaming\/Channels\//i.test(ruta)) return 'hikvision';
@@ -151,9 +172,13 @@ const CampoUrl: React.FC<{ valor: string; error: string | null; onCambiar: (v: s
 
 export const FormularioCamara: React.FC<{ camara?: Camara; onCerrar: () => void; onGuardada: (c: Camara) => void }> = ({ camara, onCerrar, onGuardada }) => {
   const previa = camara ? desarmar(camara.rtsp_url) : null;
+  const previaVista = camara?.rtsp_url_vista ? desarmar(camara.rtsp_url_vista) : null;
+  // Una vista que no es el flujo secundario del mismo equipo (escrita a mano) se edita en el modo avanzado
+  const vistaPropia = Boolean(previa && previaVista && (previaVista.host !== previa.host || previaVista.puerto !== previa.puerto
+    || previaVista.usuario !== previa.usuario || previaVista.ruta !== rutaSecundaria(previa.ruta)));
   const [nombre, setNombre] = useState(camara?.nombre ?? '');
   const [ubicacion, setUbicacion] = useState(camara?.ubicacion ?? '');
-  const [perfil, setPerfil] = useState<Perfil>(previa ? detectarPerfil(previa.puerto, previa.ruta) : 'hikvision');
+  const [perfil, setPerfil] = useState<Perfil>(previa ? (vistaPropia ? 'manual' : detectarPerfil(previa.puerto, previa.ruta)) : 'hikvision');
   const [host, setHost] = useState(previa?.host ?? '');
   const [puerto, setPuerto] = useState(String(previa?.puerto ?? PERFILES.hikvision.puerto));
   const [ruta, setRuta] = useState(previa?.ruta ?? PERFILES.hikvision.ruta);
@@ -162,7 +187,11 @@ export const FormularioCamara: React.FC<{ camara?: Camara; onCerrar: () => void;
   const [claveTocada, setClaveTocada] = useState(false);
   const [verClave, setVerClave] = useState(false);
   const [urlManual, setUrlManual] = useState(camara?.rtsp_url ?? '');
+  // Alta: vista por el flujo secundario activada; edición: como está guardada
+  const [usarVista, setUsarVista] = useState(camara ? Boolean(camara.rtsp_url_vista) : true);
+  const [urlVistaManual, setUrlVistaManual] = useState(camara?.rtsp_url_vista ?? '');
   const [prueba, setPrueba] = useState<ResultadoDiagnostico | null>(null);
+  const [pruebaVista, setPruebaVista] = useState<ResultadoDiagnostico['rtsp'] | null>(null);
   const [errorPrueba, setErrorPrueba] = useState<string | null>(null);
   const [reproducir, setReproducir] = useState(false);
   const [probando, setProbando] = useState(false);
@@ -174,24 +203,32 @@ export const FormularioCamara: React.FC<{ camara?: Camara; onCerrar: () => void;
   const cambiarPerfil = (nuevo: Perfil) => {
     setPerfil(nuevo);
     setPrueba(null);
-    if (nuevo === 'manual') { setUrlManual(url || urlManual); return; }
+    if (nuevo === 'manual') { setUrlManual(url || urlManual); setUrlVistaManual(urlVista || urlVistaManual); return; }
     setPuerto(String(PERFILES[nuevo].puerto));
     setRuta(PERFILES[nuevo].ruta);
     if (nuevo === 'hikvision' && !usuario) setUsuario('admin');
   };
 
-  /** URL con la contraseña real (para enviar) y versión enmascarada (para mostrar). */
-  const { url, urlVisible } = useMemo(() => {
-    if (perfil === 'manual') return { url: urlManual.trim(), urlVisible: urlManual.trim().replace(RE_CREDENCIALES, `$1${MASCARA}$3`) };
-    if (!host.trim()) return { url: '', urlVisible: '' };
-    const r = ruta.trim() ? (ruta.trim().startsWith('/') ? ruta.trim() : `/${ruta.trim()}`) : '/';
+  const secundaria = perfil === 'manual' ? null : rutaSecundaria(conBarra(ruta));
+
+  /** URLs (principal y de vista) con la contraseña real (para enviar) y enmascaradas (para mostrar). */
+  const { url, urlVisible, urlVista, urlVistaVisible } = useMemo(() => {
+    const enmascarar = (u: string) => u.replace(RE_CREDENCIALES, `$1${MASCARA}$3`);
+    if (perfil === 'manual') {
+      return { url: urlManual.trim(), urlVisible: enmascarar(urlManual.trim()), urlVista: urlVistaManual.trim(), urlVistaVisible: enmascarar(urlVistaManual.trim()) };
+    }
+    if (!host.trim()) return { url: '', urlVisible: '', urlVista: '', urlVistaVisible: '' };
     const u = usuario.trim();
     const c = clave || (claveGuardada && u ? MASCARA : '');
     const auth = u ? `${encodeURIComponent(u)}${c ? `:${c === MASCARA ? MASCARA : encodeURIComponent(c)}` : ''}@` : '';
     const authVisible = u ? `${encodeURIComponent(u)}${c ? `:${MASCARA}` : ''}@` : '';
-    const base = `${host.trim()}:${Number(puerto) || p.puerto}${r}`;
-    return { url: `rtsp://${auth}${base}`, urlVisible: `rtsp://${authVisible}${base}` };
-  }, [perfil, urlManual, host, puerto, ruta, usuario, clave, claveGuardada, p.puerto]);
+    const base = (r: string) => `${host.trim()}:${Number(puerto) || p.puerto}${r}`;
+    const vista = usarVista && secundaria;
+    return {
+      url: `rtsp://${auth}${base(conBarra(ruta))}`, urlVisible: `rtsp://${authVisible}${base(conBarra(ruta))}`,
+      urlVista: vista ? `rtsp://${auth}${base(vista)}` : '', urlVistaVisible: vista ? `rtsp://${authVisible}${base(vista)}` : '',
+    };
+  }, [perfil, urlManual, urlVistaManual, host, puerto, ruta, usuario, clave, claveGuardada, p.puerto, usarVista, secundaria]);
 
   // Mismas reglas que la API: nombre y ubicación alfanuméricos, IP o host válido, puerto 1–65535 y
   // enlace rtsp:// de hasta 255 caracteres. Hikvision y Dahua exigen usuario y contraseña (*).
@@ -200,6 +237,7 @@ export const FormularioCamara: React.FC<{ camara?: Camara; onCerrar: () => void;
   const errorHost = guiado ? errorIp(host) : null;
   const errorUrl = guiado ? null : errorUrlRtsp(urlManual);
   const errorEnlace = guiado && url ? errorFormatoRtsp(url) : null;
+  const errorVista = guiado ? (urlVista ? errorFormatoRtsp(urlVista) : null) : (urlVistaManual.trim() ? errorUrlRtsp(urlVistaManual) : null);
   const errorClave = exigeCredenciales && !claveGuardada && usuario.trim() && !clave ? 'La contraseña es obligatoria para este equipo.' : null;
   const hostValido = guiado ? !errorHost : !errorUrl;
   const valido = sinErrores({
@@ -208,18 +246,26 @@ export const FormularioCamara: React.FC<{ camara?: Camara; onCerrar: () => void;
     host: errorHost,
     url: errorUrl,
     enlace: errorEnlace,
+    vista: errorVista,
     puerto: guiado ? errorDe(validarEntero(puerto, { etiqueta: 'Puerto', min: 1, max: 65535, requerido: true })) : null,
     ruta: guiado ? errorDe(validarTexto(ruta, REGLA_RUTA)) : null,
     usuario: guiado ? errorDe(validarTexto(usuario, reglaUsuario(exigeCredenciales))) : null,
     clave: errorClave,
   }) && /^rtsps?:\/\/.+/i.test(url);
 
+  /** Ping y diagnóstico RTSP del flujo principal y, si se usa, del secundario. */
   const probar = async () => {
     setProbando(true);
     setPrueba(null);
+    setPruebaVista(null);
     setErrorPrueba(null);
     try {
-      setPrueba((await api.post('/camaras/probar', { rtsp_url: url, camara_id: camara?.id })).data);
+      const [principal, vista] = await Promise.all([
+        api.post('/camaras/probar', { rtsp_url: url, camara_id: camara?.id }),
+        urlVista ? api.post('/camaras/probar', { rtsp_url: urlVista, camara_id: camara?.id, vista: true }).catch(() => null) : null,
+      ]);
+      setPrueba(principal.data);
+      setPruebaVista(vista?.data?.rtsp ?? null);
     } catch (e) {
       setErrorPrueba(mensajeError(e));
     } finally { setProbando(false); }
@@ -228,7 +274,7 @@ export const FormularioCamara: React.FC<{ camara?: Camara; onCerrar: () => void;
   const guardar = async () => {
     setEnviando(true);
     setError(null);
-    const cuerpo = { nombre, ubicacion, rtsp_url: url, ip: perfil === 'manual' ? '' : host.trim() };
+    const cuerpo = { nombre, ubicacion, rtsp_url: url, rtsp_url_vista: urlVista || null, ip: perfil === 'manual' ? '' : host.trim() };
     try {
       const r = camara ? await api.put(`/camaras/${camara.id}`, cuerpo) : await api.post('/camaras', cuerpo);
       onGuardada(r.data.camera);
@@ -261,7 +307,14 @@ export const FormularioCamara: React.FC<{ camara?: Camara; onCerrar: () => void;
         </div>
 
         {perfil === 'manual' ? (
-          <CampoUrl valor={urlManual} error={errorUrl} onCambiar={v => { setUrlManual(v); setPrueba(null); }} />
+          <>
+            <CampoUrl valor={urlManual} error={errorUrl} onCambiar={v => { setUrlManual(v); setPrueba(null); }} />
+            <CampoTexto id="c-url-vista" className="completo" etiqueta="URL del flujo de vista (opcional)" valor={urlVistaManual}
+              onCambiar={v => { setUrlVistaManual(v); setPrueba(null); }} error={errorVista}
+              regla={REGLA_URL_VISTA} filtrar={sinEspacios} literal claseControl="mono"
+              placeholder="rtsp://usuario:contraseña@192.168.1.64:554/Streaming/Channels/102"
+              ayuda="Flujo secundario (H.264, baja resolución) que se muestra en el navegador mientras el motor analiza el principal. Vacío: se muestra el principal." />
+          </>
         ) : (
           <>
             <CampoTexto id="c-host" etiqueta="IP o nombre del equipo*" valor={host} onCambiar={v => { setHost(v); setPrueba(null); }}
@@ -298,16 +351,43 @@ export const FormularioCamara: React.FC<{ camara?: Camara; onCerrar: () => void;
                 ? <span className="error">{errorEnlace === MENSAJE_URL_RTSP
                   ? 'El enlace tiene espacios o caracteres no permitidos (< >): revise la ruta del flujo.'
                   : `El enlace supera los ${LARGO_MAXIMO_RTSP} caracteres que admite el sistema: acorte la ruta, el usuario o la contraseña.`}</span>
-                : <span className="ayuda">La contraseña se guarda en el servidor y no se muestra a otros usuarios.</span>}
+                : <span className="ayuda">La contraseña se guarda cifrada en el servidor y no se muestra a ningún usuario.</span>}
             </div>
+            {secundaria && (
+              <div className="campo completo">
+                <label className="fila" style={{ gap: 8, cursor: 'pointer', flexWrap: 'nowrap' }}>
+                  <input type="checkbox" checked={usarVista} onChange={e => { setUsarVista(e.target.checked); setPrueba(null); }} />
+                  <span><b>Vista en vivo por el flujo secundario</b> (recomendado)</span>
+                </label>
+                <span className="ayuda">
+                  El motor ANPR analiza el flujo principal a máxima resolución y el navegador muestra el secundario: menos ancho de banda
+                  y se reproduce en cualquier navegador aunque el principal esté en H.265. En la cámara configure el secundario en H.264, 640×360.
+                </span>
+                {usarVista && (
+                  <div className="mono" style={{ marginTop: 6, padding: '9px 12px', borderRadius: 8, background: 'var(--surface-3)', border: `1px dashed ${errorVista ? 'var(--alerta)' : 'var(--border-strong)'}`, fontSize: 12.5, wordBreak: 'break-all' }}>
+                    {urlVistaVisible || 'Complete la IP para generar el enlace'}
+                  </div>
+                )}
+                {errorVista && <span className="error">El enlace del flujo secundario no es válido o supera los {LARGO_MAXIMO_RTSP} caracteres.</span>}
+              </div>
+            )}
           </>
         )}
 
         {prueba && <div className="completo"><PanelDiagnostico resultado={prueba} /></div>}
+        {prueba && pruebaVista && (
+          <div className="completo">
+            {pruebaVista.en_linea
+              ? <Aviso tipo="exito"><b>Flujo secundario (vista en vivo):</b> entrega video{pruebaVista.tiempo_ms !== null ? ` · ${pruebaVista.tiempo_ms} ms` : ''}.</Aviso>
+              : <Aviso tipo="advertencia"><b>Flujo secundario (vista en vivo):</b> {pruebaVista.mensaje} {DIAGNOSTICO[pruebaVista.diagnostico] ?? ''} Si la
+                cámara no tiene habilitado el flujo secundario, actívelo (Configuración › Video › Sub Stream) o desmarque la vista por el flujo secundario.</Aviso>}
+          </div>
+        )}
         {errorPrueba && <div className="completo"><Aviso tipo="error">{errorPrueba}</Aviso></div>}
         {error && <div className="completo"><Aviso tipo="error">{error}</Aviso></div>}
       </div>
-      {reproducir && <ReproductorPrueba titulo={nombre || 'cámara sin guardar'} rtspUrl={url} camaraId={camara?.id} onCerrar={() => setReproducir(false)} />}
+      {reproducir && <ReproductorPrueba titulo={nombre || 'cámara sin guardar'} rtspUrl={url} rtspUrlVista={urlVista || undefined} camaraId={camara?.id}
+        onCerrar={() => setReproducir(false)} />}
     </Modal>
   );
 };

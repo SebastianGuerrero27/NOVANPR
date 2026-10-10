@@ -50,14 +50,26 @@ api.interceptors.response.use(
   }
 );
 
+/** Respuesta HTTP de un error de axios; undefined si no la hubo (sin conexión). */
+export function respuestaError(e: unknown): { status: number; data?: unknown } | undefined {
+  return (e as { response?: { status: number; data?: unknown } } | null | undefined)?.response;
+}
+
+/** Cuerpo { error, message, codigo } con que la API responde un error. */
+export function cuerpoError(e: unknown): { error?: string; message?: string; codigo?: string } | undefined {
+  const datos = respuestaError(e)?.data;
+  return datos && typeof datos === 'object' ? (datos as { error?: string; message?: string; codigo?: string }) : undefined;
+}
+
 /** Mensaje legible de un error de axios (el backend responde { error }). */
-export function mensajeError(e: any, porDefecto = 'No se pudo comunicar con el servidor.'): string {
-  return e?.response?.data?.error || e?.response?.data?.message || (e?.response ? porDefecto : 'Sin conexión con el servidor.');
+export function mensajeError(e: unknown, porDefecto = 'No se pudo comunicar con el servidor.'): string {
+  const cuerpo = cuerpoError(e);
+  return cuerpo?.error || cuerpo?.message || (respuestaError(e) ? porDefecto : 'Sin conexión con el servidor.');
 }
 
 /** Mensaje de error de una descarga (responseType 'blob'): el JSON { error } de la API llega como Blob. */
-export async function mensajeErrorDescarga(e: any, porDefecto?: string): Promise<string> {
-  const datos = e?.response?.data;
+export async function mensajeErrorDescarga(e: unknown, porDefecto?: string): Promise<string> {
+  const datos = respuestaError(e)?.data;
   if (datos instanceof Blob) {
     try {
       const json = JSON.parse(await datos.text());

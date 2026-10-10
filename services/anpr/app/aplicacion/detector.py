@@ -548,10 +548,13 @@ class DetectionPipeline:
         self._fps_window: list[float] = []
         self._last_fps_calc = time.time()
         self._fps: float = 0.0
+        self._ultimo_medido = 0.0
 
     @property
     def fps(self) -> float:
-        return self._fps
+        """Capacidad de análisis (1 / tiempo medio por cuadro); 0 si no se analizó ningún cuadro en
+        2 s (con la cámara caída no debe mostrarse el último valor)."""
+        return self._fps if time.time() - self._ultimo_medido <= 2.0 else 0.0
 
     # ------------------------------------------------------------------
     # Región de interés y verificación geométrica
@@ -1395,6 +1398,7 @@ class DetectionPipeline:
     def _medir_fps(self, t0: float) -> None:
         """Cuadros por segundo que procesa el seguimiento (media de los últimos 20 cuadros)."""
         self._fps_window.append(time.perf_counter() - t0)
+        self._ultimo_medido = time.time()
         if len(self._fps_window) > 20:
             self._fps_window.pop(0)
         if time.time() - self._last_fps_calc >= 1.0:

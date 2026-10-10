@@ -53,6 +53,41 @@ P/R/F1 con confianza ≥ 0.35. Latencias en un Xeon de 4 vCPU (contenedor), 300 
    prueba ecuatoriana. Si en ese conjunto no supera a la línea base, volver a
    `baseline_yolov8n_koushim.pt`.
 
+## Producción frente al candidato ecuatoriano: generalización (2026-10-09)
+
+El `.env` local usaba `yolo26n_ecuador_candidato.pt` (YOLO26n desde COCO, 80 fotos de 2 placas) y
+en las capturas propias detectaba más placas que producción (101 frente a 92 de 107). Esas capturas
+son de la misma habitación y placas con que se entrenó el candidato, así que se compararon los dos
+en datos que ninguno vio. Detalle: `docs/resultados/detectores_generalizacion_2026-10-09.json`.
+
+**Prueba de Open Images** (2 048 imágenes, 2 816 placas de todo el mundo; mismo protocolo que la
+tabla de arriba, que se reprodujo exactamente):
+
+| Modelo | P / R / F1 con conf 0.35 | P / R / F1 con conf 0.22 (umbral del servicio) |
+|---|---|---|
+| **Producción** | **93.8 % / 81.5 % / 0.873** | **87.4 % / 83.8 % / 0.855** |
+| Candidato ecuatoriano | 17.9 % / 6.0 % / 0.090 | 11.7 % / 7.6 % / 0.092 |
+| Koushim YOLOv8n | 90.5 % / 46.2 % / 0.611 | 85.2 % / 51.6 % / 0.643 |
+
+McNemar por placa con conf 0.22 (`scripts/mcnemar_detectores.py`): producción detecta 2 148 placas que
+el candidato pierde y el candidato 4 que producción pierde (χ² = 2 134, p < 10⁻³⁰⁰).
+
+**Prueba ecuatoriana del piloto** (10 imágenes, 9 placas; las mismas 2 placas del entrenamiento del
+candidato): con el umbral del servicio (0.22, 512 px) ambos detectan 8 de 9 (F1 0.889); el candidato
+ajusta mejor la caja (IoU 0.85 frente a 0.78).
+
+**Motor completo** (`scripts/evaluar_latencia.py`, 12 capturas reales en movimiento con 3 y 8 px de
+desenfoque, variante de producción, corrida única): producción con 0.22 registra 15 placas correctas
+y ninguna errónea; el candidato 15 correctas y 4 erróneas (todas con 8 px); producción con 0.35, 14
+correctas y una placa sin detectar en la foto fija.
+
+**Decisión:** producción (`license_plate_detector.pt`) con `PLATE_CONFIDENCE_THRESHOLD=0.22` en todos
+los entornos; `services/anpr/.env.example` y el `.env` local quedan alineados con el valor por omisión
+del código (antes fijaban el candidato y 0.35). El candidato está sobreajustado a dos placas y una
+habitación: no usarlo. Un detector ecuatoriano solo debe reemplazar a producción si, afinado desde
+este modelo con datos variados (≥ 200 imágenes de muchos vehículos), mantiene el recall en Open
+Images y mejora en una prueba ecuatoriana independiente (reglas al final de esta ficha).
+
 ## Línea base: `baseline_yolov8n_koushim.pt` (producción hasta el 2026-10-01)
 
 | Campo | Valor |

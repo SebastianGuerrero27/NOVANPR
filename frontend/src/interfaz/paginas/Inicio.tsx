@@ -273,7 +273,7 @@ const PanelGestion: React.FC = () => {
             <div className="grid-principal">
               <GraficoPorHora r={r} />
               <Tarjeta titulo="Distribución de hoy" subtitulo={`${numero(r.hoy.total)} ingresos · ${numero(r.hoy.validados)} confirmados por el personal`}>
-                <BarraDistribucion valores={r.hoy as any} series={SERIES_ESTADO} />
+                <BarraDistribucion valores={r.hoy} series={SERIES_ESTADO} />
               </Tarjeta>
             </div>
             <div className="grid-principal">

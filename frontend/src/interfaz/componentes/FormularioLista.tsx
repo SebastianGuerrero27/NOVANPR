@@ -32,21 +32,22 @@ export const FormularioLista: React.FC<{
   tipo: TipoLista; registro?: RegistroLista; inicial?: Partial<Record<string, string | null>>;
   onCerrar: () => void; onGuardado: (r: RegistroLista) => void;
 }> = ({ tipo, registro, inicial, onCerrar, onGuardado }) => {
-  const base = registro ?? inicial ?? {};
+  // Registro guardado o valores propuestos (p. ej. desde una lectura): cada campo puede faltar
+  const base: { [campo: string]: unknown } = { ...(registro ?? inicial) };
   const [f, setF] = useState({
     // Un registro guardado conserva su placa; una lectura de la cámara solo se propone si cabe en una placa
     placa: registro ? normalizarPlaca(registro.placa) : placaPropuesta(inicial?.placa),
-    propietario: String((base as any).propietario ?? ''),
-    departamento: String((base as any).departamento ?? ''),
-    tipo_vehiculo: valorPrecargado((base as any).tipo_vehiculo, REGLAS_VEHICULO.tipo_vehiculo),
-    motivo: String((base as any).motivo ?? ''),
-    nivel_alerta: String((base as any).nivel_alerta ?? 'ALTA'),
+    propietario: String(base.propietario ?? ''),
+    departamento: String(base.departamento ?? ''),
+    tipo_vehiculo: valorPrecargado(base.tipo_vehiculo, REGLAS_VEHICULO.tipo_vehiculo),
+    motivo: String(base.motivo ?? ''),
+    nivel_alerta: String(base.nivel_alerta ?? 'ALTA'),
     marca: valorPrecargado(base.marca, REGLAS_VEHICULO.marca),
     modelo: String(base.modelo ?? ''),
     color: valorPrecargado(base.color, REGLAS_VEHICULO.color),
     fecha_vencimiento: registro?.fecha_vencimiento ? String(registro.fecha_vencimiento).slice(0, 10) : '',
-    observaciones: String((base as any).observaciones ?? ''),
-    categoria: String((base as any).categoria ?? 'FUNCIONARIO'),
+    observaciones: String(base.observaciones ?? ''),
+    categoria: String(base.categoria ?? 'FUNCIONARIO'),
     fecha_inicio: registro?.fecha_inicio ? String(registro.fecha_inicio).slice(0, 10) : '',
   });
   const [horario, setHorario] = useState<Franja[] | null>(registro?.horario ?? null);

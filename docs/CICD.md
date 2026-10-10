@@ -32,9 +32,9 @@ Se ejecuta en cada push a `main`/`develop` y en cada pull request.
 
 | Job | Qué verifica |
 |---|---|
-| Test Backend | `npm ci`, `tsc`, Jest (dominio, orquestación, integración RBAC, esquema) |
-| Test ANPR Service | `pytest` del motor (configurado en `services/anpr/pytest.ini`) |
-| Test Frontend | `tsc && vite build` |
+| Test Backend | `npm ci`, `npm run typecheck` (`tsc --noEmit`), Jest (dominio, orquestación, integración RBAC, esquema) |
+| Test ANPR Service | Python 3.12 con las versiones exactas de `services/anpr/requirements.txt` y `pytest` del motor (configurado en `services/anpr/pytest.ini`) |
+| Test Frontend | `npm run lint` (ESLint: TypeScript y hooks de React, sin advertencias) y `npm run build` (capas, `tsc`, Vite) |
 | Security Scan | Trivy sobre el repositorio. Falla ante vulnerabilidades **críticas con corrección disponible**; el informe completo se sube como SARIF (repositorios públicos o con Advanced Security) o como artefacto `trivy-results` |
 | Build Docker Images | Construye, sin publicar, las tres imágenes de producción que publicará el CD; comparte la caché de capas con el CD (`type=gha`, un scope por imagen) |
 
@@ -49,11 +49,17 @@ espera al anterior (`concurrency`).
 | Imagen | Origen | Contenido |
 |---|---|---|
 | `ghcr.io/<owner>/anpr-backend` | `backend/Dockerfile.prod` (contexto: raíz) | Node 20, `dist/` compilado, dependencias de producción, scripts `db/`, usuario sin root |
-| `ghcr.io/<owner>/anpr-service` | `services/anpr/Dockerfile` | Motor FastAPI (en Kubernetes se ejecuta sin `--reload`) |
+| `ghcr.io/<owner>/anpr-service` | `services/anpr/Dockerfile` | Motor FastAPI sin `--reload`: `python:3.12.15-slim-trixie`, versiones exactas de `requirements.txt` (PyTorch solo CPU), Ultralytics sin telemetría ni instalaciones en ejecución (`YOLO_OFFLINE`, `YOLO_AUTOINSTALL=false`) |
 | `ghcr.io/<owner>/anpr-frontend` | `frontend/Dockerfile.prod` | Build de Vite servido por nginx sin root (puerto 8080); API en el mismo origen |
 
 Etiquetas: el SHA del commit (inmutable, es la que se despliega) y `latest` (solo desde `main`). Se
 publican con el `GITHUB_TOKEN` del workflow (`packages: write`); no hace falta ningún secreto.
+
+Dependencias del motor (convención de pip-tools): `requirements.in` declara las directas (rangos) y
+`requirements.txt` las versiones exactas que instalan la imagen y el CI, y que analiza Trivy. Para
+actualizar: editar `requirements.in`,
+instalarlo en una imagen limpia, pasar `pytest` y la prueba de la cámara simulada
+(`backend/scripts/camara_hikvision_simulada/e2e.sh`) y regenerar el bloqueo con `pip freeze`.
 
 ### 2.2 Despliegue de un entorno (`deploy-k8s.yml`)
 
@@ -111,6 +117,7 @@ kubectl -n $NS create secret generic anpr-secrets \
   --from-literal=MSSQL_SA_PASSWORD='<contraseña fuerte>' \
   --from-literal=JWT_SECRET="$(python3 -c 'import secrets;print(secrets.token_urlsafe(48))')" \
   --from-literal=ANPR_SERVICE_TOKEN="$(python3 -c 'import secrets;print(secrets.token_urlsafe(32))')" \
+  --from-literal=CAMARAS_CLAVE_CIFRADO="$(openssl rand -base64 32)" \
   --from-literal=SMTP_PASSWORD='' \
   --from-literal=VAPID_PRIVATE_KEY=''
 
@@ -118,6 +125,12 @@ kubectl -n $NS create secret generic anpr-secrets \
 kubectl -n $NS create secret docker-registry ghcr-pull \
   --docker-server=ghcr.io --docker-username=<usuario> --docker-password=<token>
 ```
+
+`CAMARAS_CLAVE_CIFRADO` cifra las contraseñas RTSP de las cámaras (AES-256-GCM). Para rotarla,
+copie la clave actual a `CAMARAS_CLAVE_CIFRADO_ANTERIOR`, ponga una nueva en
+`CAMARAS_CLAVE_CIFRADO` y reinicie el backend: al arrancar vuelve a cifrar todas las contraseñas
+con la nueva, y en el siguiente despliegue ya se puede quitar la anterior. Detalle en
+[CAMARA_HIKVISION_ANPR.md](CAMARA_HIKVISION_ANPR.md).
 
 Requisitos del clúster y valores a revisar en `k8s/overlays/<entorno>/kustomization.yaml`:
 

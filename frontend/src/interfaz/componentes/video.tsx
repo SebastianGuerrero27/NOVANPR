@@ -148,11 +148,33 @@ export const VisorVideo: React.FC<{ perfil: PerfilVideo; pausado: boolean; clave
  * las que el motor marca para mostrar: placa en movimiento o con una lectura ANT (un objeto
  * quieto que el detector confunde con una placa no se enmarca).
  */
-function pistasDeLaWebcam(rois: any[], ancho: number, alto: number): PistaHud[] {
+/** Pista de la respuesta del motor a un cuadro de la webcam (píxeles del cuadro enviado). */
+interface PistaWebcam {
+  tracking_id: number;
+  bbox?: number[];
+  oriented_box?: number[][] | null;
+  velocity?: number[];
+  confidence?: number;
+  plate?: string | null;
+  lecturas?: number;
+  plate_confidence?: number;
+  status?: string | null;
+  mostrar?: boolean;
+}
+
+/** Zona de movimiento de la respuesta del motor a un cuadro de la webcam. */
+interface MovimientoWebcam {
+  motion_bbox?: number[] | null;
+  motion_vehicle_detected?: boolean;
+  motion_pct?: number;
+}
+
+function pistasDeLaWebcam(rois: PistaWebcam[], ancho: number, alto: number): PistaHud[] {
   if (!ancho || !alto) return [];
   const nx = (x: number) => x / ancho;
   const ny = (y: number) => y / alto;
-  return rois.filter(r => r.mostrar !== false && Array.isArray(r.bbox) && r.bbox.length === 4).map((r): PistaHud => {
+  const conCaja = (r: PistaWebcam): r is PistaWebcam & { bbox: number[] } => r.mostrar !== false && Array.isArray(r.bbox) && r.bbox.length === 4;
+  return rois.filter(conCaja).map((r): PistaHud => {
     const leida = (r.lecturas ?? 0) >= 1;
     return {
       id: r.tracking_id,
@@ -168,10 +190,11 @@ function pistasDeLaWebcam(rois: any[], ancho: number, alto: number): PistaHud[] 
   });
 }
 
-function movimientoDeLaWebcam(m: any, ancho: number, alto: number): MovimientoHud | null {
+function movimientoDeLaWebcam(m: MovimientoWebcam, ancho: number, alto: number): MovimientoHud | null {
   const c = m.motion_bbox;
-  if (!ancho || !alto || !Array.isArray(c) || c.length !== 4 || !m.motion_vehicle_detected || !(m.motion_pct > 3)) return null;
-  return { caja: [c[0] / ancho, c[1] / alto, c[2] / ancho, c[3] / alto], porcentaje: m.motion_pct };
+  const porcentaje = m.motion_pct ?? 0;
+  if (!ancho || !alto || !Array.isArray(c) || c.length !== 4 || !m.motion_vehicle_detected || !(porcentaje > 3)) return null;
+  return { caja: [c[0] / ancho, c[1] / alto, c[2] / ancho, c[3] / alto], porcentaje };
 }
 
 /**
@@ -228,8 +251,8 @@ export const WebcamPrueba: React.FC = () => {
           }, 1000 / 6);
         };
         ws.onclose = () => { if (!cerrado) { setEstado('error'); setMensaje('El motor ANPR cerró la conexión de la webcam.'); } };
-      } catch (e: any) {
-        if (!cerrado) { setEstado('error'); setMensaje(e?.name === 'NotAllowedError' ? 'Permiso de cámara denegado en el navegador.' : mensajeError(e, 'No se pudo iniciar la webcam.')); }
+      } catch (e) {
+        if (!cerrado) { setEstado('error'); setMensaje(e instanceof Error && e.name === 'NotAllowedError' ? 'Permiso de cámara denegado en el navegador.' : mensajeError(e, 'No se pudo iniciar la webcam.')); }
       }
     })();
 

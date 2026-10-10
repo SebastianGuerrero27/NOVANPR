@@ -1,6 +1,6 @@
 import {
-  casosCamaras, type DiagnosticoCamara, type PuertoConectividad, type PuertoMotorAnpr, type PuertoServidorVideo,
-  type PuertoTickets, type RepositorioCamaras, type ResultadoRtsp,
+  casosCamaras, type DiagnosticoCamara, type PuertoConectividad, type PuertoCustodiaCredenciales, type PuertoMotorAnpr,
+  type PuertoServidorVideo, type PuertoTickets, type RepositorioCamaras, type ResultadoRtsp,
 } from '../../aplicacion/camaras';
 import { ErrorAplicacion, type Actor } from '../../aplicacion/comun';
 import type { AlcanceTicket, CamaraGuardada } from '../../dominio/camaras';
@@ -34,12 +34,22 @@ const destinoDoble = (rtsp: string, ip: string | null) => {
   return host ? { host } : null;
 };
 
-function preparar(camara: CamaraGuardada | null = guardada()) {
+/** Custodia que deja la URL igual (la mayoría de las pruebas no se ocupan del cifrado). */
+const custodiaNeutra = (): jest.Mocked<PuertoCustodiaCredenciales> => ({ proteger: jest.fn(u => u), revelar: jest.fn(u => u) });
+
+/** Custodia que marca la contraseña protegida («P(…)») para comprobar cuándo se protege y se revela. */
+const custodiaMarcada = (): jest.Mocked<PuertoCustodiaCredenciales> => ({
+  proteger: jest.fn(u => u.replace(/^(rtsps?:\/\/[^:/?#]*:)(?!P\()([^/?#]+)@/i, '$1P($2)@')),
+  revelar: jest.fn(u => u.replace(/^(rtsps?:\/\/[^:/?#]*:)P\(([^/?#]+)\)@/i, '$1$2@')),
+});
+
+function preparar(camara: CamaraGuardada | null = guardada(), custodia = custodiaNeutra()) {
   const repositorio: jest.Mocked<RepositorioCamaras> = {
     listar: jest.fn().mockResolvedValue(camara ? [camara] : []),
     obtener: jest.fn().mockImplementation(async (id: number) => (camara ? { ...camara, id } : null)),
     conexion: jest.fn().mockResolvedValue(camara
-      ? { id: camara.id, nombre: camara.nombre, ip: camara.ip, rtsp_url: camara.rtsp_url, activa: Boolean(camara.activa) }
+      ? { id: camara.id, nombre: camara.nombre, ip: camara.ip, rtsp_url: camara.rtsp_url, rtsp_url_vista: camara.rtsp_url_vista ?? null,
+        activa: Boolean(camara.activa) }
       : null),
     habilitadas: jest.fn().mockResolvedValue([]),
     crear: jest.fn().mockResolvedValue(7),
@@ -56,6 +66,7 @@ function preparar(camara: CamaraGuardada | null = guardada()) {
   };
   const video: jest.Mocked<PuertoServidorVideo> = {
     rutaCamara: jest.fn((id: number) => `cam_${id}`),
+    rutaVista: jest.fn((id: number) => `cam_${id}_vista`),
     urlLecturaMotor: jest.fn((ruta: string) => `rtsp://anpr:token@mediamtx:8554/${ruta}`),
     urlWebrtc: jest.fn(() => 'https://video.ecu911.local'),
     sincronizarRutas: jest.fn().mockResolvedValue(undefined),
@@ -81,8 +92,8 @@ function preparar(camara: CamaraGuardada | null = guardada()) {
   };
   const auditoria = { operacion: jest.fn().mockResolvedValue(undefined) };
   const eventos = { emitir: jest.fn() };
-  const casos = casosCamaras({ repositorio, conectividad, video, tickets, motor, auditoria, eventos });
-  return { casos, repositorio, conectividad, video, tickets, motor, auditoria, eventos };
+  const casos = casosCamaras({ repositorio, custodia, conectividad, video, tickets, motor, auditoria, eventos });
+  return { casos, repositorio, custodia, conectividad, video, tickets, motor, auditoria, eventos };
 }
 
 /** Tipo y mensaje del ErrorAplicacion que lanza la promesa (cualquier otro error hace fallar la prueba). */
@@ -126,7 +137,7 @@ describe('Casos de uso · cámaras', () => {
       const camara = await casos.registrar({ nombre: '  Garita   sur ', ubicacion: 'Acceso sur, bloque B', rtsp_url: URL_GUARDADA }, ADMIN);
       // Sin IP indicada, el ping usa el host de la URL
       expect(repositorio.crear).toHaveBeenCalledWith(
-        { nombre: 'Garita sur', ubicacion: 'Acceso sur, bloque B', rtsp: URL_GUARDADA, ip: '192.168.1.64' }, 1);
+        { nombre: 'Garita sur', ubicacion: 'Acceso sur, bloque B', rtsp: URL_GUARDADA, rtspVista: null, ip: '192.168.1.64' }, 1);
       expect(auditoria.operacion).toHaveBeenCalledWith(ADMIN, 'CAMARA_ALTA', 'camara', 7, 'Garita sur · Acceso sur, bloque B');
       expect(camara).toMatchObject({ id: 7, rtsp_url: URL_ENMASCARADA });
       expect(eventos.emitir).toHaveBeenCalledWith('camara:actualizada', camara);
@@ -191,7 +202,7 @@ describe('Casos de uso · cámaras', () => {
       const { casos, repositorio, auditoria, eventos, conectividad, video } = preparar();
       const camara = await casos.editar(3, { ...VALIDA, nombre: 'Garita norte 2', rtsp_url: URL_ENMASCARADA }, ADMIN);
       expect(repositorio.actualizar).toHaveBeenCalledWith(3,
-        { nombre: 'Garita norte 2', ubicacion: 'Acceso vehicular norte', rtsp: URL_GUARDADA, ip: '192.168.1.64' });
+        { nombre: 'Garita norte 2', ubicacion: 'Acceso vehicular norte', rtsp: URL_GUARDADA, rtspVista: null, ip: '192.168.1.64' });
       expect(auditoria.operacion).toHaveBeenCalledWith(ADMIN, 'CAMARA_EDICION', 'camara', 3, 'Garita norte 2: nombre');
       // La URL no cambió: no se vuelve a verificar la conexión ni se reconfigura MediaMTX
       await enCola();
@@ -213,7 +224,7 @@ describe('Casos de uso · cámaras', () => {
       const nueva = 'rtsp://admin:otra@192.168.1.65:554/Streaming/Channels/102';
       await casos.editar(3, { ...VALIDA, rtsp_url: nueva }, ADMIN);
       expect(repositorio.actualizar).toHaveBeenCalledWith(3,
-        { nombre: 'Garita norte', ubicacion: 'Acceso vehicular norte', rtsp: nueva, ip: '192.168.1.65' });
+        { nombre: 'Garita norte', ubicacion: 'Acceso vehicular norte', rtsp: nueva, rtspVista: null, ip: '192.168.1.65' });
       expect(auditoria.operacion).toHaveBeenCalledWith(ADMIN, 'CAMARA_EDICION', 'camara', 3, 'Garita norte: URL RTSP, IP');
       await enCola();
       expect(conectividad.registrar).toHaveBeenCalledWith(3, RTSP_OK, true);
@@ -344,7 +355,7 @@ describe('Casos de uso · cámaras', () => {
   describe('video', () => {
     it('video: cámara habilitada → ruta cam_<id>, ticket de video y URL WebRTC; 409 deshabilitada; 404', async () => {
       const { casos, video, tickets } = preparar();
-      expect(await casos.video(3, ADMIN)).toEqual({ ruta: 'cam_3', ticket: 'ticket-1-stream', webrtc: 'https://video.ecu911.local' });
+      expect(await casos.video(3, ADMIN)).toEqual({ ruta: 'cam_3', ruta_vista: null, ticket: 'ticket-1-stream', webrtc: 'https://video.ecu911.local' });
       expect(video.sincronizarRutas).toHaveBeenCalled();
       expect(tickets.emitir).toHaveBeenCalledWith(1, 'stream');
       expect(await fallo(preparar(guardada({ activa: false })).casos.video(3, ADMIN)))
@@ -384,3 +395,66 @@ describe('Casos de uso · cámaras', () => {
     });
   });
 });
+
+describe('Casos de uso · cámaras · credenciales protegidas y flujo de vista', () => {
+  const VISTA = `rtsp://admin:${CLAVE}@192.168.1.64:554/Streaming/Channels/102`;
+  const VISTA_ENMASCARADA = 'rtsp://admin:******@192.168.1.64:554/Streaming/Channels/102';
+  // Reemplazo con función: la contraseña contiene «$&», que en un texto de reemplazo insertaría lo encontrado
+  const protegida = (url: string) => url.replace(`:${CLAVE}@`, () => `:P(${CLAVE})@`);
+
+  it('al registrar se protegen las contraseñas de ambos flujos; la verificación usa la URL revelada', async () => {
+    const { casos, repositorio, conectividad, video } = preparar(guardada(), custodiaMarcada());
+    await casos.registrar({ ...VALIDA, rtsp_url_vista: VISTA }, ADMIN);
+    expect(repositorio.crear).toHaveBeenCalledWith(expect.objectContaining({ rtsp: protegida(URL_GUARDADA), rtspVista: protegida(VISTA) }), 1);
+    await enCola();
+    expect(conectividad.probar).toHaveBeenCalledWith(URL_GUARDADA, '192.168.1.64');
+    expect(video.sincronizarRutas).toHaveBeenCalled();
+  });
+
+  it('editar con la contraseña enmascarada conserva la protegida tal cual (no se vuelve a cifrar ni cuenta como cambio)', async () => {
+    const { casos, repositorio, auditoria } = preparar(guardada({ rtsp_url: protegida(URL_GUARDADA) }), custodiaMarcada());
+    await casos.editar(3, { ...VALIDA, rtsp_url: URL_ENMASCARADA }, ADMIN);
+    expect(repositorio.actualizar).toHaveBeenCalledWith(3, expect.objectContaining({ rtsp: protegida(URL_GUARDADA) }));
+    expect(auditoria.operacion).toHaveBeenCalledWith(ADMIN, 'CAMARA_EDICION', 'camara', 3, 'Garita norte: sin cambios');
+  });
+
+  it('agregar la vista enmascarada a una cámara que no la tenía reutiliza la contraseña del flujo principal', async () => {
+    const { casos, repositorio, video } = preparar(guardada({ rtsp_url: protegida(URL_GUARDADA) }), custodiaMarcada());
+    await casos.editar(3, { ...VALIDA, rtsp_url: URL_ENMASCARADA, rtsp_url_vista: VISTA_ENMASCARADA }, ADMIN);
+    expect(repositorio.actualizar).toHaveBeenCalledWith(3, expect.objectContaining({ rtspVista: protegida(VISTA) }));
+    await enCola();
+    expect(video.sincronizarRutas).toHaveBeenCalled();
+  });
+
+  it('el diagnóstico y la ruta de prueba reciben la contraseña revelada', async () => {
+    const { casos, conectividad, video } = preparar(guardada({ rtsp_url: protegida(URL_GUARDADA), rtsp_url_vista: protegida(VISTA) }),
+      custodiaMarcada());
+    await casos.probar({ rtsp_url: URL_ENMASCARADA, camara_id: 3 });
+    expect(conectividad.diagnosticar).toHaveBeenLastCalledWith(URL_GUARDADA, null);
+    await casos.diagnosticar(3);
+    expect(conectividad.diagnosticar).toHaveBeenLastCalledWith(URL_GUARDADA, '192.168.1.64');
+    await casos.pruebaVideo({ rtsp_url: VISTA_ENMASCARADA, camara_id: 3, vista: true }, ADMIN);
+    expect(video.crearRutaPrueba).toHaveBeenCalledWith(VISTA);
+  });
+
+  it('el largo máximo se mide sobre la contraseña en claro, no sobre la cifrada', async () => {
+    // URL de 255 caracteres: protegida («P(…)») supera el límite, en claro no
+    const larga = `rtsp://admin:${'k'.repeat(255 - 'rtsp://admin:@192.168.1.64:554/Streaming/Channels/101'.length)}@192.168.1.64:554/Streaming/Channels/101`;
+    const cifrada = custodiaMarcada().proteger(larga);
+    expect(larga).toHaveLength(255);
+    expect(cifrada.length).toBeGreaterThan(255);
+    const { casos, repositorio, video } = preparar(guardada({ rtsp_url: cifrada }), custodiaMarcada());
+    await casos.editar(3, { ...VALIDA, rtsp_url: URL_ENMASCARADA }, ADMIN);
+    expect(repositorio.actualizar).toHaveBeenCalledWith(3, expect.objectContaining({ rtsp: cifrada }));
+    await casos.pruebaVideo({ rtsp_url: URL_ENMASCARADA, camara_id: 3 }, ADMIN);
+    expect(video.crearRutaPrueba).toHaveBeenCalledWith(larga);
+  });
+
+  it('el Play informa la ruta de vista solo si la cámara tiene flujo de vista', async () => {
+    const con = preparar(guardada({ rtsp_url_vista: VISTA }));
+    expect(await con.casos.video(3, ADMIN)).toMatchObject({ ruta: 'cam_3', ruta_vista: 'cam_3_vista' });
+    expect(await preparar().casos.video(3, ADMIN)).toMatchObject({ ruta: 'cam_3', ruta_vista: null });
+    expect(await con.casos.estadoVideo('cam_3_vista')).toEqual({ lista: false, lectores: 0, pistas: [] });
+  });
+});
+

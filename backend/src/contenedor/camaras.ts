@@ -7,16 +7,17 @@ import { auditoriaSql, eventosSocket } from '../infraestructura/adaptadores';
 import { repositorioCamarasSql } from '../infraestructura/persistencia/camarasSql';
 import { camaraDeseada, guardarCamaraMotor, motorProcesa, sincronizarCamaraMotor } from '../infraestructura/servicios/camaraMotor';
 import { destinoRtsp, diagnosticar, probarConexion, registrarConexion } from '../infraestructura/servicios/conectividadCamaras';
+import { custodiaCredenciales } from '../infraestructura/servicios/custodiaCredenciales';
 import {
-  camaraDeRuta, crearRutaPrueba, eliminarRutaPrueba, emitirTicket, esMotor, estadoRuta, rutaCamara, sincronizarRutas,
+  camaraDeRuta, crearRutaPrueba, eliminarRutaPrueba, emitirTicket, esMotor, estadoRuta, rutaCamara, rutaVista, sincronizarRutas,
   ticketValido, urlLecturaMotor, urlWebrtcPublica,
 } from '../infraestructura/servicios/medios';
 import { cambiarCamaraAnpr, estadoServicioAnpr, fijarRoiAnpr, urlPublicaAnpr } from '../infraestructura/servicios/servicioAnpr';
 
 /**
  * Raíz de composición del módulo de cámaras, monitoreo y medios: conecta los casos de uso con
- * los adaptadores existentes (SQL Server, diagnóstico RTSP/ICMP, MediaMTX, motor ANPR y
- * Socket.IO). Las pruebas construyen los casos de uso con dobles en su lugar.
+ * los adaptadores existentes (SQL Server, diagnóstico RTSP/ICMP, MediaMTX, motor ANPR,
+ * custodia de credenciales AES-256-GCM y Socket.IO). Las pruebas construyen los casos de uso con dobles en su lugar.
  */
 
 const conectividad: PuertoConectividad = {
@@ -28,6 +29,7 @@ const conectividad: PuertoConectividad = {
 
 const video: PuertoServidorVideo = {
   rutaCamara,
+  rutaVista,
   urlLecturaMotor,
   urlWebrtc: urlWebrtcPublica,
   sincronizarRutas,
@@ -52,6 +54,6 @@ const motor: PuertoMotorAnpr = {
 
 const comunes = { repositorio: repositorioCamarasSql, video, tickets, motor, auditoria: auditoriaSql, eventos: eventosSocket };
 
-export const camaras = casosCamaras({ ...comunes, conectividad });
+export const camaras = casosCamaras({ ...comunes, conectividad, custodia: custodiaCredenciales });
 export const monitoreo = casosMonitoreo(comunes);
 export const medios = casosMedios({ video, tickets });

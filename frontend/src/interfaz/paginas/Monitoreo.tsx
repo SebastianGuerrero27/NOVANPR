@@ -1,12 +1,12 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Bell, BellOff, Camera, ClipboardPlus, Cpu, Pause, Play, Search, ShieldAlert, ShieldCheck, Trash2, Webcam } from 'lucide-react';
+import { Bell, BellOff, Camera, ClipboardPlus, Cpu, Film, Pause, Play, Search, ShieldAlert, ShieldCheck, Trash2, Webcam } from 'lucide-react';
 import api, { mensajeError } from '../../infraestructura/api';
 import { useAuth } from '../../aplicacion/AuthContext';
 import { useEvento } from '../../aplicacion/tiempoReal';
 import { useConsulta, usePaginaVisible } from '../../aplicacion/hooks';
 import type { Camara, Deteccion, EstadoAnpr } from '../../dominio/tipos';
-import { ESTADOS, fecha, fechaHora, hora, numero, relativo } from '../../dominio/formato';
+import { codecVideo, ESTADOS, fecha, fechaHora, hora, numero, relativo } from '../../dominio/formato';
 import { formatearPlaca, normalizarPlaca } from '../../dominio/validacion';
 import { Aviso, Cargando, InsigniaEstado, Modal, Placa, Segmentado, Tarjeta, Vacio } from '../componentes/ui';
 import { filtrarEscrito } from '../componentes/campos';
@@ -25,10 +25,17 @@ const CLAVE_MODO = 'anpr_modo_video';
 const leer = (k: string, d: string) => { try { return localStorage.getItem(k) ?? d; } catch { return d; } };
 const guardar = (k: string, v: string) => { try { localStorage.setItem(k, v); } catch { /* sin almacenamiento */ } };
 
+/** Respuesta de /detecciones/buscar-placa/:placa. */
+type ResultadoBusqueda = { placa: string; ultimos_ingresos: Deteccion[] } & (
+  | { estado: 'alerta'; alerta: { motivo: string; nivel_alerta: string; coincidencia?: string; placa: string } }
+  | { estado: 'autorizado'; autorizado: { propietario: string; departamento?: string | null } }
+  | { estado: 'no_registrado' }
+);
+
 /** Consulta rápida de una placa: listas y últimos ingresos. */
 const BuscarPlacaModal: React.FC<{ onCerrar: () => void }> = ({ onCerrar }) => {
   const [placa, setPlaca] = useState('');
-  const [resultado, setResultado] = useState<any>(null);
+  const [resultado, setResultado] = useState<ResultadoBusqueda | null>(null);
   const [cargando, setCargando] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const navigate = useNavigate();
@@ -217,7 +224,7 @@ const Monitoreo: React.FC = () => {
               {fuente === 'webcam' ? <WebcamPrueba />
                 : modo === 'compat' ? <VisorVideo perfil={perfil} pausado={pausado} claveReinicio={reinicioVideo} />
                   : !motor && estadoMotor.cargando ? <div style={{ aspectRatio: '16 / 9', background: '#050b16', borderRadius: 10 }} />
-                    : <VisorEnVivo camaraId={motor?.camara_activa?.id ?? null} pausado={pausado} claveReinicio={reinicioVideo}
+                    : <VisorEnVivo camaraId={motor?.camara_activa?.id ?? null} vista={Boolean(camaraActiva?.rtsp_url_vista)} pausado={pausado} claveReinicio={reinicioVideo}
                         onFallo={m => { cambiarModo('compat'); notificar('advertencia', 'Se activó el modo de compatibilidad', `WebRTC no disponible: ${m}`); }} />}
             </div>
             <div className="fila" style={{ padding: '10px 14px', borderTop: '1px solid var(--border)', gap: 16, fontSize: 12.5, color: 'var(--text-3)' }}>
@@ -228,6 +235,13 @@ const Monitoreo: React.FC = () => {
               {motor?.en_linea && <>
                 <span className="fila" style={{ gap: 6 }}><Cpu size={13} /> Captura {numero(motor.fps_captura ?? 0)} fps · análisis {numero(motor.fps_procesamiento ?? 0)} fps</span>
                 {motor.camara_activa && <span className="fila" style={{ gap: 6 }}><span className={`punto ${motor.camara_activa.conectada ? 'verde' : 'ambar'}`} /> Señal {motor.camara_activa.conectada ? 'recibida' : 'sin recibir'}</span>}
+                {motor.enlace && (
+                  <span className="fila ocultar-movil" style={{ gap: 6 }}
+                    title="Flujo principal que analiza el motor: códec, resolución, cuadros recibidos por segundo y reconexiones automáticas con la cámara">
+                    <Film size={13} /> {codecVideo(motor.enlace.codec)}{motor.enlace.ancho ? ` ${motor.enlace.ancho}×${motor.enlace.alto}` : ''}
+                    {' · '}{numero(motor.enlace.fps_recibidos ?? 0)} fps recibidos{motor.enlace.reconexiones ? ` · ${motor.enlace.reconexiones} reconexiones` : ''}
+                  </span>
+                )}
                 <span className="ocultar-movil truncar" title={`${motor.detector} · ${motor.ocr}`}>Detector {motor.detector} · OCR {motor.ocr}</span>
               </>}
             </div>

@@ -36,8 +36,16 @@ const CAMARA: Record<string, CampoDoc> = {
   ubicacion: { tipo: 'string', descripcion: 'Ubicación alfanumérica (3 a 150 caracteres)', requerido: true, ejemplo: 'Acceso norte, Samborondón' },
   rtsp_url: {
     tipo: 'string',
-    descripcion: 'URL rtsp:// o rtsps:// (máx. 255, sin espacios); si llega enmascarada (******) se conserva la contraseña guardada',
+    descripcion: 'URL rtsp:// o rtsps:// del flujo principal, el que procesa el motor ANPR (máx. 255, sin espacios); si llega '
+      + 'enmascarada (******) se conserva la contraseña guardada. La contraseña se guarda cifrada (AES-256-GCM) y nunca sale de la API',
     requerido: true, ejemplo: 'rtsp://admin:clave@192.168.1.64:554/Streaming/Channels/101',
+  },
+  rtsp_url_vista: {
+    tipo: 'string',
+    descripcion: 'Opcional: URL del flujo secundario para la vista en vivo del navegador (p. ej. Hikvision canal 102 en H.264 '
+      + '640×360). Vacía = la vista usa el flujo principal. Mismas reglas que rtsp_url; enmascarada, conserva la contraseña de la vista '
+      + 'guardada o, si no había, la del flujo principal',
+    ejemplo: 'rtsp://admin:clave@192.168.1.64:554/Streaming/Channels/102',
   },
   ip: { tipo: 'string', descripcion: 'IPv4 o nombre de host para el ping (máx. 45); por omisión, el host de la URL', ejemplo: '192.168.1.64' },
 };
@@ -384,6 +392,7 @@ export const RUTAS: RutaDoc[] = [
   {
     metodo: 'post', ruta: '/api/camaras/:id(\\d+)/video', etiqueta: 'Cámaras', acceso: 'operacion:monitorear',
     resumen: 'Ruta y ticket para reproducir la cámara por WebRTC',
+    descripcion: 'Devuelve `ruta` (flujo principal, cam_<id>) y `ruta_vista` (cam_<id>_vista, o null si la cámara no tiene flujo de vista).',
     respuestas: { 400: 'Identificador inválido', 404: 'Cámara no encontrada', 409: 'Cámara deshabilitada', 502: 'El servidor de video no respondió' },
   },
   {
@@ -393,6 +402,7 @@ export const RUTAS: RutaDoc[] = [
     cuerpo: {
       rtsp_url: { tipo: 'string', requerido: true, descripcion: CAMARA.rtsp_url.descripcion, ejemplo: 'rtsp://admin:clave@192.168.1.64:554/Streaming/Channels/101' },
       camara_id: CAMARA_PRUEBA,
+      vista: { tipo: 'boolean', descripcion: 'Con camara_id y la URL enmascarada: recuperar la contraseña del flujo de vista' },
     },
     respuestas: { 400: 'URL RTSP o cámara inválidas', 502: 'El servidor de video no respondió' },
   },

@@ -39,10 +39,11 @@ export interface MovimientoHud { caja: Caja; porcentaje: number }
 /** Rectángulo de la imagen dentro del elemento (object-fit: contain), en píxeles CSS. */
 export interface AreaDibujo { ancho: number; alto: number; x: number; y: number; w: number; h: number }
 
-export function areaVideo(v: HTMLVideoElement): AreaDibujo {
+/** Con `aspecto` (ancho/alto), la imagen se muestra estirada a esa proporción (object-fit: fill). */
+export function areaVideo(v: HTMLVideoElement, aspecto?: number | null): AreaDibujo {
   const r = v.getBoundingClientRect();
-  const vw = v.videoWidth || 16;
-  const vh = v.videoHeight || 9;
+  const vw = aspecto || v.videoWidth || 16;
+  const vh = aspecto ? 1 : v.videoHeight || 9;
   const esc = Math.min(r.width / vw, r.height / vh);
   return { ancho: r.width, alto: r.height, x: (r.width - vw * esc) / 2, y: (r.height - vh * esc) / 2, w: vw * esc, h: vh * esc };
 }

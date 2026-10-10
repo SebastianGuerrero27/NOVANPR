@@ -80,26 +80,46 @@ export interface EstadisticasVideo {
   codec: string | null;
 }
 
+/** Campos de getStats() que se usan (subconjunto de inbound-rtp, candidate-pair y codec). */
+interface Estadistica {
+  type: string;
+  id: string;
+  timestamp: number;
+  kind?: string;
+  mimeType?: string;
+  nominated?: boolean;
+  state?: string;
+  bytesReceived?: number;
+  jitterBufferDelay?: number;
+  jitterBufferEmittedCount?: number;
+  framesPerSecond?: number;
+  frameWidth?: number;
+  frameHeight?: number;
+  packetsLost?: number;
+  codecId?: string;
+  currentRoundTripTime?: number;
+}
+
 /** Estadísticas de la recepción de video, calculadas entre dos muestras de getStats(). */
 export function crearMedidor(pc: RTCPeerConnection) {
   let anterior: { t: number; bytes: number; jbDelay: number; jbCount: number } | null = null;
   return async (): Promise<EstadisticasVideo | null> => {
     const informe = await pc.getStats();
-    let entrada: any = null;
-    let par: any = null;
+    let entrada: Estadistica | undefined;
+    let par: Estadistica | undefined;
     const codecs = new Map<string, string>();
-    informe.forEach((s: any) => {
+    for (const s of informe.values() as IterableIterator<Estadistica>) {
       if (s.type === 'inbound-rtp' && s.kind === 'video') entrada = s;
       if (s.type === 'candidate-pair' && s.nominated && s.state === 'succeeded') par = s;
       if (s.type === 'codec') codecs.set(s.id, String(s.mimeType ?? '').replace('video/', ''));
-    });
+    }
     if (!entrada) return null;
-    const ahora = entrada.timestamp as number;
+    const ahora = entrada.timestamp;
     let kbps = 0;
     let buffer: number | null = null;
     if (anterior) {
       const dt = (ahora - anterior.t) / 1000;
-      kbps = dt > 0 ? Math.round(((entrada.bytesReceived - anterior.bytes) * 8) / dt / 1000) : 0;
+      kbps = dt > 0 ? Math.round((((entrada.bytesReceived ?? 0) - anterior.bytes) * 8) / dt / 1000) : 0;
       const dCount = (entrada.jitterBufferEmittedCount ?? 0) - anterior.jbCount;
       if (dCount > 0) buffer = (((entrada.jitterBufferDelay ?? 0) - anterior.jbDelay) / dCount) * 1000;
     }
@@ -112,7 +132,7 @@ export function crearMedidor(pc: RTCPeerConnection) {
       alto: entrada.frameHeight ?? 0,
       latencia_ms: buffer !== null ? Math.round(buffer + (typeof rtt === 'number' ? (rtt * 1000) / 2 : 0)) : null,
       perdidos: entrada.packetsLost ?? 0,
-      codec: codecs.get(entrada.codecId) ?? null,
+      codec: codecs.get(entrada.codecId ?? '') ?? null,
     };
   };
 }

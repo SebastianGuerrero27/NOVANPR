@@ -60,20 +60,23 @@ function rectSuperiorRedondeado(x: number, y: number, w: number, h: number, r: n
   return `M${x},${y + h} V${y + rr} Q${x},${y} ${x + rr},${y} H${x + w - rr} Q${x + w},${y} ${x + w},${y + rr} V${y + h} Z`;
 }
 
-export const BarrasApiladas: React.FC<{
-  datos: Record<string, any>[];
+/** Conteo de una serie en una fila (0 si falta). */
+const conteo = (fila: object, clave: string) => Number((fila as Record<string, unknown>)[clave] || 0);
+
+export function BarrasApiladas<T extends object>({ datos, series, etiquetaX, tituloTip, alto = 220, cadaEtiqueta = 1, resaltar }: {
+  datos: T[];
   series: readonly Serie[];
-  etiquetaX: (d: Record<string, any>, i: number) => string;
-  tituloTip?: (d: Record<string, any>, i: number) => string;
+  etiquetaX: (d: T, i: number) => string;
+  tituloTip?: (d: T, i: number) => string;
   alto?: number;
   cadaEtiqueta?: number;
   resaltar?: number;
-}> = ({ datos, series, etiquetaX, tituloTip, alto = 220, cadaEtiqueta = 1, resaltar }) => {
+}) {
   const [ref, ancho] = useAncho<HTMLDivElement>();
   const [tip, setTip] = useState<Tip | null>(null);
   const [hover, setHover] = useState<number | null>(null);
   const margen = { izq: 34, der: 6, sup: 8, inf: 24 };
-  const totales = datos.map(d => series.reduce((s, x) => s + Number(d[x.clave] || 0), 0));
+  const totales = datos.map(d => series.reduce((s, x) => s + conteo(d, x.clave), 0));
   const marcas = escala(Math.max(...totales, 0));
   const maxEje = marcas[marcas.length - 1] || 1;
   const w = Math.max(0, ancho - margen.izq - margen.der);
@@ -95,12 +98,12 @@ export const BarrasApiladas: React.FC<{
           {datos.map((d, i) => {
             const x0 = margen.izq + i * banda + (banda - anchoBarra) / 2;
             let acumulado = 0;
-            const visibles = series.filter(s => Number(d[s.clave] || 0) > 0);
+            const visibles = series.filter(s => conteo(d, s.clave) > 0);
             return (
               <g key={i} opacity={hover === null || hover === i ? 1 : 0.55}>
                 {resaltar === i && <rect x={margen.izq + i * banda} y={margen.sup} width={banda} height={h} fill="#f1f5f9" />}
                 {visibles.map((s, j) => {
-                  const v = Number(d[s.clave]);
+                  const v = conteo(d, s.clave);
                   const yTop = y(acumulado + v);
                   const alturaSeg = y(acumulado) - yTop;
                   acumulado += v;
@@ -117,7 +120,7 @@ export const BarrasApiladas: React.FC<{
                     setHover(i);
                     setTip({
                       x: e.clientX, y: e.clientY, titulo: (tituloTip ?? etiquetaX)(d, i), total: totales[i],
-                      filas: series.map(s => ({ etiqueta: s.etiqueta, color: s.color, valor: Number(d[s.clave] || 0) })),
+                      filas: series.map(s => ({ etiqueta: s.etiqueta, color: s.color, valor: conteo(d, s.clave) })),
                     });
                   }} />
                 {i % cadaEtiqueta === 0 && (
@@ -132,11 +135,11 @@ export const BarrasApiladas: React.FC<{
       <Tooltip tip={tip} />
     </div>
   );
-};
+}
 
 /** Barras horizontales (ranking por categoría), opcionalmente apiladas por estado. */
 export const BarrasHorizontales: React.FC<{
-  filas: { etiqueta: string; valores: Record<string, number>; total: number }[];
+  filas: { etiqueta: string; valores: object; total: number }[];
   series: readonly Serie[];
 }> = ({ filas, series }) => {
   const max = Math.max(1, ...filas.map(f => f.total));
@@ -146,11 +149,11 @@ export const BarrasHorizontales: React.FC<{
       {filas.map(f => (
         <div className="barra-h" key={f.etiqueta}
           onMouseMove={e => setTip({ x: e.clientX, y: e.clientY, titulo: f.etiqueta, total: f.total,
-            filas: series.map(s => ({ etiqueta: s.etiqueta, color: s.color, valor: f.valores[s.clave] || 0 })) })}>
+            filas: series.map(s => ({ etiqueta: s.etiqueta, color: s.color, valor: conteo(f.valores, s.clave) })) })}>
           <span className="truncar" title={f.etiqueta}>{f.etiqueta}</span>
           <div className="pista">
             {series.map(s => {
-              const v = f.valores[s.clave] || 0;
+              const v = conteo(f.valores, s.clave);
               return v > 0 ? <div key={s.clave} style={{ width: `${(v / max) * 100}%`, background: s.color }} /> : null;
             })}
           </div>
@@ -163,19 +166,19 @@ export const BarrasHorizontales: React.FC<{
 };
 
 /** Distribución de un total en una barra única segmentada (con leyenda y porcentajes). */
-export const BarraDistribucion: React.FC<{ valores: Record<string, number>; series: readonly Serie[] }> = ({ valores, series }) => {
-  const total = series.reduce((s, x) => s + (valores[x.clave] || 0), 0);
+export const BarraDistribucion: React.FC<{ valores: object; series: readonly Serie[] }> = ({ valores, series }) => {
+  const total = series.reduce((s, x) => s + conteo(valores, x.clave), 0);
   return (
     <div className="pila" style={{ gap: 10 }}>
       <div style={{ display: 'flex', gap: 2, height: 12, borderRadius: 6, overflow: 'hidden', background: 'var(--surface-3)' }}>
-        {total > 0 && series.map(s => (valores[s.clave] || 0) > 0 && (
-          <div key={s.clave} style={{ width: `${(valores[s.clave] / total) * 100}%`, background: s.color }} title={`${s.etiqueta}: ${valores[s.clave]}`} />
+        {total > 0 && series.map(s => conteo(valores, s.clave) > 0 && (
+          <div key={s.clave} style={{ width: `${(conteo(valores, s.clave) / total) * 100}%`, background: s.color }} title={`${s.etiqueta}: ${conteo(valores, s.clave)}`} />
         ))}
       </div>
       <div className="leyenda">
         {series.map(s => (
-          <span key={s.clave}><i style={{ background: s.color }} />{s.etiqueta} <b style={{ color: 'var(--text)' }}>{numero(valores[s.clave] || 0)}</b>
-            {total > 0 && <span className="texto-secundario">({Math.round(((valores[s.clave] || 0) / total) * 100)} %)</span>}</span>
+          <span key={s.clave}><i style={{ background: s.color }} />{s.etiqueta} <b style={{ color: 'var(--text)' }}>{numero(conteo(valores, s.clave))}</b>
+            {total > 0 && <span className="texto-secundario">({Math.round((conteo(valores, s.clave) / total) * 100)} %)</span>}</span>
         ))}
       </div>
     </div>

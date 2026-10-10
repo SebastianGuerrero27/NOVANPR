@@ -4,7 +4,7 @@ import api, { mensajeError } from '../../infraestructura/api';
 import { usePaginaVisible } from '../../aplicacion/hooks';
 import { conectarWhep, crearMedidor, EstadisticasVideo, SesionWhep } from '../../infraestructura/webrtc';
 import { areaVideo, crearHud, Hud, MovimientoHud, PistaHud, Punto } from './hud';
-import { Aviso, Modal } from './ui';
+import { Aviso, Modal, Segmentado } from './ui';
 
 /**
  * Video en vivo por WebRTC (MediaMTX) con el HUD de detección del motor ANPR dibujado encima.
@@ -14,14 +14,33 @@ import { Aviso, Modal } from './ui';
  * Cada placa en seguimiento se dibuja desde que aparece y sigue al vehículo: "ESCANEANDO OCR"
  * mientras se lee, la placa al leerla y el color del estado decidido por el backend (ver
  * hud.ts). La región de interés de la cámara se muestra con el exterior atenuado.
+ *
+ * Doble flujo (como los NVR y sistemas ANPR profesionales): el motor analiza el flujo principal
+ * de la cámara a máxima resolución y el navegador puede mostrar el secundario (cam_<id>_vista,
+ * H.264 de baja resolución), que consume una fracción del ancho de banda y se reproduce en
+ * cualquier navegador aunque el principal sea H.265. Las pistas llegan normalizadas (0–1), así
+ * que se dibujan igual sobre cualquiera de los dos.
  */
 
 interface AreaVideo { x: number; y: number; w: number; h: number }
 
 type Estado = 'conectando' | 'en_vivo' | 'pausado' | 'oculto' | 'reconectando' | 'error' | 'sin_camara';
 
+/** Pista tal como la envía /ws/pistas del motor (coordenadas normalizadas 0–1). */
+interface PistaMotor {
+  id: number;
+  caja: PistaHud['caja'];
+  puntos?: Punto[] | null;
+  velocidad?: [number, number];
+  confianza?: number;
+  placa?: string | null;
+  parcial?: string | null;
+  confianza_placa?: number;
+  estado?: string | null;
+}
+
 /** Pistas del WebSocket /ws/pistas del motor → HUD. */
-function pistasDelMotor(lista: any[]): PistaHud[] {
+function pistasDelMotor(lista: PistaMotor[] | undefined): PistaHud[] {
   return (lista ?? []).map(p => ({
     id: p.id,
     caja: p.caja,
@@ -54,14 +73,15 @@ const Superposicion: React.FC<{ estado: Estado; mensaje?: string | null; pausado
   );
 };
 
-const Insignias: React.FC<{ stats: EstadisticasVideo | null; etiqueta: string }> = ({ stats, etiqueta }) => (
+const Insignias: React.FC<{ stats: EstadisticasVideo | null; etiqueta: string; ajustada: boolean }> = ({ stats, etiqueta, ajustada }) => (
   <>
     <span className="insignia" style={{ position: 'absolute', left: 10, top: 10, background: 'rgba(185,28,28,0.92)', borderColor: 'transparent', color: '#fff' }}>
       <Radio size={12} /> {etiqueta}
     </span>
     {stats && (
       <span className="insignia" style={{ position: 'absolute', right: 52, top: 10, background: 'rgba(2,6,23,0.72)', borderColor: 'transparent', color: '#e2e8f0' }}
-        title="Retardo estimado (red + búfer del navegador), cuadros por segundo, resolución y ancho de banda">
+        title={`Retardo estimado (red + búfer del navegador), cuadros por segundo, resolución y ancho de banda${ajustada
+          ? '. La imagen se muestra con la proporción del flujo que analiza el motor.' : ''}`}>
         {stats.latencia_ms !== null && <>≈ {stats.latencia_ms} ms · </>}{stats.fps} fps · {stats.ancho}×{stats.alto} · {stats.kbps} kbps
       </span>
     )}
@@ -91,6 +111,11 @@ export const ReproductorWebRTC: React.FC<{
   const [stats, setStats] = useState<EstadisticasVideo | null>(null);
   const [intento, setIntento] = useState(0);
   const [area, setArea] = useState<AreaVideo | null>(null);
+  // Proporción del flujo que analiza el motor cuando la vista llega con otra (p. ej. un secundario
+  // de 640×480 de un sensor 16:9): la cámara escala sin recortar, así que se muestra estirada a la
+  // proporción real y la imagen y los recuadros conservan la geometría.
+  const [ajuste, setAjuste] = useState<number | null>(null);
+  const ajusteActual = useRef<number | null>(null);
   const fallos = useRef(0);
   const activo = visible && !pausado;
 
@@ -105,7 +130,14 @@ export const ReproductorWebRTC: React.FC<{
     let vigilancia: number | undefined;
     let reintento: number | undefined;
     const v = video.current!;
-    const hud: Hud = crearHud(lienzo.current!, () => (v.videoWidth ? areaVideo(v) : null));
+    const hud: Hud = crearHud(lienzo.current!, () => (v.videoWidth ? areaVideo(v, ajusteActual.current) : null));
+    let aspectoMotor: number | null = null;
+    const revisarAspecto = () => {
+      const propio = v.videoWidth && v.videoHeight ? v.videoWidth / v.videoHeight : null;
+      const nuevo = aspectoMotor && propio && Math.abs(propio / aspectoMotor - 1) > 0.03 ? aspectoMotor : null;
+      if (nuevo !== ajusteActual.current) { ajusteActual.current = nuevo; setAjuste(nuevo); }
+    };
+    v.addEventListener('resize', revisarAspecto);
 
     const fallar = (texto: string) => {
       if (cerrado) return;
@@ -118,7 +150,7 @@ export const ReproductorWebRTC: React.FC<{
     // El HUD se redimensiona solo; aquí se mantiene el área de la capa interactiva
     const redibujar = () => {
       if (v.videoWidth) {
-        const a = areaVideo(v);
+        const a = areaVideo(v, ajusteActual.current);
         setArea(prev => (prev && prev.x === a.x && prev.y === a.y && prev.w === a.w && prev.h === a.h ? prev : { x: a.x, y: a.y, w: a.w, h: a.h }));
       }
     };
@@ -150,6 +182,7 @@ export const ReproductorWebRTC: React.FC<{
           ws.onmessage = ev => {
             try {
               const m = JSON.parse(ev.data);
+              if (typeof m.aspecto === 'number' && m.aspecto !== aspectoMotor) { aspectoMotor = m.aspecto; revisarAspecto(); }
               hud.actualizar(pistasDelMotor(m.pistas), (m.movimiento as MovimientoHud | null) ?? null, (m.roi as Punto[] | null) ?? null);
             } catch { /* mensaje inválido */ }
           };
@@ -166,6 +199,7 @@ export const ReproductorWebRTC: React.FC<{
       window.clearTimeout(vigilancia);
       window.clearInterval(timerStats);
       ro.disconnect();
+      v.removeEventListener('resize', revisarAspecto);
       ws?.close();
       hud.detener();
       sesion?.cerrar();
@@ -176,23 +210,26 @@ export const ReproductorWebRTC: React.FC<{
   }, [activo, intento, claveReinicio]);
 
   return (
-    <div ref={contenedor} style={{ position: 'relative', width: '100%', aspectRatio: '16 / 9', background: '#050b16', borderRadius: 10, overflow: 'hidden' }}>
-      <video ref={video} muted playsInline autoPlay style={{ width: '100%', height: '100%', objectFit: 'contain', display: 'block' }} />
+    <div ref={contenedor} style={{ position: 'relative', width: '100%', aspectRatio: ajuste ? String(ajuste) : '16 / 9', background: '#050b16', borderRadius: 10, overflow: 'hidden' }}>
+      <video ref={video} muted playsInline autoPlay style={{ width: '100%', height: '100%', objectFit: ajuste ? 'fill' : 'contain', display: 'block' }} />
       <canvas ref={lienzo} style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', pointerEvents: 'none' }} />
       {capa && area && estado === 'en_vivo' && (
         <div style={{ position: 'absolute', left: area.x, top: area.y, width: area.w, height: area.h }}>{capa}</div>
       )}
       <Superposicion estado={estado} mensaje={mensaje} pausado={pausado} />
-      {estado === 'en_vivo' && !capa && <Insignias stats={stats} etiqueta={etiqueta} />}
+      {estado === 'en_vivo' && !capa && <Insignias stats={stats} etiqueta={etiqueta} ajustada={ajuste !== null} />}
       <button className="btn btn-sm btn-icono" style={{ position: 'absolute', right: 10, top: 10, background: 'rgba(2,6,23,0.7)', color: '#e2e8f0' }}
         onClick={() => contenedor.current?.requestFullscreen?.().catch(() => undefined)} aria-label="Pantalla completa"><Maximize2 size={14} /></button>
     </div>
   );
 };
 
-/** Video de la cámara que procesa el motor, con las detecciones superpuestas. */
-export const VisorEnVivo: React.FC<{ camaraId: number | null; pausado: boolean; claveReinicio?: unknown; onFallo: (m: string) => void }> =
-  ({ camaraId, pausado, claveReinicio, onFallo }) => {
+/**
+ * Video de la cámara que procesa el motor, con las detecciones superpuestas. Con `vista`, el
+ * flujo secundario de la cámara (el motor sigue analizando el principal).
+ */
+export const VisorEnVivo: React.FC<{ camaraId: number | null; vista?: boolean; pausado: boolean; claveReinicio?: unknown; onFallo: (m: string) => void }> =
+  ({ camaraId, vista = false, pausado, claveReinicio, onFallo }) => {
     if (!camaraId) {
       return (
         <div style={{ position: 'relative', width: '100%', aspectRatio: '16 / 9', background: '#050b16', borderRadius: 10 }}>
@@ -201,11 +238,12 @@ export const VisorEnVivo: React.FC<{ camaraId: number | null; pausado: boolean; 
       );
     }
     return (
-      <ReproductorWebRTC pausado={pausado} claveReinicio={`${camaraId}-${String(claveReinicio)}`} onFallo={onFallo}
+      <ReproductorWebRTC pausado={pausado} claveReinicio={`${camaraId}-${vista}-${String(claveReinicio)}`} onFallo={onFallo}
         obtener={async () => {
           const t = (await api.post('/monitoreo/ticket', { alcance: 'stream' })).data;
           const q = `ticket=${encodeURIComponent(t.ticket)}`;
-          return { whep: `${t.webrtc}/cam_${camaraId}/whep?${q}`, pistasWs: `${String(t.url).replace(/^http/, 'ws')}/ws/pistas?${q}` };
+          const ruta = `cam_${camaraId}${vista ? '_vista' : ''}`;
+          return { whep: `${t.webrtc}/${ruta}/whep?${q}`, pistasWs: `${String(t.url).replace(/^http/, 'ws')}/ws/pistas?${q}` };
         }} />
     );
   };
@@ -213,9 +251,16 @@ export const VisorEnVivo: React.FC<{ camaraId: number | null; pausado: boolean; 
 /**
  * “Play” de Administración › Cámaras: reproduce el flujo real por WebRTC y muestra el
  * estado en el servidor de video (fuente activa, lectores conectados, códec) para
- * confirmar que el video se está recibiendo y consumiendo.
+ * confirmar que el video se está recibiendo y consumiendo. Si la cámara tiene flujo
+ * secundario se puede reproducir cualquiera de los dos.
  */
-export const ReproductorPrueba: React.FC<{ titulo: string; camaraId?: number; rtspUrl?: string; onCerrar: () => void }> = ({ titulo, camaraId, rtspUrl, onCerrar }) => {
+type Canal = 'vista' | 'principal';
+
+export const ReproductorPrueba: React.FC<{ titulo: string; camaraId?: number; rtspUrl?: string; rtspUrlVista?: string; onCerrar: () => void }> = ({ titulo, camaraId, rtspUrl, rtspUrlVista, onCerrar }) => {
+  const guardada = Boolean(camaraId && !rtspUrl);
+  const [canal, setCanal] = useState<Canal>('vista');
+  const [hayVista, setHayVista] = useState(Boolean(rtspUrlVista));
+  const enVista = canal === 'vista' && hayVista;
   const [ruta, setRuta] = useState<string | null>(null);
   const [servidor, setServidor] = useState<{ lista: boolean; lectores: number; pistas: string[] } | null>(null);
   const [stats, setStats] = useState<EstadisticasVideo | null>(null);
@@ -236,23 +281,37 @@ export const ReproductorPrueba: React.FC<{ titulo: string; camaraId?: number; rt
   }, []);
 
   const obtener = async () => {
-    const r = camaraId && !rtspUrl
+    const vista = canal === 'vista' && (guardada || Boolean(rtspUrlVista));
+    const r = guardada
       ? (await api.post(`/camaras/${camaraId}/video`)).data
-      : (await api.post('/camaras/prueba-video', { rtsp_url: rtspUrl, camara_id: camaraId })).data;
-    if (!camaraId || rtspUrl) {
+      : (await api.post('/camaras/prueba-video', { rtsp_url: vista ? rtspUrlVista : rtspUrl, camara_id: camaraId, vista })).data;
+    if (!guardada) {
       if (rutaTemporal.current && rutaTemporal.current !== r.ruta) api.delete(`/camaras/prueba-video/${rutaTemporal.current}`).catch(() => undefined);
       rutaTemporal.current = r.ruta;
+    } else {
+      setHayVista(Boolean(r.ruta_vista));
     }
-    setRuta(r.ruta);
-    return { whep: `${r.webrtc}/${r.ruta}/whep?ticket=${encodeURIComponent(r.ticket)}` };
+    const elegida: string = guardada && vista && r.ruta_vista ? r.ruta_vista : r.ruta;
+    setRuta(elegida);
+    return { whep: `${r.webrtc}/${elegida}/whep?ticket=${encodeURIComponent(r.ticket)}` };
   };
 
+  const cambiarCanal = (c: Canal) => { setCanal(c); setServidor(null); setStats(null); setError(null); };
   const h265 = servidor?.pistas.some(p => /265|hevc/i.test(p));
   return (
     <Modal titulo={`Reproducción de prueba · ${titulo}`} subtitulo="Flujo real de la cámara por WebRTC (servidor de video MediaMTX)" onCerrar={onCerrar} tamano="ancho"
       pie={<button className="btn btn-secondary" onClick={onCerrar}>Cerrar</button>}>
       <div className="pila" style={{ gap: 12 }}>
-        <ReproductorWebRTC obtener={obtener} etiqueta="PRUEBA · WebRTC" onEstadisticas={setStats}
+        {hayVista && (
+          <div className="fila" style={{ gap: 10, flexWrap: 'wrap' }}>
+            <Segmentado valor={canal} onCambiar={cambiarCanal} opciones={[
+              { valor: 'vista', etiqueta: 'Flujo secundario · vista en vivo' },
+              { valor: 'principal', etiqueta: 'Flujo principal · motor ANPR' },
+            ]} />
+            <span className="texto-secundario">El motor analiza el principal; el navegador muestra el secundario.</span>
+          </div>
+        )}
+        <ReproductorWebRTC obtener={obtener} etiqueta="PRUEBA · WebRTC" onEstadisticas={setStats} claveReinicio={canal}
           onFallo={m => setError(m)} />
         <div className="grid-3" style={{ gap: 10 }}>
           <div className="tarjeta" style={{ padding: 12 }}>
@@ -273,7 +332,13 @@ export const ReproductorPrueba: React.FC<{ titulo: string; camaraId?: number; rt
             <span className="texto-secundario">Red local + búfer del navegador{stats?.perdidos ? ` · ${stats.perdidos} paquetes perdidos` : ''}</span>
           </div>
         </div>
-        {h265 && <Aviso tipo="advertencia">La cámara envía <b>H.265</b>: la mayoría de navegadores no lo reproducen por WebRTC. Configure el flujo en <b>H.264</b> en la cámara (el motor ANPR puede procesar ambos).</Aviso>}
+        {h265 && (enVista
+          ? <Aviso tipo="advertencia">El flujo secundario también llega en <b>H.265</b>. Configúrelo en <b>H.264</b> en la cámara
+            (Configuración › Video › Sub Stream, 640×360) para que se reproduzca en cualquier navegador.</Aviso>
+          : <Aviso tipo="advertencia">Este flujo llega en <b>H.265</b>: el motor ANPR lo procesa sin problema, pero por WebRTC solo
+            lo reproducen Safari y Chrome con decodificación por hardware. {hayVista
+              ? 'La vista en vivo usa el flujo secundario.'
+              : 'Active en la cámara la “vista en vivo por el flujo secundario” (H.264) o configure el principal en H.264.'}</Aviso>)}
         {error && <Aviso tipo="error"><AlertTriangle size={14} style={{ verticalAlign: -2 }} /> {error}</Aviso>}
       </div>
     </Modal>

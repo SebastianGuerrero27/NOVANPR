@@ -13,6 +13,13 @@ export const fechaHora = (v?: string | Date | null) => (v ? fFechaHora.format(ne
 export const hora = (v?: string | Date | null) => (v ? fHora.format(new Date(v)) : '—');
 export const diaCorto = (isoFecha: string) => fDiaCorto.format(new Date(`${isoFecha}T12:00:00-05:00`));
 export const numero = (v?: number | null) => (v === null || v === undefined ? '—' : fNumero.format(v));
+/** Códec de video legible a partir del FOURCC que informa FFmpeg (hevc, hev1, avc1, h264…). */
+export function codecVideo(v?: string | null): string {
+  if (!v) return 'Códec desconocido';
+  if (/hevc|hev1|hvc1|h265/i.test(v)) return 'H.265';
+  if (/avc|h264/i.test(v)) return 'H.264';
+  return v.toUpperCase();
+}
 export const porcentaje = (v?: number | null, dec = 1) => (v === null || v === undefined ? '—' : `${(v * 100).toFixed(dec)} %`);
 
 /** "hace 3 min", "hace 2 h", o la fecha si pasó más de un día. */

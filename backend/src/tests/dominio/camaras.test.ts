@@ -1,6 +1,6 @@
 import {
-  enmascarar, leerAlcance, leerCamara, leerIdCamara, leerIp, leerRoi, leerUrlRtsp, MASCARA, parsearRoi, presentarCamara,
-  restaurarClave, tieneCredenciales,
+  cambiosCamara, enmascarar, leerAlcance, leerCamara, leerIdCamara, leerIp, leerRoi, leerUrlRtsp, leerUrlVista, MASCARA,
+  parsearRoi, presentarCamara, RE_RUTA_VIDEO, restaurarClave, tieneCredenciales,
 } from '../../dominio/camaras';
 
 describe('Cámaras · credenciales RTSP', () => {
@@ -53,7 +53,7 @@ describe('Cámaras · validación del formulario', () => {
 
   it('acepta datos válidos: textos recortados e IP opcional', () => {
     expect(leerCamara({ ...valida, nombre: '  Garita   principal ' })).toEqual({
-      ok: true, valor: { nombre: 'Garita principal', ubicacion: valida.ubicacion, rtsp: valida.rtsp_url, ip: null },
+      ok: true, valor: { nombre: 'Garita principal', ubicacion: valida.ubicacion, rtsp: valida.rtsp_url, rtspVista: null, ip: null },
     });
     expect(leerCamara({ ...valida, ip: ' 192.168.1.64 ' })).toMatchObject({ ok: true, valor: { ip: '192.168.1.64' } });
     expect(leerCamara(null)).toEqual({ ok: false, error: 'El campo «Nombre» es obligatorio.' });
@@ -108,6 +108,52 @@ describe('Cámaras · validación del formulario', () => {
   });
 });
 
+describe('Cámaras · flujo de vista', () => {
+  const valida = {
+    nombre: 'Garita principal', ubicacion: 'Acceso norte',
+    rtsp_url: 'rtsp://admin:Ecu%40911@192.168.1.64:554/Streaming/Channels/101',
+  };
+
+  it('es opcional: vacío o ausente = la vista usa el flujo principal', () => {
+    for (const rtsp_url_vista of [undefined, null, '', '   ']) {
+      expect(leerCamara({ ...valida, rtsp_url_vista })).toMatchObject({ ok: true, valor: { rtspVista: null } });
+    }
+    expect(leerUrlVista('rtsp://admin:x@192.168.1.64:554/Streaming/Channels/102'))
+      .toEqual({ ok: true, valor: 'rtsp://admin:x@192.168.1.64:554/Streaming/Channels/102' });
+  });
+
+  it('se valida como la URL principal, con su propio mensaje', () => {
+    expect(leerCamara({ ...valida, rtsp_url_vista: 'http://192.168.1.64/102' }))
+      .toEqual({ ok: false, error: 'Ingrese una URL del flujo de vista válida (rtsp://…).' });
+    expect(leerUrlVista(`rtsp://192.168.1.64/${'a'.repeat(240)}`))
+      .toEqual({ ok: false, error: 'URL del flujo de vista: máximo 255 caracteres.' });
+  });
+
+  it('enmascarada, recupera la contraseña de la vista guardada o, si no había vista, la del flujo principal', () => {
+    const vista = `rtsp://admin:${MASCARA}@192.168.1.64:554/Streaming/Channels/102`;
+    expect(leerCamara({ ...valida, rtsp_url_vista: vista }, valida.rtsp_url, 'rtsp://admin:propia@192.168.1.64:554/Streaming/Channels/102'))
+      .toMatchObject({ ok: true, valor: { rtspVista: 'rtsp://admin:propia@192.168.1.64:554/Streaming/Channels/102' } });
+    expect(leerCamara({ ...valida, rtsp_url_vista: vista }, valida.rtsp_url, null))
+      .toMatchObject({ ok: true, valor: { rtspVista: 'rtsp://admin:Ecu%40911@192.168.1.64:554/Streaming/Channels/102' } });
+  });
+
+  it('la auditoría registra el cambio de la URL de vista y la API la entrega enmascarada', () => {
+    const datos = { nombre: 'Garita', ubicacion: 'Acceso', rtsp: 'rtsp://a', rtspVista: 'rtsp://b', ip: '10.0.0.5' };
+    expect(cambiosCamara({ nombre: 'Garita', ubicacion: 'Acceso', rtsp_url: 'rtsp://a', rtsp_url_vista: null, ip: '10.0.0.5' }, datos))
+      .toEqual(['URL de vista']);
+    expect(presentarCamara({
+      id: 1, nombre: 'Garita', ip: '10.0.0.5', rtsp_url: 'rtsp://admin:clave@10.0.0.5/101', rtsp_url_vista: 'rtsp://admin:clave@10.0.0.5/102',
+      ubicacion: 'Acceso', activa: 1, estado: null, ultimo_ping: null, tiempo_respuesta_ms: null, mensaje_ping: null,
+      created_at: new Date(), roi: null,
+    }).rtsp_url_vista).toBe(`rtsp://admin:${MASCARA}@10.0.0.5/102`);
+  });
+
+  it('rutas de video consultables: cam_<id>, cam_<id>_vista y rutas de prueba', () => {
+    for (const ruta of ['cam_3', 'cam_3_vista', 'prueba_0123456789ab']) expect(RE_RUTA_VIDEO.test(ruta)).toBe(true);
+    for (const ruta of ['cam_3_otra', 'cam_vista', 'cam_3_vista_x', '../cam_3']) expect(RE_RUTA_VIDEO.test(ruta)).toBe(false);
+  });
+});
+
 describe('Cámaras · región de interés', () => {
   it('polígono de 3 a 12 vértices normalizados, redondeado a 4 decimales; null o [] = cuadro completo', () => {
     expect(leerRoi([[0, 0], [1, 0], [0.33333333, 1]])).toEqual({ ok: true, valor: [[0, 0], [1, 0], [0.3333, 1]] });
@@ -137,7 +183,7 @@ describe('Cámaras · presentación y alcance del ticket', () => {
       detecciones: 2, roi: '[[0,0],[1,0],[1,1]]',
     })).toEqual({
       id: 1, nombre: 'Garita', ip: '10.0.0.5', ubicacion: 'Acceso', rtsp_url: `rtsp://admin:${MASCARA}@10.0.0.5/101`,
-      tiene_credenciales: true, activa: true, estado: 'SIN_VERIFICAR', ultimo_ping: null, tiempo_respuesta_ms: null,
+      rtsp_url_vista: null, tiene_credenciales: true, activa: true, estado: 'SIN_VERIFICAR', ultimo_ping: null, tiempo_respuesta_ms: null,
       mensaje_ping: null, created_at: creada, detecciones: 2, roi: [[0, 0], [1, 0], [1, 1]],
     });
   });

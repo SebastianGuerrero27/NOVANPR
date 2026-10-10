@@ -96,7 +96,8 @@ export const EditorRoi: React.FC<{ camara: Camara; onCerrar: () => void; onGuard
         <ReproductorWebRTC etiqueta="ÁREA DE INTERÉS" capa={capa}
           obtener={async () => {
             const r = (await api.post(`/camaras/${camara.id}/video`)).data;
-            return { whep: `${r.webrtc}/${r.ruta}/whep?ticket=${encodeURIComponent(r.ticket)}` };
+            // El flujo secundario muestra la misma escena (los vértices son normalizados)
+            return { whep: `${r.webrtc}/${r.ruta_vista ?? r.ruta}/whep?ticket=${encodeURIComponent(r.ticket)}` };
           }} onFallo={m => setError(m)} />
         <div className="fila" style={{ justifyContent: 'space-between' }}>
           <span className="texto-secundario">

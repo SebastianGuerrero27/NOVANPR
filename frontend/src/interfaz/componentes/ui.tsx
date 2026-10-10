@@ -167,8 +167,8 @@ export const Confirmar: React.FC<{
     try {
       await onConfirmar(motivo.trim());
       onCerrar();
-    } catch (e: any) {
-      setError(e?.message || 'No se pudo completar la acción.');
+    } catch (e) {
+      setError((e instanceof Error && e.message) || 'No se pudo completar la acción.');
       setEnviando(false);
     }
   };

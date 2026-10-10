@@ -152,7 +152,8 @@ BEGIN
         id                   INT IDENTITY(1,1) PRIMARY KEY,
         nombre               NVARCHAR(100) NOT NULL,
         ip                   VARCHAR(45)   NOT NULL,
-        rtsp_url             VARCHAR(255)  NOT NULL,
+        rtsp_url             VARCHAR(512)  NOT NULL,   -- contraseña cifrada (AES-256-GCM)
+        rtsp_url_vista       VARCHAR(512)  NULL,       -- flujo secundario para la vista en vivo
         ubicacion            NVARCHAR(150) NOT NULL,
         activa               BIT           NOT NULL DEFAULT 1,
         estado               VARCHAR(20)   NULL DEFAULT 'SIN_VERIFICAR',   -- EN_LINEA | SIN_CONEXION | SIN_VERIFICAR

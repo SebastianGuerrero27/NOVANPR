@@ -52,6 +52,7 @@ export const MIGRACIONES = [
   'migration_v6_tres_roles.sql',
   'migration_v7_auditoria_retencion.sql',
   'migration_v8_solicitudes_version.sql',
+  'migration_v9_camaras_vista_cifrado.sql',
 ];
 
 let pool: sql.ConnectionPool;

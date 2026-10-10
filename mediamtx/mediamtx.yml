@@ -1,11 +1,17 @@
 ###############################################################################
 # MediaMTX · servidor de medios del Sistema ANPR
 #
-# - Cada cámara registrada se publica como la ruta `cam_<id>`. Las rutas NO se escriben
-#   aquí: el backend las crea, actualiza y elimina por la API (puerto 9997, solo red interna
-#   de Docker) a partir de la tabla Camaras. Así no hay credenciales RTSP en este archivo.
-# - MediaMTX mantiene UNA conexión con cada cámara y la reparte: el motor ANPR la lee por
-#   RTSP y los navegadores por WebRTC (baja latencia, sin transcodificar).
+# MediaMTX v1.21 (imagen fijada en docker-compose.yml).
+#
+# - Cada cámara registrada se publica como la ruta `cam_<id>` (flujo principal, el que procesa
+#   el motor ANPR) y, si tiene flujo de vista, `cam_<id>_vista` (flujo secundario para el
+#   navegador). Las rutas NO se escriben aquí: el backend las crea, actualiza y elimina por la
+#   API (puerto 9997, solo red interna de Docker) a partir de la tabla Camaras, descifrando las
+#   credenciales solo para entregarlas. Así no hay credenciales RTSP en este archivo.
+# - MediaMTX mantiene UNA conexión con cada flujo de la cámara y la reparte: el motor ANPR la lee
+#   por RTSP y los navegadores por WebRTC (baja latencia, sin transcodificar). WebRTC entrega
+#   H.264 en cualquier navegador; H.265 solo en navegadores con decodificador por hardware
+#   (Chrome 136+, Safari): por eso la vista usa el flujo secundario en H.264.
 # - Toda lectura se autoriza contra el backend (/api/medios/autorizar):
 #     · motor ANPR (RTSP): usuario "anpr" + ANPR_SERVICE_TOKEN
 #     · navegador (WebRTC): ticket de 60 s emitido a un usuario con sesión válida
@@ -31,13 +37,13 @@ metricsAddress: :9998
 
 # RTSP (lectura del motor ANPR y fuentes de las cámaras)
 rtsp: yes
-protocols: [tcp]
+rtspTransports: [tcp]
 rtspAddress: :8554
 
 # WebRTC (video en el navegador, latencia ~0,2–0,5 s)
 webrtc: yes
 webrtcAddress: :8889
-webrtcAllowOrigin: '*'
+webrtcAllowOrigins: ['*']
 webrtcLocalUDPAddress: :8189
 # Respaldo por TCP cuando la red bloquea UDP
 webrtcLocalTCPAddress: :8189
@@ -50,6 +56,7 @@ webrtcAdditionalHosts: [127.0.0.1]
 rtmp: no
 hls: no
 srt: no
+moq: no
 playback: no
 
 pathDefaults:

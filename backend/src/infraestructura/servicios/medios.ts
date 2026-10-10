@@ -1,15 +1,17 @@
 import crypto from 'crypto';
 import sql from 'mssql';
 import { getDB } from '../db';
+import { revelar } from './custodiaCredenciales';
 
 /**
  * Integración con MediaMTX (servidor de medios).
  *
- * Cada cámara registrada y habilitada se publica como la ruta `cam_<id>`: MediaMTX abre una
- * sola conexión con la cámara (bajo demanda) y la reparte al motor ANPR por RTSP y a los
- * navegadores por WebRTC, sin transcodificar. Las rutas se administran por la API interna
- * de MediaMTX a partir de la base de datos, así las credenciales de las cámaras nunca se
- * escriben en archivos de configuración.
+ * Cada cámara registrada y habilitada se publica como la ruta `cam_<id>` (flujo principal, el que
+ * lee el motor ANPR por RTSP) y, si tiene flujo de vista, como `cam_<id>_vista` (flujo secundario,
+ * el que ven los navegadores por WebRTC; si no hay, ven el principal). MediaMTX abre una sola
+ * conexión por flujo (bajo demanda) y la reparte sin transcodificar. Las rutas se administran por
+ * la API interna de MediaMTX a partir de la base de datos: las credenciales se descifran solo al
+ * entregarlas a MediaMTX y nunca se escriben en archivos de configuración.
  */
 const API = () => (process.env.MEDIAMTX_API_URL || 'http://localhost:9997').replace(/\/$/, '');
 const RTSP_INTERNA = () => (process.env.MEDIAMTX_RTSP_URL || 'rtsp://localhost:8554').replace(/\/$/, '');
@@ -19,6 +21,7 @@ const token = () => process.env.ANPR_SERVICE_TOKEN || '';
 export const USUARIO_MOTOR = 'anpr';
 
 export const rutaCamara = (id: number) => `cam_${id}`;
+export const rutaVista = (id: number) => `cam_${id}_vista`;
 
 /** URL con la que el motor ANPR lee una ruta de MediaMTX (autenticado con el token de servicio). */
 export function urlLecturaMotor(ruta: string): string {
@@ -59,10 +62,18 @@ export function sincronizarRutas(): Promise<void> {
   sincronizando = (async () => {
     try {
       const [camaras, actuales] = await Promise.all([
-        getDB().request().query('SELECT id, rtsp_url FROM Camaras WHERE activa = 1'),
+        getDB().request().query('SELECT id, rtsp_url, rtsp_url_vista FROM Camaras WHERE activa = 1'),
         rutasConfiguradas(),
       ]);
-      const deseadas = new Map<string, string>(camaras.recordset.map(c => [rutaCamara(c.id), c.rtsp_url]));
+      const deseadas = new Map<string, string>();
+      for (const c of camaras.recordset) {
+        try {
+          deseadas.set(rutaCamara(c.id), revelar(c.rtsp_url));
+          if (c.rtsp_url_vista) deseadas.set(rutaVista(c.id), revelar(c.rtsp_url_vista));
+        } catch (e: any) {
+          console.warn(`[MEDIOS] Cámara #${c.id}: ${e.message}`);
+        }
+      }
       for (const [nombre, fuente] of deseadas) {
         if (!actuales.has(nombre)) await api('POST', `/v3/config/paths/add/${nombre}`, configRuta(fuente));
         else if (actuales.get(nombre) !== fuente) await api('PATCH', `/v3/config/paths/patch/${nombre}`, configRuta(fuente));
@@ -148,7 +159,7 @@ export function esMotor(usuario: string, clave: string): boolean {
 
 /** Cámara registrada (habilitada) a la que corresponde una ruta cam_<id>. */
 export async function camaraDeRuta(ruta: string): Promise<number | null> {
-  const m = ruta.match(/^cam_(\d+)$/);
+  const m = ruta.match(/^cam_(\d+)(?:_vista)?$/);
   if (!m) return null;
   const r = await getDB().request().input('id', sql.Int, Number(m[1])).query('SELECT id FROM Camaras WHERE id = @id AND activa = 1');
   return r.recordset[0]?.id ?? null;

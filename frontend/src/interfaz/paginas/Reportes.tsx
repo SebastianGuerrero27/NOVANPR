@@ -122,14 +122,14 @@ const Reportes: React.FC = () => {
               </Tarjeta>
 
               <div className="grid-2">
-                <Tarjeta titulo="Distribución por estado"><BarraDistribucion valores={t as any} series={SERIES_ESTADO} /></Tarjeta>
+                <Tarjeta titulo="Distribución por estado"><BarraDistribucion valores={t} series={SERIES_ESTADO} /></Tarjeta>
                 {!unDia && (
                   <Tarjeta titulo="Horas de mayor afluencia" subtitulo="Total del período por hora del día">
                     <BarrasApiladas datos={datos.por_hora} series={SERIE_TOTAL} etiquetaX={d => String(d.hora).padStart(2, '0')} alto={170} cadaEtiqueta={3} />
                   </Tarjeta>
                 )}
                 <Tarjeta titulo="Por cámara" acciones={<Leyenda series={SERIES_ESTADO} />}>
-                  <BarrasHorizontales series={SERIES_ESTADO} filas={datos.por_camara.map(c => ({ etiqueta: c.camara, total: c.total, valores: c as any }))} />
+                  <BarrasHorizontales series={SERIES_ESTADO} filas={datos.por_camara.map(c => ({ etiqueta: c.camara, total: c.total, valores: c }))} />
                 </Tarjeta>
                 <Tarjeta titulo="Por tipo de vehículo">
                   <BarrasHorizontales series={SERIE_TOTAL} filas={datos.por_tipo.map(x => ({ etiqueta: x.tipo, total: x.total, valores: { total: x.total } }))} />

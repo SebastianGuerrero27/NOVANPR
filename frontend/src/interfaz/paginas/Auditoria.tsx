@@ -23,6 +23,25 @@ import { useNotificar } from '../componentes/Notificaciones';
 
 type Fuente = 'operaciones' | 'cuentas' | 'accesos';
 
+/** Fila de cualquiera de los tres registros: cada fuente trae sus columnas. */
+interface FilaAuditoria {
+  id: number;
+  fecha: string;
+  ip: string | null;
+  // Operaciones y cuentas
+  actor?: string | null;
+  accion?: string;
+  entidad?: string;
+  entidad_id?: number | null;
+  objetivo?: string | null;
+  detalle?: string | null;
+  // Inicios de sesión
+  email?: string;
+  exito?: boolean;
+  motivo?: string;
+  user_agent?: string | null;
+}
+
 const NOMBRE_FUENTE: Record<Fuente, string> = { operaciones: 'Operaciones', cuentas: 'Cuentas de usuario', accesos: 'Inicios de sesión' };
 
 const MOTIVOS_ACCESO: Record<string, string> = {
@@ -114,7 +133,7 @@ const Auditoria: React.FC = () => {
     desde: desde ? limiteDia(desde) : undefined, hasta: hasta ? limiteDia(hasta, true) : undefined,
   }), [params]); // eslint-disable-line react-hooks/exhaustive-deps
   const consulta = useMemo(() => ({ ...filtros, pagina, tamano: 30 }), [filtros, pagina]);
-  const { datos, cargando, error, recargar } = useConsulta<Pagina<any>>(() => api.get('/auditoria', { params: consulta }).then(r => r.data), [consulta]);
+  const { datos, cargando, error, recargar } = useConsulta<Pagina<FilaAuditoria>>(() => api.get('/auditoria', { params: consulta }).then(r => r.data), [consulta]);
   const hayFiltros = Boolean(params.get('q') || desde || hasta || resultado);
 
   const exportar = async () => {
@@ -214,15 +233,15 @@ const Auditoria: React.FC = () => {
                   return fuente === 'accesos' ? (
                     <tr key={x.id} {...abrir}>
                       <td className="nowrap">{fechaHora(x.fecha)}</td><td>{x.email}</td>
-                      <td><span className={`insignia ${x.exito ? 'autorizado' : 'alerta'}`}>{MOTIVOS_ACCESO[x.motivo] ?? x.motivo}</span></td>
+                      <td><span className={`insignia ${x.exito ? 'autorizado' : 'alerta'}`}>{MOTIVOS_ACCESO[x.motivo ?? ''] ?? x.motivo}</span></td>
                       <td className="mono" style={{ fontSize: 12 }}>{x.ip || '—'}</td>
-                      <td className="ocultar-movil truncar" style={{ maxWidth: 260 }} title={x.user_agent}>{x.user_agent || '—'}</td>
+                      <td className="ocultar-movil truncar" style={{ maxWidth: 260 }} title={x.user_agent ?? undefined}>{x.user_agent || '—'}</td>
                     </tr>
                   ) : (
                     <tr key={x.id} {...abrir}>
                       <td className="nowrap">{fechaHora(x.fecha)}</td><td>{x.actor ?? <span className="texto-secundario">sistema</span>}</td>
-                      <td><strong style={{ color: 'var(--text)', fontWeight: 600 }}>{legible(x.accion)}</strong></td>
-                      <td>{fuente === 'operaciones' ? <>{ENTIDADES[x.entidad] ?? x.entidad}{x.entidad_id ? <span className="secundario">#{x.entidad_id}</span> : null}</> : x.objetivo ?? '—'}</td>
+                      <td><strong style={{ color: 'var(--text)', fontWeight: 600 }}>{legible(x.accion ?? '')}</strong></td>
+                      <td>{fuente === 'operaciones' ? <>{ENTIDADES[x.entidad ?? ''] ?? x.entidad}{x.entidad_id ? <span className="secundario">#{x.entidad_id}</span> : null}</> : x.objetivo ?? '—'}</td>
                       <td style={{ maxWidth: 380 }}>{x.detalle ?? '—'}</td>
                       <td className="mono ocultar-movil" style={{ fontSize: 12 }}>{x.ip || '—'}</td>
                     </tr>
