@@ -3,7 +3,7 @@ import { useSearchParams } from 'react-router-dom';
 import { CalendarClock, Clock, FileCheck2, Plus, Repeat, ShieldCheck, ShieldOff, ShieldX } from 'lucide-react';
 import api from '../../infraestructura/api';
 import { useAuth } from '../../aplicacion/AuthContext';
-import { useEvento } from '../../aplicacion/tiempoReal';
+import { useEvento, useReconexion } from '../../aplicacion/tiempoReal';
 import { useConsulta, useDiferido } from '../../aplicacion/hooks';
 import type { PanelAccesos as Panel } from '../../dominio/tipos';
 import { fechaHora, numero, relativo } from '../../dominio/formato';
@@ -38,6 +38,7 @@ const GestionPermisos: React.FC = () => {
 
   const { datos: p, cargando, error, recargar } = useConsulta<Panel>(() => api.get('/panel/accesos').then(r => r.data), []);
   const diferido = useDiferido(() => recargar(true), 3000);
+  useReconexion(() => recargar(true));
   useEvento('solicitudes:actualizadas', diferido);
   useEvento('listas:actualizadas', diferido);
   useEvento('deteccion:actualizada', diferido);

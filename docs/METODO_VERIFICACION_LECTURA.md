@@ -107,8 +107,8 @@ base). El veredicto y las evidencias se guardan en `DeteccionVehiculo.lectura_va
 
 `aplicacion/movimiento.py` analiza una copia del cuadro reducida a 320 px de ancho, de modo
 que su costo no depende de la resolución de la cámara; con región de interés solo cuenta lo
-que ocurre dentro de ella. La cámara RTSP y la webcam del navegador tienen cada una su propio
-estado.
+que ocurre dentro de ella. El estado corresponde a la cámara RTSP activa y se reinicia al
+cambiar de cámara.
 
 - **Compuerta de inferencia.** El detector de placas se ejecuta solo si la escena cambió
   desde la última inferencia: diferencia absoluta (tras suavizado gaussiano 5×5) contra el

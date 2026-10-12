@@ -1,11 +1,8 @@
 """
 Capa de abstracción de fuente de video.
 
-Proporciona una interfaz común (VideoSource) con implementaciones intercambiables:
-  - WebcamSource: cámara local (USB / integrada)
-  - RTSPSource: cámara IP vía protocolo RTSP (Hikvision, Dahua, etc.)
-
-La selección se hace vía CAMERA_SOURCE en .env, nunca en código.
+La única fuente del motor es RTSPSource: la cámara IP asignada por el backend, leída desde su ruta
+en MediaMTX (que mantiene la conexión con la cámara). El motor no usa cámaras locales.
 """
 
 from __future__ import annotations
@@ -32,13 +29,7 @@ OPCIONES_FFMPEG_RTSP = (
 )
 os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = OPCIONES_FFMPEG_RTSP
 
-from app.infraestructura.config import (
-    CAMERA_SOURCE,
-    FRAME_HEIGHT,
-    FRAME_WIDTH,
-    RTSP_URL,
-    WEBCAM_INDEX,
-)
+from app.infraestructura.config import RTSP_URL
 from app.dominio.tasa_cuadros import TasaCuadros
 from app.infraestructura.logger import get_logger
 
@@ -98,157 +89,6 @@ class VideoSource(ABC):
     def source_info(self) -> dict:
         """Retorna metadatos de la fuente (tipo, resolución, fps nativo, etc.)."""
         ...
-
-
-# =============================================================================
-# Implementación: Webcam Local
-# =============================================================================
-
-
-class WebcamSource(VideoSource):
-    """
-    Fuente de video desde webcam local (USB o integrada).
-    Implementa lectura con buffer cero (Zero-Buffer Grabber) para eliminar
-    cualquier latencia de acumulación de fotogramas en memoria.
-    """
-
-    def __init__(self, index: int = WEBCAM_INDEX) -> None:
-        self._index = index
-        self._cap: Optional[cv2.VideoCapture] = None
-        self._width = FRAME_WIDTH
-        self._height = FRAME_HEIGHT
-        self._lock = threading.Lock()
-        self._latest_frame: Optional[np.ndarray] = None
-        self._grab_running = False
-        self._grab_thread: Optional[threading.Thread] = None
-        self._new_frame_event = threading.Event()
-
-    def connect(self) -> bool:
-        import os
-        logger.info(
-            "Intentando abrir webcam en índice %d (resolución objetivo: %dx%d)...",
-            self._index, self._width, self._height,
-        )
-
-        # En Windows, usar cv2.CAP_DSHOW (DirectShow) para evitar fallos de MSMF
-        if os.name == "nt":
-            self._cap = cv2.VideoCapture(self._index, cv2.CAP_DSHOW)
-            if not self._cap.isOpened():
-                logger.warning("Fallo con CAP_DSHOW en índice %d, intentando backend por defecto...", self._index)
-                self._cap = cv2.VideoCapture(self._index)
-        else:
-            self._cap = cv2.VideoCapture(self._index)
-
-        if not self._cap.isOpened():
-            # Intentar con índice 1 si el índice 0 falla
-            if self._index == 0:
-                logger.warning("No se pudo abrir webcam en índice 0, intentando índice 1...")
-                if os.name == "nt":
-                    self._cap = cv2.VideoCapture(1, cv2.CAP_DSHOW)
-                else:
-                    self._cap = cv2.VideoCapture(1)
-
-        if not self._cap or not self._cap.isOpened():
-            logger.error(
-                "No se pudo abrir la webcam. "
-                "Verifica que la cámara esté conectada y no en uso por otra aplicación.",
-            )
-            self._cap = None
-            return False
-
-        # Configurar resolución solicitada, compresión MJPG y Buffer con manejo seguro de excepciones
-        try:
-            self._cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
-            self._cap.set(cv2.CAP_PROP_FRAME_WIDTH, self._width)
-            self._cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self._height)
-            self._cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-        except Exception as prop_err:
-            logger.warning("Aviso al configurar propiedades webcam: %s", prop_err)
-
-        # Verificar lectura del primer frame
-        ret, frame = self._cap.read()
-        if not ret or frame is None:
-            logger.warning("Webcam abierta pero no devolvió el primer frame, reintentando lectura...")
-            time.sleep(0.3)
-            ret, frame = self._cap.read()
-            if not ret or frame is None:
-                logger.error("Webcam no pudo entregar cuadros de video válidos.")
-                self._cap.release()
-                self._cap = None
-                return False
-
-        with self._lock:
-            self._latest_frame = frame
-        self._new_frame_event.set()
-
-        actual_w = int(self._cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-        actual_h = int(self._cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        actual_fps = self._cap.get(cv2.CAP_PROP_FPS)
-
-        # Iniciar Hilo Grabber de Cero-Buffer
-        self._grab_running = True
-        self._grab_thread = threading.Thread(target=self._grab_loop, daemon=True, name="WebcamGrabber")
-        self._grab_thread.start()
-
-        logger.info(
-            "Webcam abierta exitosamente con Zero-Buffer Grabber. Resolución real: %dx%d @ %.1f FPS",
-            actual_w, actual_h, actual_fps,
-        )
-        return True
-
-    def _grab_loop(self) -> None:
-        """Lee continuamente de la cámara descartando cuadros obsoletos."""
-        while self._grab_running and self._cap and self._cap.isOpened():
-            try:
-                ret = self._cap.grab()
-                if ret:
-                    ret, frame = self._cap.retrieve()
-                    if ret and frame is not None:
-                        with self._lock:
-                            self._latest_frame = frame
-                        self._new_frame_event.set()
-                    else:
-                        time.sleep(0.005)
-                else:
-                    time.sleep(0.01)
-            except Exception:
-                break
-
-    def read_frame(self, timeout: float = 0.05) -> tuple[bool, Optional[np.ndarray]]:
-        if self._cap is None or not self._cap.isOpened():
-            return False, None
-        if not self._new_frame_event.wait(timeout=timeout):
-            return False, None
-        self._new_frame_event.clear()
-        with self._lock:
-            if self._latest_frame is None:
-                return False, None
-            return True, self._latest_frame.copy()
-
-    def release(self) -> None:
-        self._grab_running = False
-        if self._grab_thread and self._grab_thread.is_alive():
-            self._grab_thread.join(timeout=0.6)
-        if self._cap is not None:
-            try:
-                self._cap.release()
-            except Exception:
-                pass
-            self._cap = None
-            logger.info("Webcam liberada.")
-
-    @property
-    def is_connected(self) -> bool:
-        return self._cap is not None and self._cap.isOpened()
-
-    @property
-    def source_info(self) -> dict:
-        info = {"type": "webcam", "index": self._index}
-        if self._cap and self._cap.isOpened():
-            info["width"] = int(self._cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-            info["height"] = int(self._cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-            info["fps"] = round(self._cap.get(cv2.CAP_PROP_FPS), 1)
-        return info
 
 
 # =============================================================================
@@ -374,7 +214,8 @@ class RTSPSource(VideoSource):
                 logger.debug("Error en la lectura RTSP: %s", e)
                 ok, frame = False, None
             ahora = time.time()
-            if ok and frame is not None:
+            # Un cuadro corrupto (decodificación fallida o vacío) cuenta como falla, no se entrega
+            if ok and frame is not None and frame.size > 0:
                 self._tasa.registrar()
                 with self._lock:
                     self._latest_frame = frame
@@ -457,22 +298,11 @@ class RTSPSource(VideoSource):
 
 
 def create_video_source() -> VideoSource:
-    """
-    Factory que crea la fuente de video real según CAMERA_SOURCE en .env.
-    Conecta directamente a la cámara física sin simulación sintética de garita.
-
-    Returns:
-        Instancia de VideoSource conectada directamente a la cámara real.
-    """
-    mode = CAMERA_SOURCE.lower().strip()
-
-    if mode == "webcam":
-        logger.info("Fuente de video seleccionada: WEBCAM FÍSICA (índice=%d)", WEBCAM_INDEX)
-        return WebcamSource(index=WEBCAM_INDEX)
-
+    """Fuente inicial del motor: RTSP_URL si está definida o, sin ella, una fuente vacía a la espera
+    de la cámara que asigne el backend."""
     url = RTSP_URL or ""
     if url:
-        logger.info("Fuente de video seleccionada: RTSP -> %s", RTSPSource._mask_credentials(url))
+        logger.info("Fuente de video inicial: RTSP -> %s", RTSPSource._mask_credentials(url))
     else:
         logger.info("Sin fuente RTSP inicial: se espera la cámara que asigne el backend.")
     return RTSPSource(url=url)

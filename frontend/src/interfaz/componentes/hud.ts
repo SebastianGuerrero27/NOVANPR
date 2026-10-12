@@ -40,6 +40,13 @@ export interface MovimientoHud { caja: Caja; porcentaje: number }
 export interface AreaDibujo { ancho: number; alto: number; x: number; y: number; w: number; h: number }
 
 /** Con `aspecto` (ancho/alto), la imagen se muestra estirada a esa proporción (object-fit: fill). */
+/**
+ * Coordenada normalizada (0–1 respecto del cuadro que analizó el motor) → píxeles del lienzo,
+ * dentro del área donde se ve la imagen. Es lo que mantiene alineados los recuadros con el video
+ * al cambiar el tamaño del reproductor o la proporción del flujo.
+ */
+export const aPantalla = (a: AreaDibujo, x: number, y: number): Punto => [a.x + x * a.w, a.y + y * a.h];
+
 export function areaVideo(v: HTMLVideoElement, aspecto?: number | null): AreaDibujo {
   const r = v.getBoundingClientRect();
   const vw = aspecto || v.videoWidth || 16;
@@ -82,8 +89,8 @@ function colorPista(p: PistaHud): string {
 }
 
 function dibujarRoi(ctx: CanvasRenderingContext2D, a: AreaDibujo, roi: Punto[]) {
-  const X = (x: number) => a.x + x * a.w;
-  const Y = (y: number) => a.y + y * a.h;
+  const X = (x: number) => aPantalla(a, x, 0)[0];
+  const Y = (y: number) => aPantalla(a, 0, y)[1];
   ctx.beginPath();
   ctx.rect(a.x, a.y, a.w, a.h);
   roi.forEach(([x, y], i) => (i ? ctx.lineTo(X(x), Y(y)) : ctx.moveTo(X(x), Y(y))));
@@ -101,8 +108,7 @@ function dibujarRoi(ctx: CanvasRenderingContext2D, a: AreaDibujo, roi: Punto[]) 
 }
 
 function dibujarMovimiento(ctx: CanvasRenderingContext2D, a: AreaDibujo, m: MovimientoHud, edadMs: number) {
-  const x1 = a.x + m.caja[0] * a.w;
-  const y1 = a.y + m.caja[1] * a.h;
+  const [x1, y1] = aPantalla(a, m.caja[0], m.caja[1]);
   const w = Math.max(12, (m.caja[2] - m.caja[0]) * a.w);
   const h = Math.max(12, (m.caja[3] - m.caja[1]) * a.h);
   ctx.save();
@@ -125,8 +131,9 @@ function dibujarMovimiento(ctx: CanvasRenderingContext2D, a: AreaDibujo, m: Movi
 }
 
 function dibujarPista(ctx: CanvasRenderingContext2D, a: AreaDibujo, p: PistaHud, dx: number, dy: number, opacidad: number, ahora: number) {
-  const X = (x: number) => a.x + (x + dx) * a.w;
-  const Y = (y: number) => a.y + (y + dy) * a.h;
+  // Desplazamiento (dx, dy) estimado por la velocidad de la pista entre envíos del motor
+  const X = (x: number) => aPantalla(a, x + dx, 0)[0];
+  const Y = (y: number) => aPantalla(a, 0, y + dy)[1];
   const color = colorPista(p);
   ctx.save();
   ctx.globalAlpha = Math.max(0, Math.min(1, opacidad));

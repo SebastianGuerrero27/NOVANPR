@@ -28,7 +28,7 @@ Este documento detalla la arquitectura técnica, los modelos de Inteligencia Art
 ```mermaid
 graph TD
     subgraph Captura_y_Vision [Microservicio ANPR - Python + FastAPI]
-        Cam[Webcam / Cámara IP RTSP] -->|Stream 30 FPS| VideoSource[VideoSource Abstraction]
+        Cam[Cámara IP RTSP vía MediaMTX] -->|Stream 30 FPS| VideoSource[VideoSource Abstraction]
         VideoSource -->|Frames| YoloDetector[Detector YOLOv11 / Best.pt]
         YoloDetector -->|Bounding Boxes| FrameSelector[Selector de Mejor Frame]
         FrameSelector -->|Foto Nítida + Recorte| OCREngine[Motor OCR: PaddleOCR / EasyOCR]

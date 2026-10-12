@@ -3,7 +3,7 @@ import { Link, useSearchParams } from 'react-router-dom';
 import { AlertTriangle, Check, Clock, Edit3, Plus, ShieldCheck, Undo2, X } from 'lucide-react';
 import api, { mensajeError } from '../../infraestructura/api';
 import { useAuth } from '../../aplicacion/AuthContext';
-import { useEvento } from '../../aplicacion/tiempoReal';
+import { useEvento, useReconexion } from '../../aplicacion/tiempoReal';
 import { useConsulta, useDiferido } from '../../aplicacion/hooks';
 import type { EstadoSolicitud, SolicitudAcceso } from '../../dominio/tipos';
 import { CATEGORIAS_PERMISO, fecha, fechaHora, relativo } from '../../dominio/formato';
@@ -43,6 +43,7 @@ const SolicitudesAcceso: React.FC<{ incrustada?: boolean; onVerPadron?: () => vo
   const { datos, cargando, error, recargar } = useConsulta<SolicitudAcceso[]>(
     () => api.get('/solicitudes-acceso', { params: { estado: vista } }).then(r => r.data), [vista]);
   const diferido = useDiferido(() => recargar(true), 600);
+  useReconexion(() => recargar(true));
   useEvento('solicitudes:actualizadas', diferido);
 
   const cancelar = async (s: SolicitudAcceso) => {

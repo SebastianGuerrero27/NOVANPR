@@ -10,6 +10,7 @@ reemplazan por dobles de prueba.
 """
 from __future__ import annotations
 
+import json
 import threading
 import types
 
@@ -80,9 +81,6 @@ class Pipeline:
         self._overlays_lock = threading.Lock()
         self._current_overlays = []
 
-    def get_browser_track_info(self, tid):
-        return {}
-
     def get_motion_info(self, fuente="rtsp"):
         return (None, 0, False)
 
@@ -100,9 +98,6 @@ class Pipeline:
 
     def update_track_plate(self, tid, placa, conf, estado, quality=None):
         self.votos.append(("rtsp", tid, placa, estado))
-
-    def update_browser_track_plate(self, tid, placa, conf, estado, quality=None):
-        self.votos.append(("navegador", tid, placa, estado))
 
     def mejor_analisis(self, tid):
         return None
@@ -203,7 +198,6 @@ SERVICIO = {"X-Servicio-Token": TOKEN}
 
 @pytest.mark.parametrize("metodo,ruta", [
     ("post", "/api/camera/switch"), ("post", "/api/camera/roi"), ("get", "/debug/stream"),
-    ("get", "/stream/preview?url=rtsp://x"), ("get", "/api/stream/preview?url=rtsp://x"),
 ])
 def test_endpoints_de_control_exigen_token_de_servicio(servicio, metodo, ruta):
     r = getattr(servicio.client, metodo)(ruta)
@@ -211,13 +205,31 @@ def test_endpoints_de_control_exigen_token_de_servicio(servicio, metodo, ruta):
     assert r.json() == {"error": "Token de servicio requerido"}
 
 
-def test_frame_del_navegador_exige_ticket(servicio):
-    r = servicio.client.post("/process/frame", files={"file": ("f.jpg", b"x", "image/jpeg")})
-    assert r.status_code == 401
-    assert r.json() == {"error": "Ticket inválido o vencido"}
+@pytest.mark.parametrize("metodo,ruta", [
+    ("post", "/process/frame"), ("post", "/api/process/frame"),
+    ("get", "/stream/preview?url=rtsp://x"), ("get", "/api/stream/preview?url=rtsp://x"),
+])
+def test_entradas_de_la_webcam_y_la_previsualizacion_libre_ya_no_existen(servicio, metodo, ruta):
+    """La webcam del navegador se retiró y el motor no abre URLs arbitrarias (SSRF): solo procesa la
+    cámara RTSP que asigna el backend."""
+    r = getattr(servicio.client, metodo)(ruta, headers=SERVICIO)
+    assert r.status_code in (404, 405)
 
 
-@pytest.mark.parametrize("ruta", ["/ws/stream", "/api/ws/stream", "/ws/pistas", "/ws/webcam", "/api/ws/webcam"])
+@pytest.mark.parametrize("ruta", ["/ws/webcam", "/api/ws/webcam"])
+def test_websocket_de_la_webcam_ya_no_existe(servicio, ruta):
+    with pytest.raises(WebSocketDisconnect) as e:
+        with servicio.client.websocket_connect(ruta):
+            pass
+    assert e.value.code != 4401  # no es un rechazo por ticket: la ruta no existe
+
+
+def test_el_motor_solo_acepta_fuentes_rtsp(servicio):
+    r = servicio.client.post("/api/camera/switch", headers=SERVICIO, json={"camera_id": 1, "source_type": "webcam"})
+    assert r.status_code == 400 and r.json() == {"success": False, "error": "Solo se admiten fuentes RTSP"}
+
+
+@pytest.mark.parametrize("ruta", ["/ws/stream", "/api/ws/stream", "/ws/pistas"])
 def test_websockets_sin_ticket_se_cierran_con_4401(servicio, ruta):
     with pytest.raises(WebSocketDisconnect) as e:
         with servicio.client.websocket_connect(ruta):
@@ -239,6 +251,16 @@ def test_estado_del_servicio_sin_iniciar_y_sin_credenciales(servicio):
         "service": "ECU 911 ANPR Microservice", "version": "2.0.0", "status": "starting",
         "detector": None, "detector_arquitectura": None, "ocr_engine": None, "ocr_verifier": None,
     }
+
+
+@pytest.mark.parametrize("ruta", ["/status", "/api/camera/active", "/metrics"])
+def test_sin_cors_otro_sitio_no_lee_el_motor_desde_el_navegador(servicio, ruta):
+    """El navegador solo usa los WebSocket con ticket; ninguna página ajena puede leer el estado."""
+    r = servicio.client.get(ruta, headers={"Origin": "https://sitio-ajeno.example"})
+    assert r.status_code == 200
+    assert "access-control-allow-origin" not in r.headers
+    previa = servicio.client.options(ruta, headers={"Origin": "https://sitio-ajeno.example", "Access-Control-Request-Method": "GET"})
+    assert "access-control-allow-origin" not in previa.headers
 
 
 def test_estado_con_modelos_cargados(servicio):
@@ -359,6 +381,9 @@ def test_captura_valida_registra_ingreso_y_ocr_con_evidencias(servicio):
     assert set(ocr["evidencia_lectura"]) >= {"angulo", "regularidad", "bordes_hallados", "cuadrilatero", "lectura_ocr", "lectura_verificador"}
     assert ("rtsp", 5, "", "confirmada") in pipeline.votos and pipeline.estado_backend == [(5, "autorizado")]
     assert "PBA1234" in servicio.placas_registradas
+    # La fuente es el tipo de entrada, nunca la URL de lectura: llevaría el token del motor a la base
+    assert ingreso["fuente"] == "rtsp"
+    assert "clave-secreta" not in json.dumps([cuerpo for _, cuerpo in servicio.http.envios])
 
 
 def test_ocr_profundo_verificador_y_vehiculo_se_ejecutan_en_paralelo(servicio, monkeypatch):
@@ -542,9 +567,9 @@ def test_ocr_asincrono_con_enfriamiento_por_track(servicio):
     assert pipeline.votos == [("rtsp", 3, "PBA1234", "leida")]
 
 
-def test_placa_cortada_por_el_borde_no_se_lee_y_la_respuesta_indica_que_mostrar(servicio):
+def test_placa_cortada_por_el_borde_no_se_lee(servicio):
     """El OCR de una placa que entra por el borde lee texto truncado ("SY589" por "PSY589"):
-    no se lee hasta que está completa. Se muestran las placas en movimiento o ya leídas."""
+    el hilo de detección no la lee hasta que está completa."""
     from app.aplicacion.detector import TrackedPlateROI
     from app.aplicacion.motor import leible
 
@@ -554,10 +579,9 @@ def test_placa_cortada_por_el_borde_no_se_lee_y_la_respuesta_indica_que_mostrar(
     completa = TrackedPlateROI(tracking_id=1, plate_bbox=[200, 150, 320, 190], vehicle_bbox=[0, 0, 640, 360],
                                confidence=0.9, en_movimiento=True)
     cortada = TrackedPlateROI(tracking_id=2, plate_bbox=[0, 150, 100, 190], vehicle_bbox=[0, 0, 640, 360], confidence=0.9)
-    r = servicio.motor.procesar_cuadro_ws(frame, [completa, cortada])
+    servicio.motor._leer_placas(pipeline, [completa, cortada], frame)
     assert servicio.ocr.enviados == 1
-    assert pipeline.votos == [("navegador", 1, "PBA1234", "leida")]
-    assert [(x["tracking_id"], x["mostrar"]) for x in r["rois"]] == [(1, True), (2, False)]
+    assert pipeline.votos == [("rtsp", 1, "PBA1234", "leida")]
     assert not leible([600, 150, 640, 190], frame, ancho_min=16, alto_min=6)  # borde derecho
     assert not leible([200, 150, 210, 190], frame, ancho_min=16, alto_min=6)  # demasiado angosta
     assert leible([200, 0, 320, 40], frame, ancho_min=16, alto_min=6)  # arriba: los caracteres siguen completos

@@ -83,7 +83,7 @@ describe('Detecciones · servicio ANPR', () => {
     const r = await casos.ingreso({ tracking_id: 4, ruta_imagen_ingreso: 'x.jpg', placa: 'pba-12', camara_id: '2', confianza_deteccion: 0.91, metadatos: { luz: 1 } });
     expect(r).toEqual({ nuevo: true, respuesta: { message: 'Ingreso registrado (pendiente de OCR).', ingreso_id: 15, fecha_hora_ingreso: AHORA } });
     expect(repositorio.mismoPaso).toHaveBeenCalledWith(4, 'PBA12');
-    expect(repositorio.crearIngreso).toHaveBeenCalledWith({ trackingId: 4, pista: 'PBA12', ruta: 'x.jpg', confianza: 0.91, fuente: 'webcam', camaraId: 2 });
+    expect(repositorio.crearIngreso).toHaveBeenCalledWith({ trackingId: 4, pista: 'PBA12', ruta: 'x.jpg', confianza: 0.91, fuente: 'rtsp', camaraId: 2 });
     expect(repositorio.guardarMetadatos).toHaveBeenCalledWith(15, { luz: 1 });
     expect(eventos.emitir).toHaveBeenCalledWith('deteccion:nueva', expect.objectContaining({ id: 15 }));
   });
@@ -130,8 +130,11 @@ describe('Detecciones · servicio ANPR', () => {
     const { casos, repositorio } = preparar();
     expect(await casos.descarte({ tracking_id: 'x', texto_candidato: 'A'.repeat(80) })).toEqual({ success: true });
     expect(repositorio.registrarDescarte).toHaveBeenCalledWith({
-      trackingId: -1, motivo: 'falso_positivo_ocr', texto: 'A'.repeat(50), confianza: null, fuente: null, camaraId: null,
+      trackingId: -1, motivo: 'falso_positivo_ocr', texto: 'A'.repeat(50), confianza: null, fuente: 'rtsp', camaraId: null,
     });
+    // La URL de lectura del motor (con su token) nunca llega a la base
+    await casos.descarte({ tracking_id: 3, fuente: 'rtsp://anpr:token-de-servicio@mediamtx:8554/cam_1' });
+    expect(repositorio.registrarDescarte).toHaveBeenLastCalledWith(expect.objectContaining({ fuente: 'rtsp' }));
   });
 });
 

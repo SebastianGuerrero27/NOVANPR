@@ -38,10 +38,19 @@ Requisitos: Docker Desktop y los puertos 3000 (frontend), 5000 (API), 8000 (moto
 
 ```bash
 cp .env.example .env     # defina MSSQL_SA_PASSWORD, JWT_SECRET, ANPR_SERVICE_TOKEN, GRAFANA_ADMIN_PASSWORD
+                         # y CAMARAS_CLAVE_CIFRADO (openssl rand -base64 32)
 docker compose up --build
 ```
 
 - Frontend: <http://localhost:3000> · API: <http://localhost:5000> · Motor: <http://localhost:8000>
+- Para la red local se publican el frontend, la API, el motor (solo WebSocket con ticket) y el
+  WebRTC de MediaMTX (8889, 8189). SQL Server (14333), Redis, Prometheus, Grafana y el RTSP de
+  MediaMTX (8554) quedan solo en `127.0.0.1` del equipo anfitrión.
+- Cada servicio tiene healthcheck (`docker compose ps` muestra *healthy*): el backend responde
+  `/health/ready` cuando SQL Server está disponible y el motor arranca después de él.
+- **No hay cámaras predefinidas:** se registran en *Operación › Registro de cámaras* (URL RTSP con
+  la contraseña cifrada en la base). Solo se aceptan direcciones dentro de
+  `CAMARAS_REDES_PERMITIDAS` (por omisión, redes privadas); en producción, defina la VLAN de cámaras.
 - **No hay usuarios predefinidos:** al abrir el sistema por primera vez se muestra la configuración
   inicial para crear el primer administrador; luego se crean las demás cuentas en *Usuarios*.
 - El esquema y las migraciones se aplican solos al arrancar el backend.
@@ -51,9 +60,10 @@ docker compose up --build
 ## Pruebas
 
 ```bash
-cd backend && npm test                     # 191 pruebas: dominio, orquestación, integración RBAC, esquema
-cd frontend && npm run build               # verificación de tipos + build
+cd backend && npm test                     # dominio, orquestación, integración RBAC, esquema, seguridad HTTP
+cd frontend && npm test && npm run lint && npm run build   # HUD, formularios, estados; tipos + build
 cd services/anpr && pytest                 # motor ANPR (requiere sus dependencias)
+bash backend/scripts/camara_hikvision_simulada/e2e.sh     # punta a punta con una Hikvision simulada
 
 # Con el sistema en marcha:
 node backend/scripts/aceptacion_e2e.js --api http://localhost:5000 --servicio "$ANPR_SERVICE_TOKEN" --log backend.log

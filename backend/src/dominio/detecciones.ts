@@ -23,6 +23,19 @@ import { celdaCsv } from './auditoria';
 /** Segundos en que dos capturas del mismo tracking o de la misma placa son un solo paso físico. */
 export const VENTANA_MISMO_PASO_S = 35;
 
+/**
+ * Tipo de entrada de una detección (`rtsp`, `manual`…), nunca una URL: el motor llegó a enviar la
+ * URL de lectura de MediaMTX, que lleva su token de servicio, y quedaba en la base y en las
+ * respuestas. Una URL RTSP se reduce a `rtsp`; cualquier otro valor que no sea un identificador
+ * corto se descarta.
+ */
+export function normalizarFuente(valor: unknown, omision = 'rtsp'): string {
+  if (typeof valor !== 'string' || !valor.trim()) return omision;
+  const v = valor.trim();
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(v)) return /^rtsps?:/i.test(v) ? 'rtsp' : omision;
+  return /^[a-z_]{1,20}$/.test(v) ? v : omision;
+}
+
 export const ESTADOS_VALIDACION: readonly EstadoValidacion[] = ['autorizado', 'alerta', 'no_reconocido', 'pendiente_revision'];
 
 export const ETIQUETA_ESTADO: Record<EstadoValidacion, string> = {

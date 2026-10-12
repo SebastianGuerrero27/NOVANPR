@@ -2,7 +2,7 @@ import React, { useMemo, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { Download, Filter, RefreshCw, Search, Trash2, X } from 'lucide-react';
 import api, { mensajeError } from '../../infraestructura/api';
-import { useEvento } from '../../aplicacion/tiempoReal';
+import { useEvento, useReconexion } from '../../aplicacion/tiempoReal';
 import { useConsulta, useRetardado } from '../../aplicacion/hooks';
 import type { Camara, Deteccion, EstadoValidacion, Pagina } from '../../dominio/tipos';
 import { ESTADOS, fecha, hora, limiteDia, nombreDescarga, porcentaje } from '../../dominio/formato';
@@ -72,6 +72,7 @@ const Detecciones: React.FC = () => {
   useEvento<Deteccion>('deteccion:actualizada', d => setDatos(p => p && { ...p, items: p.items.map(x => (x.id === d.id ? d : x)) }));
   useEvento<{ id: number }>('deteccion:eliminada', ({ id }) => setDatos(p => p && { ...p, items: p.items.filter(x => x.id !== id), total: p.total - 1 }));
   useEvento('deteccion:eliminadas', () => { setNuevos(0); recargar(true); });
+  useReconexion(() => recargar(true));
 
   const hayFiltros = Boolean(params.get('placa') || filtros.estado || filtros.camara || filtros.desde || filtros.hasta || filtros.validado);
 

@@ -1,7 +1,10 @@
 import type { Request } from 'express';
 
-/** IP de origen de la petición (primer salto de X-Forwarded-For detrás del proxy), hasta 45 caracteres. */
+/**
+ * IP de origen de la petición (auditoría), hasta 45 caracteres. Express la toma de X-Forwarded-For
+ * solo si la conexión llega desde un proxy de confianza (TRUST_PROXY); si no, es la del socket y un
+ * cliente no puede falsear la IP registrada enviando esa cabecera.
+ */
 export function ipDe(req: Request): string {
-  const fwd = String(req.headers['x-forwarded-for'] || '').split(',')[0].trim();
-  return (fwd || req.socket.remoteAddress || '').substring(0, 45);
+  return (req.ip || req.socket.remoteAddress || '').substring(0, 45);
 }

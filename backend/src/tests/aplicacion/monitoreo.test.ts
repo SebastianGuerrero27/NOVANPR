@@ -131,17 +131,9 @@ describe('Casos de uso · monitoreo', () => {
       expect(tickets.emitir).toHaveBeenCalledWith(3, 'stream');
     });
 
-    it('webcam (enviar la webcam del navegador al motor): solo con camaras:gestionar', () => {
+    it.each(['webcam', 'WEBCAM', ' webcam', 'video', 5, {}])('alcance %p fuera de los valores permitidos → 400 (sin webcam)', alcance => {
       const { casos, tickets } = preparar();
-      expect(casos.ticket('webcam', ADMIN).ticket).toBe('ticket-1-webcam');
-      expect(falloSincrono(() => casos.ticket('webcam', GUARDIA)))
-        .toEqual({ tipo: 'prohibido', mensaje: 'Solo el administrador puede usar la webcam como fuente de prueba.' });
-      expect(tickets.emitir).toHaveBeenCalledTimes(1);
-    });
-
-    it.each(['WEBCAM', ' webcam', 'video', 5, {}])('alcance %p fuera de los valores permitidos → 400', alcance => {
-      const { casos, tickets } = preparar();
-      expect(falloSincrono(() => casos.ticket(alcance, ADMIN))).toEqual({ tipo: 'validacion', mensaje: 'Alcance inválido. Valores: stream, webcam.' });
+      expect(falloSincrono(() => casos.ticket(alcance, ADMIN))).toEqual({ tipo: 'validacion', mensaje: 'Alcance inválido. Valores: stream.' });
       expect(tickets.emitir).not.toHaveBeenCalled();
     });
   });

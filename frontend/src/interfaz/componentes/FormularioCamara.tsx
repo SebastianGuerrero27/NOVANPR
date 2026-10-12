@@ -18,7 +18,7 @@ import { ReproductorPrueba } from './envivo';
  * navegador muestra el secundario.
  */
 
-type Perfil = 'hikvision' | 'dahua' | 'celular_rtsp' | 'ip_webcam' | 'generica' | 'manual';
+type Perfil = 'hikvision' | 'dahua' | 'generica' | 'manual';
 
 const PERFILES: Record<Perfil, { etiqueta: string; puerto: number; ruta: string; credenciales: 'si' | 'no' | 'opcional'; ayuda: string }> = {
   hikvision: {
@@ -28,14 +28,6 @@ const PERFILES: Record<Perfil, { etiqueta: string; puerto: number; ruta: string;
   dahua: {
     etiqueta: 'Cámara Dahua / Imou', puerto: 554, ruta: '/cam/realmonitor?channel=1&subtype=0', credenciales: 'si',
     ayuda: 'subtype=0 es el flujo principal; subtype=1 el secundario.',
-  },
-  celular_rtsp: {
-    etiqueta: 'Celular · app servidor RTSP (puerto 8554)', puerto: 8554, ruta: '/', credenciales: 'opcional',
-    ayuda: 'Apps tipo “RTSP Camera Server” / RootEncoder. Use la IP que muestra la app; el celular y este equipo deben estar en la misma red WiFi. Ingrese usuario y contraseña solo si los activó en la app.',
-  },
-  ip_webcam: {
-    etiqueta: 'Celular · IP Webcam (Android)', puerto: 8080, ruta: '/h264_ulaw.sdp', credenciales: 'opcional',
-    ayuda: 'En IP Webcam pulse “Iniciar servidor”. Si configuró usuario y contraseña en la app, ingréselos aquí.',
   },
   generica: {
     etiqueta: 'Cámara IP genérica (ONVIF / RTSP)', puerto: 554, ruta: '/', credenciales: 'opcional',
@@ -100,7 +92,7 @@ function errorUrlRtsp(url: string): string | null {
  * /Streaming/Channels/<canal>01 → <canal>02 (también /ISAPI/…) y Dahua subtype=0 → subtype=1.
  * null si la ruta no es la de un flujo principal reconocible.
  */
-function rutaSecundaria(ruta: string): string | null {
+export function rutaSecundaria(ruta: string): string | null {
   const hikvision = ruta.match(/^(.*\/Streaming\/Channels\/\d*?)01((?:[/?].*)?)$/i);
   if (hikvision) return `${hikvision[1]}02${hikvision[2]}`;
   const dahua = ruta.match(/^(\/cam\/realmonitor\?(?:.*&)?subtype=)0((?:&.*)?)$/i);
@@ -111,11 +103,9 @@ function rutaSecundaria(ruta: string): string | null {
 /** Ruta del flujo con la barra inicial ("/" si está vacía). */
 const conBarra = (ruta: string) => (ruta.trim() ? (ruta.trim().startsWith('/') ? ruta.trim() : `/${ruta.trim()}`) : '/');
 
-function detectarPerfil(puerto: number, ruta: string): Perfil {
+function detectarPerfil(ruta: string): Perfil {
   if (/^\/Streaming\/Channels\//i.test(ruta)) return 'hikvision';
   if (/^\/cam\/realmonitor/i.test(ruta)) return 'dahua';
-  if (/\.sdp$/i.test(ruta) && puerto === 8080) return 'ip_webcam';
-  if (puerto === 8554) return 'celular_rtsp';
   return 'generica';
 }
 
@@ -130,9 +120,10 @@ const DIAGNOSTICO: Record<string, string> = {
   requiere_credenciales: 'La cámara pide usuario y contraseña: complételos y vuelva a probar.',
   credenciales_invalidas: 'Usuario o contraseña incorrectos.',
   ruta_no_encontrada: 'El equipo responde, pero la ruta del flujo no existe. Revise la ruta o el tipo de equipo.',
-  rechazado: 'El equipo rechazó la conexión: verifique el puerto y que el servidor RTSP esté iniciado (en el celular, que la app esté transmitiendo).',
+  rechazado: 'El equipo rechazó la conexión: verifique el puerto y que el servicio RTSP de la cámara esté habilitado.',
   sin_respuesta: 'Sin respuesta: verifique la IP, que el equipo esté encendido y en la misma red que este servidor.',
   url_invalida: 'La dirección no es válida.',
+  red_no_permitida: 'La dirección está fuera de las redes autorizadas para cámaras (CAMARAS_REDES_PERMITIDAS del servidor). Solicite al responsable de la red que la incluya.',
 };
 
 export interface ResultadoDiagnostico {
@@ -166,7 +157,7 @@ export const PanelDiagnostico: React.FC<{ resultado: ResultadoDiagnostico }> = (
 const CampoUrl: React.FC<{ valor: string; error: string | null; onCambiar: (v: string) => void }> = ({ valor, error, onCambiar }) => (
   <CampoTexto id="c-url" className="completo" etiqueta="URL RTSP completa*" valor={valor} onCambiar={onCambiar} error={error}
     regla={REGLA_URL} filtrar={sinEspacios} literal claseControl="mono"
-    placeholder="rtsp://usuario:contraseña@192.168.1.64:554/ruta"
+    placeholder="rtsp://usuario:contraseña@192.0.2.10:554/ruta"
     ayuda="Si la contraseña tiene símbolos (@, :, /, #) use los campos del modo guiado: allí se codifican automáticamente." />
 );
 
@@ -178,7 +169,7 @@ export const FormularioCamara: React.FC<{ camara?: Camara; onCerrar: () => void;
     || previaVista.usuario !== previa.usuario || previaVista.ruta !== rutaSecundaria(previa.ruta)));
   const [nombre, setNombre] = useState(camara?.nombre ?? '');
   const [ubicacion, setUbicacion] = useState(camara?.ubicacion ?? '');
-  const [perfil, setPerfil] = useState<Perfil>(previa ? (vistaPropia ? 'manual' : detectarPerfil(previa.puerto, previa.ruta)) : 'hikvision');
+  const [perfil, setPerfil] = useState<Perfil>(previa ? (vistaPropia ? 'manual' : detectarPerfil(previa.ruta)) : 'hikvision');
   const [host, setHost] = useState(previa?.host ?? '');
   const [puerto, setPuerto] = useState(String(previa?.puerto ?? PERFILES.hikvision.puerto));
   const [ruta, setRuta] = useState(previa?.ruta ?? PERFILES.hikvision.ruta);
@@ -197,8 +188,12 @@ export const FormularioCamara: React.FC<{ camara?: Camara; onCerrar: () => void;
   const [probando, setProbando] = useState(false);
   const [enviando, setEnviando] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const claveGuardada = Boolean(camara?.tiene_credenciales);
   const p = PERFILES[perfil];
+  // La API solo conserva la contraseña guardada para el mismo equipo: si cambian la IP o el puerto
+  // hay que escribirla de nuevo (así no se puede enviar la contraseña custodiada a otro equipo)
+  const otroEquipo = Boolean(previa && perfil !== 'manual'
+    && (host.trim().toLowerCase() !== previa.host.toLowerCase() || (Number(puerto) || p.puerto) !== previa.puerto));
+  const claveGuardada = Boolean(camara?.tiene_credenciales) && !otroEquipo;
 
   const cambiarPerfil = (nuevo: Perfil) => {
     setPerfil(nuevo);
@@ -238,7 +233,9 @@ export const FormularioCamara: React.FC<{ camara?: Camara; onCerrar: () => void;
   const errorUrl = guiado ? null : errorUrlRtsp(urlManual);
   const errorEnlace = guiado && url ? errorFormatoRtsp(url) : null;
   const errorVista = guiado ? (urlVista ? errorFormatoRtsp(urlVista) : null) : (urlVistaManual.trim() ? errorUrlRtsp(urlVistaManual) : null);
-  const errorClave = exigeCredenciales && !claveGuardada && usuario.trim() && !clave ? 'La contraseña es obligatoria para este equipo.' : null;
+  const reescribirClave = Boolean(camara?.tiene_credenciales && otroEquipo && usuario.trim() && !clave);
+  const errorClave = reescribirClave ? 'Cambió la IP o el puerto: escriba de nuevo la contraseña.'
+    : exigeCredenciales && !claveGuardada && usuario.trim() && !clave ? 'La contraseña es obligatoria para este equipo.' : null;
   const hostValido = guiado ? !errorHost : !errorUrl;
   const valido = sinErrores({
     nombre: errorDe(validarTexto(nombre, REGLAS_CAMARA.nombre)),
@@ -312,14 +309,14 @@ export const FormularioCamara: React.FC<{ camara?: Camara; onCerrar: () => void;
             <CampoTexto id="c-url-vista" className="completo" etiqueta="URL del flujo de vista (opcional)" valor={urlVistaManual}
               onCambiar={v => { setUrlVistaManual(v); setPrueba(null); }} error={errorVista}
               regla={REGLA_URL_VISTA} filtrar={sinEspacios} literal claseControl="mono"
-              placeholder="rtsp://usuario:contraseña@192.168.1.64:554/Streaming/Channels/102"
+              placeholder="rtsp://usuario:contraseña@192.0.2.10:554/Streaming/Channels/102"
               ayuda="Flujo secundario (H.264, baja resolución) que se muestra en el navegador mientras el motor analiza el principal. Vacío: se muestra el principal." />
           </>
         ) : (
           <>
             <CampoTexto id="c-host" etiqueta="IP o nombre del equipo*" valor={host} onCambiar={v => { setHost(v); setPrueba(null); }}
               regla={REGLA_HOST} error={errorHost} filtrar={filtrarHost} literal
-              claseControl="mono" placeholder="192.168.0.102" ayuda="Solo números, letras, puntos y guiones (sin rtsp:// ni puerto)." />
+              claseControl="mono" placeholder="Ej.: 192.0.2.10" ayuda="Solo números, letras, puntos y guiones (sin rtsp:// ni puerto)." />
             <div className="form-grid" style={{ gridTemplateColumns: '110px 1fr', gap: 10 }}>
               <CampoEntero id="c-puerto" etiqueta="Puerto*" nombre="Puerto" valor={puerto} min={1} max={65535} requerido claseControl="mono"
                 onCambiar={v => { setPuerto(v); setPrueba(null); }} />
@@ -333,12 +330,13 @@ export const FormularioCamara: React.FC<{ camara?: Camara; onCerrar: () => void;
                 <input id="c-clave" className="input" type={verClave ? 'text' : 'password'} value={clave} onChange={e => { setClave(e.target.value); setPrueba(null); }}
                   onBlur={() => setClaveTocada(true)} maxLength={100} autoComplete="new-password" style={{ paddingRight: 40 }}
                   placeholder={claveGuardada ? 'Guardada · deje vacío para conservarla' : ''} disabled={!usuario.trim()}
-                  aria-required={(exigeCredenciales && !claveGuardada) || undefined} aria-invalid={claveTocada && errorClave ? true : undefined}
-                  aria-describedby={claveTocada && errorClave ? 'c-clave-error' : !usuario.trim() ? 'c-clave-ayuda' : undefined} />
+                  aria-required={(exigeCredenciales && !claveGuardada) || reescribirClave || undefined}
+                  aria-invalid={(claveTocada || reescribirClave) && errorClave ? true : undefined}
+                  aria-describedby={(claveTocada || reescribirClave) && errorClave ? 'c-clave-error' : !usuario.trim() ? 'c-clave-ayuda' : undefined} />
                 <button type="button" className="btn btn-ghost btn-sm btn-icono" style={{ position: 'absolute', right: 4, top: 4 }} onClick={() => setVerClave(v => !v)} aria-label={verClave ? 'Ocultar' : 'Mostrar'}>
                   {verClave ? <EyeOff size={15} /> : <Eye size={15} />}</button>
               </div>
-              {claveTocada && errorClave
+              {(claveTocada || reescribirClave) && errorClave
                 ? <span id="c-clave-error" className="error">{errorClave}</span>
                 : !usuario.trim() && <span id="c-clave-ayuda" className="ayuda">Ingrese primero el usuario.</span>}
             </div>

@@ -134,3 +134,22 @@ def test_limite_de_espera_real_al_abrir_una_camara_que_no_responde():
         for c in aceptadas:
             c.close()
         servidor.close()
+
+
+class CapturaCorrupta(CapturaFalsa):
+    """Entrega cuadros vacíos (decodificación fallida) tras uno válido."""
+
+    def retrieve(self):
+        return True, np.zeros((0, 0, 3), np.uint8)
+
+
+def test_un_cuadro_vacio_o_corrupto_no_se_entrega():
+    fuente = RTSPSource("rtsp://x/cam_1", estancamiento_s=5.0, abrir=lambda *a: CapturaCorrupta(cuadros=50))
+    fuente.connect()
+    try:
+        time.sleep(0.4)
+        assert fuente.read_frame() == (False, None)
+        assert fuente.frame_seq == 0
+    finally:
+        fuente.release()
+

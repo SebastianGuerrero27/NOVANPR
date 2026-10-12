@@ -1,7 +1,9 @@
 import crypto from 'crypto';
 import sql from 'mssql';
 import { getDB } from '../db';
+import { type AlcanceTicket, enmascararEnTexto, fuenteParaMediamtx } from '../../dominio/camaras';
 import { revelar } from './custodiaCredenciales';
+import { verificarRed } from './redCamaras';
 
 /**
  * Integración con MediaMTX (servidor de medios).
@@ -36,7 +38,12 @@ async function api(metodo: string, ruta: string, cuerpo?: unknown): Promise<any>
     body: cuerpo ? JSON.stringify(cuerpo) : undefined,
     signal: AbortSignal.timeout(4000),
   });
-  if (!r.ok) throw new Error(`MediaMTX ${metodo} ${ruta}: HTTP ${r.status} ${await r.text().catch(() => '')}`.trim());
+  // MediaMTX repite en sus errores la fuente rechazada (con la contraseña): se enmascara antes de
+  // que el mensaje llegue a un log o a una respuesta
+  if (!r.ok) {
+    const detalle = enmascararEnTexto(await r.text().catch(() => '')).slice(0, 300);
+    throw new Error(`MediaMTX ${metodo} ${ruta}: HTTP ${r.status} ${detalle}`.trim());
+  }
   return r.status === 200 ? r.json().catch(() => ({})) : {};
 }
 
@@ -68,21 +75,38 @@ export function sincronizarRutas(): Promise<void> {
       const deseadas = new Map<string, string>();
       for (const c of camaras.recordset) {
         try {
-          deseadas.set(rutaCamara(c.id), revelar(c.rtsp_url));
-          if (c.rtsp_url_vista) deseadas.set(rutaVista(c.id), revelar(c.rtsp_url_vista));
+          const principal = revelar(c.rtsp_url);
+          const vista = c.rtsp_url_vista ? revelar(c.rtsp_url_vista) : null;
+          // Protección contra SSRF: MediaMTX no abre destinos fuera de las redes permitidas
+          const motivo = await verificarRed(principal, null) ?? (vista ? await verificarRed(vista, null) : null);
+          if (motivo) {
+            console.warn(`[MEDIOS] Cámara #${c.id} no publicada: ${motivo}`);
+            continue;
+          }
+          deseadas.set(rutaCamara(c.id), fuenteParaMediamtx(principal));
+          if (vista) deseadas.set(rutaVista(c.id), fuenteParaMediamtx(vista));
         } catch (e: any) {
-          console.warn(`[MEDIOS] Cámara #${c.id}: ${e.message}`);
+          console.warn(`[MEDIOS] Cámara #${c.id}: ${enmascararEnTexto(String(e.message))}`);
         }
       }
+      // Cada ruta por separado: una que MediaMTX rechace no impide publicar las demás ni retirar
+      // las sobrantes (cámaras eliminadas, deshabilitadas o fuera de las redes permitidas)
+      const aplicar = async (nombre: string, accion: () => Promise<unknown>) => {
+        try {
+          await accion();
+        } catch (e: any) {
+          console.warn(`[MEDIOS] Ruta ${nombre}: ${enmascararEnTexto(String(e.message))}`);
+        }
+      };
       for (const [nombre, fuente] of deseadas) {
-        if (!actuales.has(nombre)) await api('POST', `/v3/config/paths/add/${nombre}`, configRuta(fuente));
-        else if (actuales.get(nombre) !== fuente) await api('PATCH', `/v3/config/paths/patch/${nombre}`, configRuta(fuente));
+        if (!actuales.has(nombre)) await aplicar(nombre, () => api('POST', `/v3/config/paths/add/${nombre}`, configRuta(fuente)));
+        else if (actuales.get(nombre) !== fuente) await aplicar(nombre, () => api('PATCH', `/v3/config/paths/patch/${nombre}`, configRuta(fuente)));
       }
       for (const nombre of actuales.keys()) {
-        if (nombre.startsWith('cam_') && !deseadas.has(nombre)) await api('DELETE', `/v3/config/paths/delete/${nombre}`);
+        if (nombre.startsWith('cam_') && !deseadas.has(nombre)) await aplicar(nombre, () => api('DELETE', `/v3/config/paths/delete/${nombre}`));
       }
     } catch (e: any) {
-      console.warn('[MEDIOS] No se pudo sincronizar MediaMTX:', e.message);
+      console.warn('[MEDIOS] No se pudo sincronizar MediaMTX:', enmascararEnTexto(String(e.message)));
     } finally {
       sincronizando = null;
     }
@@ -102,7 +126,7 @@ const MINUTOS_PRUEBA = 3;
 
 export async function crearRutaPrueba(fuente: string): Promise<string> {
   const nombre = `prueba_${crypto.randomBytes(6).toString('hex')}`;
-  await api('POST', `/v3/config/paths/add/${nombre}`, { ...configRuta(fuente), sourceOnDemandCloseAfter: '5s' });
+  await api('POST', `/v3/config/paths/add/${nombre}`, { ...configRuta(fuenteParaMediamtx(fuente)), sourceOnDemandCloseAfter: '5s' });
   pruebas.set(nombre, setTimeout(() => eliminarRutaPrueba(nombre), MINUTOS_PRUEBA * 60000));
   return nombre;
 }
@@ -130,13 +154,13 @@ export async function estadoRuta(nombre: string): Promise<{ lista: boolean; lect
  * Ticket de 60 s para el navegador (video WebRTC y WebSockets del motor): HMAC-SHA256 con el
  * token de servicio sobre {usuario, alcance, expiración}.
  */
-export function emitirTicket(usuarioId: number, alcance: 'stream' | 'webcam'): string {
+export function emitirTicket(usuarioId: number, alcance: AlcanceTicket): string {
   const payload = Buffer.from(JSON.stringify({ u: usuarioId, a: alcance, exp: Math.floor(Date.now() / 1000) + 60 })).toString('base64url');
   const firma = crypto.createHmac('sha256', token()).update(payload).digest('base64url');
   return `${payload}.${firma}`;
 }
 
-export function ticketValido(ticket: string | null | undefined, alcance: 'stream' | 'webcam'): boolean {
+export function ticketValido(ticket: string | null | undefined, alcance: AlcanceTicket): boolean {
   if (!ticket || !ticket.includes('.') || !token()) return false;
   const [payload, firma] = ticket.split('.');
   const esperada = Buffer.from(crypto.createHmac('sha256', token()).update(payload).digest('base64url'));
@@ -144,7 +168,7 @@ export function ticketValido(ticket: string | null | undefined, alcance: 'stream
   if (esperada.length !== recibida.length || !crypto.timingSafeEqual(esperada, recibida)) return false;
   try {
     const d = JSON.parse(Buffer.from(payload, 'base64url').toString());
-    return d.exp >= Date.now() / 1000 && (d.a === alcance || (alcance === 'stream' && d.a === 'webcam'));
+    return d.exp >= Date.now() / 1000 && d.a === alcance;
   } catch {
     return false;
   }

@@ -62,6 +62,7 @@ function preparar(camara: CamaraGuardada | null = guardada(), custodia = custodi
     destino: jest.fn(destinoDoble),
     probar: jest.fn().mockResolvedValue(RTSP_OK),
     diagnosticar: jest.fn().mockResolvedValue(DIAGNOSTICO),
+    verificarRed: jest.fn().mockResolvedValue(null),
     registrar: jest.fn().mockResolvedValue(undefined),
   };
   const video: jest.Mocked<PuertoServidorVideo> = {
@@ -368,8 +369,13 @@ describe('Casos de uso · cámaras', () => {
       expect(await casos.pruebaVideo({ rtsp_url: URL_ENMASCARADA, camara_id: 3 }, ADMIN))
         .toEqual({ ruta: 'prueba_0123456789ab', ticket: 'ticket-1-stream', webrtc: 'https://video.ecu911.local' });
       expect(video.crearRutaPrueba).toHaveBeenCalledWith(URL_GUARDADA);
-      for (const rtsp_url of ['', 'http://192.168.1.64/live', 'rtsp://:554/live']) {
-        expect(await fallo(casos.pruebaVideo({ rtsp_url }, ADMIN))).toEqual({ tipo: 'validacion', mensaje: 'URL RTSP inválida.' });
+      // El motivo concreto, como en probar (p. ej. que hay que volver a escribir la contraseña)
+      for (const [rtsp_url, mensaje] of [
+        ['', 'El campo «URL RTSP» es obligatorio.'],
+        ['http://192.168.1.64/live', 'Ingrese una URL RTSP válida (rtsp://…).'],
+        ['rtsp://:554/live', 'URL RTSP inválida.'],
+      ]) {
+        expect(await fallo(casos.pruebaVideo({ rtsp_url }, ADMIN))).toEqual({ tipo: 'validacion', mensaje });
       }
       expect((await fallo(casos.pruebaVideo({ rtsp_url: URL_ENMASCARADA, camara_id: -3 }, ADMIN))).tipo).toBe('validacion');
       expect(video.crearRutaPrueba).toHaveBeenCalledTimes(1);
@@ -393,6 +399,27 @@ describe('Casos de uso · cámaras', () => {
       await casos.eliminarPruebaVideo('prueba_0123456789ab');
       expect(video.eliminarRutaPrueba).toHaveBeenCalledWith('prueba_0123456789ab');
     });
+  });
+});
+
+describe('Casos de uso · cámaras · la contraseña guardada no viaja a otro equipo', () => {
+  // La máscara con otro host: alguien con acceso al formulario podría apuntar la cámara a un equipo
+  // propio que pida autenticación Basic y así leer la contraseña custodiada
+  const OTRO_EQUIPO = 'rtsp://admin:******@192.168.1.99:554/Streaming/Channels/101';
+
+  it('probar, prueba de video y editar → 400 sin diagnosticar, publicar ni guardar', async () => {
+    const { casos, conectividad, video, repositorio } = preparar();
+    for (const intento of [
+      () => casos.probar({ rtsp_url: OTRO_EQUIPO, camara_id: 3 }),
+      () => casos.pruebaVideo({ rtsp_url: OTRO_EQUIPO, camara_id: 3 }, ADMIN),
+      () => casos.editar(3, { ...VALIDA, rtsp_url: OTRO_EQUIPO }, ADMIN),
+    ]) {
+      expect(await fallo(intento())).toEqual({ tipo: 'validacion', mensaje: expect.stringContaining('escriba de nuevo la contraseña') });
+    }
+    expect(conectividad.diagnosticar).not.toHaveBeenCalled();
+    expect(conectividad.probar).not.toHaveBeenCalled();
+    expect(video.crearRutaPrueba).not.toHaveBeenCalled();
+    expect(repositorio.actualizar).not.toHaveBeenCalled();
   });
 });
 
@@ -458,3 +485,43 @@ describe('Casos de uso · cámaras · credenciales protegidas y flujo de vista',
   });
 });
 
+describe('Casos de uso · cámaras · redes permitidas (protección contra SSRF)', () => {
+  const FUERA = 'La dirección 8.8.8.8 está fuera de las redes permitidas para cámaras (CAMARAS_REDES_PERMITIDAS).';
+  const URL_INTERNET = 'rtsp://admin:clave@8.8.8.8:554/Streaming/Channels/101';
+
+  it('alta y edición: una cámara fuera de las redes permitidas se rechaza sin guardar ni conectar', async () => {
+    const { casos, repositorio, conectividad, video } = preparar();
+    conectividad.verificarRed.mockResolvedValue(FUERA);
+    expect(await fallo(casos.registrar({ ...VALIDA, rtsp_url: URL_INTERNET }, ADMIN))).toEqual({ tipo: 'validacion', mensaje: FUERA });
+    expect(await fallo(casos.editar(3, { ...VALIDA, rtsp_url: URL_INTERNET }, ADMIN))).toEqual({ tipo: 'validacion', mensaje: FUERA });
+    expect(repositorio.crear).not.toHaveBeenCalled();
+    expect(repositorio.actualizar).not.toHaveBeenCalled();
+    expect(video.sincronizarRutas).not.toHaveBeenCalled();
+  });
+
+  it('también se comprueba el flujo de vista', async () => {
+    const { casos, repositorio, conectividad } = preparar();
+    conectividad.verificarRed.mockImplementation(async (url: string) => (url.includes('8.8.8.8') ? FUERA : null));
+    const vista = { ...VALIDA, rtsp_url_vista: 'rtsp://admin:clave@8.8.8.8:554/Streaming/Channels/102' };
+    expect(await fallo(casos.registrar(vista, ADMIN))).toEqual({ tipo: 'validacion', mensaje: FUERA });
+    expect(repositorio.crear).not.toHaveBeenCalled();
+  });
+
+  it('Ping y Play de prueba: no se conecta a destinos fuera de las redes permitidas', async () => {
+    const { casos, conectividad, video } = preparar();
+    conectividad.verificarRed.mockResolvedValue(FUERA);
+    expect(await fallo(casos.probar({ rtsp_url: URL_INTERNET }))).toEqual({ tipo: 'validacion', mensaje: FUERA });
+    expect(await fallo(casos.pruebaVideo({ rtsp_url: URL_INTERNET }, ADMIN))).toEqual({ tipo: 'validacion', mensaje: FUERA });
+    expect(conectividad.diagnosticar).not.toHaveBeenCalled();
+    expect(video.crearRutaPrueba).not.toHaveBeenCalled();
+  });
+
+  it('diagnóstico de una cámara guardada que quedó fuera de las redes: se informa y no se conecta', async () => {
+    const { casos, conectividad } = preparar();
+    conectividad.verificarRed.mockResolvedValue(FUERA);
+    const r = await casos.diagnosticar(3);
+    expect(r).toEqual({ ping: null, rtsp: expect.objectContaining({ en_linea: false, diagnostico: 'red_no_permitida', mensaje: FUERA }) });
+    expect(conectividad.diagnosticar).not.toHaveBeenCalled();
+    expect(conectividad.registrar).toHaveBeenCalledWith(3, r.rtsp, true);
+  });
+});

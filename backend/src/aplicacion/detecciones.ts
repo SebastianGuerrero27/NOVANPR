@@ -6,7 +6,7 @@ import {
 } from '../dominio/decisionAcceso';
 import {
   csvDetecciones, ETIQUETA_ESTADO, type FilaExportacion, type FiltrosDetecciones, fechaHoraLocal, leerDatosValidacion, leerFiltros,
-  leerLimite, leerPaginacion, leerPlacaConsulta, leerRegistroManual, lecturaUtilizable, REGLA_MOTIVO_ELIMINACION,
+  leerLimite, leerPaginacion, leerPlacaConsulta, leerRegistroManual, lecturaUtilizable, normalizarFuente, REGLA_MOTIVO_ELIMINACION,
   REGLA_MOTIVO_ELIMINACION_MASIVA, tieneFiltros, tipoPorFormato,
 } from '../dominio/detecciones';
 import { describirHorario, evaluarVigencia, type Vigencia } from '../dominio/horario';
@@ -182,7 +182,7 @@ export function casosDetecciones(d: DependenciasDetecciones) {
      */
     async ingreso(entrada: unknown) {
       const b = cuerpo(entrada);
-      const { tracking_id, ruta_imagen_ingreso, confianza_deteccion = null, fuente = 'webcam', camara_id = null, placa = null } = b;
+      const { tracking_id, ruta_imagen_ingreso, confianza_deteccion = null, fuente, camara_id = null, placa = null } = b;
       if (!ruta_imagen_ingreso) throw errorValidacion('La ruta de la imagen de ingreso es obligatoria.');
       const trackingId = Number.isInteger(tracking_id) ? tracking_id : -1;
       const pista = typeof placa === 'string' ? normalizarPlaca(placa) : '';
@@ -200,7 +200,7 @@ export function casosDetecciones(d: DependenciasDetecciones) {
 
       const creado = await d.repositorio.crearIngreso({
         trackingId, pista: pista.length >= 4 ? pista : null, ruta: String(ruta_imagen_ingreso).substring(0, 255),
-        confianza: typeof confianza_deteccion === 'number' ? confianza_deteccion : null, fuente: String(fuente).substring(0, 255), camaraId,
+        confianza: typeof confianza_deteccion === 'number' ? confianza_deteccion : null, fuente: normalizarFuente(fuente), camaraId,
       });
       await d.repositorio.guardarMetadatos(creado.id, b.metadatos);
       await difundir(creado.id, 'deteccion:nueva');
@@ -284,7 +284,7 @@ export function casosDetecciones(d: DependenciasDetecciones) {
         motivo: String(motivo || 'falso_positivo_ocr').substring(0, 100),
         texto: texto_candidato ? String(texto_candidato).substring(0, 50) : null,
         confianza: typeof confianza === 'number' ? confianza : null,
-        fuente: fuente ? String(fuente).substring(0, 255) : null,
+        fuente: normalizarFuente(fuente),
         camaraId: Number.isInteger(camara_id) ? camara_id : null,
       });
       return { success: true };

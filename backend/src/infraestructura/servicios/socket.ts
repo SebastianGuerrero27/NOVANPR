@@ -21,10 +21,21 @@ import { setWebSocketConnections } from './metrics';
  * las salas correctas (o sea rechazada).
  */
 let io: SocketIOServer | null = null;
+/** Cliente Redis del adaptador (null si está desactivado o no conectó) */
+let clienteRedis: Redis | null = null;
+let redisConfigurado = false;
+
+/** Estado de Redis para /health/ready: desactivado, activo, reconectando o sin conexión. */
+export function estadoRedis(): 'desactivado' | 'activo' | 'reconectando' | 'sin_conexion' {
+  if (!redisConfigurado) return 'desactivado';
+  if (!clienteRedis) return 'sin_conexion';
+  return clienteRedis.status === 'ready' ? 'activo' : 'reconectando';
+}
 
 async function adaptadorRedis(servidor: SocketIOServer): Promise<void> {
   const activo = process.env.SOCKET_REDIS_ADAPTER === 'true';
   if (!activo) return;
+  redisConfigurado = true;
   const opciones = {
     host: process.env.REDIS_HOST || 'localhost',
     port: Number(process.env.REDIS_PORT || 6379),
@@ -42,6 +53,7 @@ async function adaptadorRedis(servidor: SocketIOServer): Promise<void> {
     pub.on('error', e => console.warn('[SOCKET] Redis (pub):', e.message));
     sub.on('error', e => console.warn('[SOCKET] Redis (sub):', e.message));
     servidor.adapter(createAdapter(pub, sub));
+    clienteRedis = pub;
     console.log('[SOCKET] Adaptador Redis activo: los eventos se reparten entre instancias del backend.');
   } catch (e: any) {
     pub.disconnect();

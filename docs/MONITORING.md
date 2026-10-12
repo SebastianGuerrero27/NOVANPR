@@ -24,7 +24,7 @@ Esta guía explica la implementación del sistema de monitoreo con Prometheus y 
 
 ### 1. Prometheus
 
-**Puerto**: 9090
+**Puerto**: 9090, solo en `127.0.0.1` del equipo anfitrión (Prometheus no tiene autenticación)
 
 **Función**: Recolecta y almacena métricas de tiempo serie
 
@@ -37,7 +37,8 @@ Esta guía explica la implementación del sistema de monitoreo con Prometheus y 
 
 ### 2. Grafana
 
-**Puerto**: 3001 (mapeado a 3000 internamente)
+**Puerto**: 3001 (mapeado a 3000 internamente), solo en `127.0.0.1`; para verlo desde otros equipos,
+publíquelo tras un proxy con HTTPS
 
 **Credenciales por defecto**:
 - Usuario: `admin`

@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { Camera, Cpu, Crop, Edit3, Loader2, Play, Plus, RadioTower, RefreshCw, Trash2 } from 'lucide-react';
 import api, { mensajeError } from '../../infraestructura/api';
-import { useEvento } from '../../aplicacion/tiempoReal';
+import { useEvento, useReconexion } from '../../aplicacion/tiempoReal';
 import { useConsulta } from '../../aplicacion/hooks';
 import type { Camara, EstadoAnpr } from '../../dominio/tipos';
 import { numero, relativo } from '../../dominio/formato';
@@ -18,7 +18,7 @@ const ESTADO: Record<Camara['estado'], { p: string; t: string }> = {
 
 const Camaras: React.FC = () => {
   const notificar = useNotificar();
-  const { datos, cargando, error, setDatos } = useConsulta<Camara[]>(() => api.get('/camaras').then(r => r.data), []);
+  const { datos, cargando, error, setDatos, recargar } = useConsulta<Camara[]>(() => api.get('/camaras').then(r => r.data), []);
   const [editando, setEditando] = useState<Camara | 'nueva' | null>(null);
   const [eliminando, setEliminando] = useState<Camara | null>(null);
   const [probando, setProbando] = useState<number | 'todas' | null>(null);
@@ -32,6 +32,7 @@ const Camaras: React.FC = () => {
   useEvento<Camara>('camara:actualizada', reemplazar);
   useEvento<{ id: number }>('camara:eliminada', ({ id }) => setDatos(l => l && l.filter(x => x.id !== id)));
   useEvento<Partial<Camara> & { id: number }>('camara:estado', e => setDatos(l => l && l.map(x => (x.id === e.id ? { ...x, ...e } : x))));
+  useReconexion(() => { recargar(true); motor.recargar(true); });
 
   const probar = async (c: Camara) => {
     setProbando(c.id);

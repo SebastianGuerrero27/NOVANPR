@@ -43,10 +43,12 @@ from app.dominio.tasa_cuadros import TasaCuadros
 
 # Ventana en la que un mismo vehículo (track o placa) no se registra dos veces
 PLATE_DEBOUNCE_SECONDS = 35.0
-# Enfriamiento entre lecturas OCR rápidas de un mismo track (RTSP y navegador). El OCR rápido
-# cuesta ~25 ms: con 0,25 s el consenso de 2–3 lecturas se forma en menos de medio segundo.
+# Enfriamiento entre lecturas OCR rápidas de un mismo track. El OCR rápido cuesta ~25 ms: con
+# 0,25 s el consenso de 2–3 lecturas se forma en menos de medio segundo.
 ENFRIAMIENTO_OCR_S = 0.25
-ENFRIAMIENTO_OCR_NAVEGADOR_S = 0.25
+# Valor de `fuente` que se envía al backend: el tipo de entrada, nunca la URL (lleva credenciales);
+# la cámara de origen va en camara_id
+FUENTE_RTSP = "rtsp"
 # Capturas de un mismo track: si la foto elegida resulta ilegible, el selector elige otro cuadro
 # del mismo paso en lugar de perder el vehículo (hasta este número de intentos)
 MAX_INTENTOS_CAPTURA = 3
@@ -65,7 +67,6 @@ class ConfigMotor:
     camara_id: int
     fuente_camara: str
     rtsp_url: str
-    indice_webcam: int
     dir_media: str
     #: Dibujar el HUD sobre el video (DEBUG_VISUAL)
     hud_activo: bool
@@ -99,7 +100,6 @@ class DependenciasMotor:
     #: Reconocedor de atributos del vehículo (o None)
     reconocedor_vehiculo: Callable[[], Any]
     fuente_rtsp: Callable[[str], Any]
-    fuente_webcam: Callable[[int], Any]
     cuadro_espera: Callable[[str], np.ndarray]
     mostrar_ventana: Callable[[str, np.ndarray], bool]
     cerrar_ventanas: Callable[[], None]
@@ -170,8 +170,6 @@ class MotorAnpr:
         self._ejecutor_ocr = ThreadPoolExecutor(max_workers=2, thread_name_prefix="AsyncOCR")
         #: Etapas del registro que se ejecutan en paralelo (OCR profundo, verificador, vehículo)
         self._ejecutor_etapas = ThreadPoolExecutor(max_workers=3, thread_name_prefix="Registro")
-        #: Detección YOLO de cuadros del navegador (aislada del OCR y del disco)
-        self.ejecutor_navegador = ThreadPoolExecutor(max_workers=2, thread_name_prefix="BrowserYOLO")
 
         # Registros en memoria protegidos por un mismo candado
         self._candado = threading.Lock()
@@ -191,8 +189,6 @@ class MotorAnpr:
         self._cuadro_nuevo = threading.Event()
 
         self._candado_cambio_camara = threading.Lock()
-        #: Un solo cuadro del navegador a la vez (los demás se descartan para no acumular latencia)
-        self.candado_navegador = threading.Lock()
 
     # ─── Consultas ──────────────────────────────────────────────────────────
 
@@ -329,7 +325,6 @@ class MotorAnpr:
         self._ejecutor_disco.shutdown(wait=False)
         self._ejecutor_ocr.shutdown(wait=False)
         self._ejecutor_etapas.shutdown(wait=False)
-        self.ejecutor_navegador.shutdown(wait=False)
         self._http.close()
         self._log.info("Servicio ANPR cerrado limpiamente.")
 
@@ -338,17 +333,8 @@ class MotorAnpr:
     def encolar_ocr(self, tracking_id: int, frame_copy: np.ndarray, plate_bbox: list[int]) -> None:
         """OCR rápido de un track en un pool aparte, con enfriamiento: el seguimiento y el video
         nunca esperan al OCR."""
-        self._encolar(tracking_id, tracking_id, frame_copy, plate_bbox, self._config.enfriamiento_ocr_s, navegador=False)
-
-    def encolar_ocr_navegador(self, tracking_id: int, frame_copy: np.ndarray, plate_bbox: list[int]) -> None:
-        """OCR del flujo WebSocket del navegador. Escribe en el espacio de tracks del navegador para
-        que una lectura RTSP previa no aparezca sobre una caja del navegador en otra posición; las
-        claves negativas evitan colisiones con los tracks RTSP. Re-escanea cada 0,5 s para refinar
-        el consenso conforme el auto avanza."""
-        self._encolar(-(tracking_id + 1), tracking_id, frame_copy, plate_bbox, ENFRIAMIENTO_OCR_NAVEGADOR_S, navegador=True)
-
-    def _encolar(self, clave: int, tracking_id: int, frame_copy: np.ndarray, plate_bbox: list[int],
-                 enfriamiento: float, navegador: bool) -> None:
+        clave = tracking_id
+        enfriamiento = self._config.enfriamiento_ocr_s
         ahora = time.time()
         with self._candado:
             if clave in self._ocr_en_curso:
@@ -366,10 +352,10 @@ class MotorAnpr:
                     res = trabajador._agent.process_image(frame_copy, plate_bbox, fast_mode=True)
                     if res.placa:
                         estado = "leida" if res.estado == "procesado" else "escaneando"
-                        votar = pipeline.update_browser_track_plate if navegador else pipeline.update_track_plate
-                        votar(tracking_id, res.placa, res.confianza, estado, quality=nitidez_recorte(frame_copy, plate_bbox))
+                        pipeline.update_track_plate(tracking_id, res.placa, res.confianza, estado,
+                                                    quality=nitidez_recorte(frame_copy, plate_bbox))
             except Exception as e:
-                self._log.warning("Aviso en OCR %sasíncrono para track #%d: %s", "browser " if navegador else "", tracking_id, e)
+                self._log.warning("Aviso en OCR asíncrono para track #%d: %s", tracking_id, e)
                 self._m.record_ocr_error("ocr_asincrono")
             finally:
                 with self._candado:
@@ -406,20 +392,25 @@ class MotorAnpr:
                 self._m.update_tracking_active(len(activos))
                 self._m.record_inference("rtsp", pipeline.inferencia_omitida("rtsp"))
 
-                # 2. OCR asíncrono de cada track hasta reunir 3 lecturas concordantes: son la
-                #    evidencia de consenso multi-cuadro que exige la validez de la lectura.
-                for roi in rois:
-                    info = pipeline.get_track_info(roi.tracking_id)
-                    if (info.get("lecturas", 0) < 3 and info.get("status") not in _ESTADOS_FINALES
-                            and leible(roi.plate_bbox, frame, ancho_min=16, alto_min=6)):
-                        self.encolar_ocr(roi.tracking_id, frame.copy(), roi.plate_bbox)
-                    self._anticipar_vehiculo(roi, frame)
+                # 2. OCR asíncrono de cada track y análisis anticipado del vehículo
+                self._leer_placas(pipeline, rois, frame)
 
                 # 3. Calidad del cuadro y disparo de la captura fotográfica
                 self._evaluar_capturas(selector, rois, frame, idx)
             except Exception as e:
                 self._log.error("Error en hilo de detección desacoplado: %s", e)
                 self._m.record_detection_error("deteccion")
+
+    def _leer_placas(self, pipeline: Any, rois: list, frame: np.ndarray) -> None:
+        """OCR asíncrono de cada track hasta reunir 3 lecturas concordantes (la evidencia de consenso
+        multi-cuadro que exige la validez de la lectura). Una placa cortada por el borde lateral o
+        demasiado pequeña no se lee: el OCR devolvería texto truncado ("SY589" por "PSY589")."""
+        for roi in rois:
+            info = pipeline.get_track_info(roi.tracking_id)
+            if (info.get("lecturas", 0) < 3 and info.get("status") not in _ESTADOS_FINALES
+                    and leible(roi.plate_bbox, frame, ancho_min=16, alto_min=6)):
+                self.encolar_ocr(roi.tracking_id, frame.copy(), roi.plate_bbox)
+            self._anticipar_vehiculo(roi, frame)
 
     def _anticipar_vehiculo(self, roi: Any, frame: np.ndarray) -> None:
         """
@@ -526,80 +517,15 @@ class MotorAnpr:
                 pass
         self._log.info("Motor ANPR en Tiempo Real finalizado.")
 
-    # ─── Cuadros del navegador ──────────────────────────────────────────────
-
-    def procesar_cuadro_ws(self, frame: np.ndarray, rois: list) -> dict:
-        """Respuesta del WebSocket de la webcam para las detecciones de un cuadro (OCR por el
-        espacio de tracks del navegador y captura automática)."""
-        pipeline = self._pipeline
-        ahora = time.time()
-        self._m.record_inference("navegador", pipeline.inferencia_omitida("navegador"))
-        datos = []
-        for r in rois:
-            info = pipeline.get_browser_track_info(r.tracking_id)
-            if leible(r.plate_bbox, frame, ancho_min=16, alto_min=6):
-                self.encolar_ocr_navegador(r.tracking_id, frame.copy(), r.plate_bbox)
-            lecturas = int(info.get("lecturas", 0))
-            datos.append({
-                "tracking_id": r.tracking_id,
-                "confidence": round(r.confidence, 3),
-                "bbox": r.plate_bbox,
-                "oriented_box": getattr(r, "oriented_box", []),
-                "velocity": r.velocity,
-                "ts": round(ahora, 4),
-                "plate": info.get("plate", ""),
-                "status": info.get("status", ""),
-                "plate_confidence": round(info.get("confidence", 0.0), 3),
-                "lecturas": lecturas,
-                "en_movimiento": r.en_movimiento,
-                # Mismo criterio que el video RTSP: placa en movimiento o con una lectura ANT
-                "mostrar": r.en_movimiento or lecturas >= 1,
-            })
-        if self._selector and self._trabajador_ocr:
-            self._evaluar_capturas(self._selector, rois, frame, int(ahora * 30))
-        caja, porcentaje, vehiculo = pipeline.get_motion_info("navegador")
-        return {"rois": datos, "motion_bbox": caja, "motion_pct": porcentaje, "motion_vehicle_detected": vehiculo}
-
-    def procesar_cuadro_http(self, frame: np.ndarray, rois: list) -> dict:
-        """Respuesta de POST /process/frame para las detecciones de un cuadro del navegador."""
-        pipeline = self._pipeline
-        for roi in rois:
-            info = pipeline.get_track_info(roi.tracking_id) if pipeline else {}
-            if not info.get("plate") and leible(roi.plate_bbox, frame, ancho_min=20, alto_min=8):
-                self.encolar_ocr(roi.tracking_id, frame.copy(), roi.plate_bbox)
-        if self._selector and self._trabajador_ocr:
-            self._evaluar_capturas(self._selector, rois, frame, int(time.time() * 30))
-
-        caja, porcentaje, vehiculo = pipeline.get_motion_info("navegador") if pipeline else (None, 0, False)
-        datos = []
-        for r in rois:
-            info = pipeline.get_browser_track_info(r.tracking_id) if pipeline else {}
-            datos.append({
-                "tracking_id": r.tracking_id,
-                "confidence": round(r.confidence, 3),
-                "bbox": r.plate_bbox,
-                "oriented_box": getattr(r, "oriented_box", []),
-                "velocity": getattr(r, "velocity", [0.0, 0.0]),
-                "plate": info.get("plate", ""),
-                "status": info.get("status", ""),
-                "plate_confidence": round(info.get("confidence", 0.0), 3),
-                "lecturas": int(info.get("lecturas", 0)),
-            })
-        # Video de diagnóstico en segundo plano (no retrasa la respuesta)
-        if pipeline:
-            self._ejecutor_disco.submit(
-                lambda f: self.buffer_video.update(pipeline.draw_overlays(f, capture_fps=30.0, inference_fps=pipeline.fps)),
-                frame.copy(),
-            )
-        return {"success": True, "rois": datos, "motion_bbox": caja, "motion_pct": porcentaje, "motion_vehicle_detected": vehiculo}
-
     # ─── Cámara y región de interés ─────────────────────────────────────────
 
     def cambiar_camara(self, payload: dict) -> tuple[int, dict]:
-        """Cambia en caliente la fuente de video (RTSP o webcam) sin reiniciar el servicio.
-        Devuelve (código HTTP, cuerpo)."""
+        """Cambia en caliente la cámara RTSP sin reiniciar el servicio. Devuelve (código HTTP, cuerpo).
+        Solo se admiten fuentes RTSP: el motor no usa cámaras locales."""
         camera_id = int(payload.get("camera_id", 1))
         tipo = str(payload.get("source_type", "rtsp")).lower().strip()
+        if tipo != "rtsp":
+            return 400, {"success": False, "error": "Solo se admiten fuentes RTSP"}
         rtsp_url = payload.get("rtsp_url")
         nombre = payload.get("nombre", "Cámara Activa")
         forzar = bool(payload.get("force", False))
@@ -611,7 +537,7 @@ class MotorAnpr:
 
         with self._candado_cambio_camara:
             anterior = self._fuente
-            fuente_txt = "webcam" if tipo == "webcam" else (rtsp_url or self._config.rtsp_url)
+            fuente_txt = rtsp_url or self._config.rtsp_url
 
             # No reiniciar si la cámara pedida ya está activa y conectada, salvo que se fuerce
             en_marcha = anterior and getattr(anterior, "_grab_running", False) and getattr(anterior, "is_connected", False)
@@ -625,7 +551,7 @@ class MotorAnpr:
                 }
 
             try:
-                nueva = self._dep.fuente_webcam(self._config.indice_webcam) if tipo == "webcam" else self._dep.fuente_rtsp(fuente_txt)
+                nueva = self._dep.fuente_rtsp(fuente_txt)
                 nueva._name = nombre
                 nueva._url = fuente_txt
 
@@ -703,7 +629,7 @@ class MotorAnpr:
                     "motivo": motivo,
                     "texto_candidato": texto,
                     "confianza": round(confianza, 3),
-                    "fuente": self.fuente_camara,
+                    "fuente": FUENTE_RTSP,
                     "camara_id": self.camara_id,
                 },
                 timeout=2.0,
@@ -734,11 +660,10 @@ class MotorAnpr:
         try:
             pipeline = self._pipeline
             trabajador = self._trabajador_ocr
-            # 1. Lecturas previas en ambos espacios de tracks (RTSP y navegador)
-            info_navegador = pipeline.get_browser_track_info(tracking_id) if pipeline else {}
+            # 1. Lectura previa del track (consenso del OCR rápido)
             info_rtsp = pipeline.get_track_info(tracking_id) if pipeline else {}
-            placa_previa = info_navegador.get("plate") or info_rtsp.get("plate", "")
-            conf_previa = max(info_navegador.get("confidence", 0.0), info_rtsp.get("confidence", 0.0))
+            placa_previa = info_rtsp.get("plate", "")
+            conf_previa = info_rtsp.get("confidence", 0.0)
 
             # Anti-duplicado temprano, antes del OCR profundo y del disco
             if placa_previa:
@@ -811,9 +736,8 @@ class MotorAnpr:
             # Consenso temporal: la lectura profunda suma un voto al consenso del track (lecturas de
             # varios cuadros) en lugar de reemplazarlo: un único cuadro mal leído no decide la placa.
             if pipeline and (placa or placa_verificador):
-                usa_navegador = bool(info_navegador)
-                votar = pipeline.update_browser_track_plate if usa_navegador else pipeline.update_track_plate
-                consultar = pipeline.get_browser_track_info if usa_navegador else pipeline.get_track_info
+                votar = pipeline.update_track_plate
+                consultar = pipeline.get_track_info
                 nitidez = nitidez_recorte(frame, candidato.plate_bbox)
                 if placa:
                     votar(tracking_id, placa, conf, "", quality=nitidez)
@@ -937,7 +861,6 @@ class MotorAnpr:
             # se indica que la placa ya quedó registrada.
             if pipeline:
                 pipeline.update_track_plate(tracking_id, "", 0.0, "confirmada")
-                pipeline.update_browser_track_plate(tracking_id, "", 0.0, "confirmada")
 
             self._registrar_en_backend(candidato, tracking_id, frame, placa, conf, placa_verificador, validez, evidencia, ahora, etapas)
         except Exception as e:
@@ -996,7 +919,7 @@ class MotorAnpr:
             "placa": placa,
             "ruta_imagen_ingreso": ruta_ingreso,
             "confianza_deteccion": round(candidato.confidence, 3),
-            "fuente": self.fuente_camara,
+            "fuente": FUENTE_RTSP,
             "camara_id": self.camara_id,
             "metadatos": {
                 "luminancia_media": round(float(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY).mean()), 1),

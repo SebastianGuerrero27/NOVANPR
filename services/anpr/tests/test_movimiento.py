@@ -69,17 +69,6 @@ def test_movimiento_fuera_de_la_region_de_interes_no_cuenta():
     assert m.analizar(con_objeto(), cuadrante_inferior_derecho).fraccion == 0.0
 
 
-def test_cada_fuente_tiene_su_propio_fondo():
-    """La webcam del navegador no altera el fondo aprendido de la cámara RTSP (y viceversa)."""
-    _, p = pipeline()
-    for _ in range(3):
-        p.detect_and_track(fondo())
-    for _ in range(3):
-        p.detect_fast(con_objeto([300, 300, 500, 400]))  # otra escena en el navegador
-    p.detect_and_track(fondo())
-    assert p.get_motion_info("rtsp")[1] == 0
-
-
 # ─── Compuerta de inferencia ─────────────────────────────────────────────────
 
 def test_sin_compuerta_el_detector_se_ejecuta_en_cada_cuadro():

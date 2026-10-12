@@ -13,33 +13,24 @@ load_dotenv()
 # =============================================================================
 # Servidor FastAPI
 # =============================================================================
-PORT: int = int(os.getenv("PORT", "8000"))
 LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO").upper()
 
 # =============================================================================
 # Fuente de Video
 # =============================================================================
-CAMERA_SOURCE: str = os.getenv("CAMERA_SOURCE", "webcam").lower()  # "webcam" | "rtsp"
-WEBCAM_INDEX: int = int(os.getenv("WEBCAM_INDEX", "0"))
 RTSP_URL: str = os.getenv("RTSP_URL", os.getenv("RTSP_STREAM_URL", ""))
 DEBUG_SHOW_WINDOW: bool = os.getenv("DEBUG_SHOW_WINDOW", "false").lower() in ("true", "1", "yes")
-
-# Resolución de captura
-FRAME_WIDTH: int = int(os.getenv("FRAME_WIDTH", "1280"))
-FRAME_HEIGHT: int = int(os.getenv("FRAME_HEIGHT", "720"))
 
 # =============================================================================
 # Modelo YOLO
 # =============================================================================
-YOLO_MODEL_PATH: str = os.getenv("YOLO_MODEL_PATH", "yolo26n.pt")
 PLATE_MODEL_PATH: str = os.getenv("PLATE_MODEL_PATH", "models/license_plate_detector.pt")
 YOLO_CONFIDENCE_THRESHOLD: float = float(os.getenv("YOLO_CONFIDENCE_THRESHOLD", "0.45"))
 PLATE_CONFIDENCE_THRESHOLD: float = float(os.getenv("PLATE_CONFIDENCE_THRESHOLD", "0.22"))
 
 # =============================================================================
-# Optimización de Modelos (Cuantización)
+# Proporción de la placa (ANT Ecuador)
 # =============================================================================
-
 # Rangos normativos de Relación de Aspecto (Aspect Ratio) - ANT Ecuador
 # Autos/Camionetas: 404x140mm (AR ~ 2.89) o Mercosur/Latam (AR ~ 2.0)
 CAR_PLATE_AR_MIN: float = float(os.getenv("CAR_PLATE_AR_MIN", "1.75"))
@@ -47,10 +38,6 @@ CAR_PLATE_AR_MAX: float = float(os.getenv("CAR_PLATE_AR_MAX", "3.80"))
 # Motocicletas: 200x160mm (AR ~ 1.25)
 MOTO_PLATE_AR_MIN: float = float(os.getenv("MOTO_PLATE_AR_MIN", "1.05"))
 MOTO_PLATE_AR_MAX: float = float(os.getenv("MOTO_PLATE_AR_MAX", "1.55"))
-
-# Clases COCO de vehículos (para modelo genérico)
-_vehicle_classes_str = os.getenv("YOLO_VEHICLE_CLASSES", "2,3,5,7")
-YOLO_VEHICLE_CLASSES: list[int] = [int(c.strip()) for c in _vehicle_classes_str.split(",") if c.strip()]
 
 # =============================================================================
 # Motor OCR & ALPR
@@ -111,21 +98,8 @@ DETECTOR_BACKEND: str = os.getenv("DETECTOR_BACKEND", "yolo").lower()
 PLATE_DETECTOR_ARCH: str = os.getenv("PLATE_DETECTOR_ARCH", "yolo26").lower()
 
 # =============================================================================
-# Tracking y Deduplicación
+# Compuerta de movimiento (docs/METODO_VERIFICACION_LECTURA.md §2.4)
 # =============================================================================
-DETECTION_COOLDOWN_SEC: int = int(os.getenv("DETECTION_COOLDOWN_SEC", "15"))
-FRAME_SKIP: int = int(os.getenv("FRAME_SKIP", "1"))
-
-# --- Optimización de Inferencia (Arquitectura Productor-Consumidor) ---
-# Resolución interna para inferencia YOLO (640x480 es ~18x más rápido en CPU que 1280x720)
-INFERENCE_WIDTH: int = int(os.getenv("INFERENCE_WIDTH", "640"))
-INFERENCE_HEIGHT: int = int(os.getenv("INFERENCE_HEIGHT", "480"))
-# Throttle mínimo entre inferencias sucesivas (milisegundos) para evitar saturación de CPU
-INFERENCE_THROTTLE_MS: int = int(os.getenv("INFERENCE_THROTTLE_MS", "0"))
-# Guardado asíncrono de imágenes de evidencia (ThreadPoolExecutor)
-ASYNC_DISK_IO: bool = os.getenv("ASYNC_DISK_IO", "true").lower() in ("true", "1", "yes")
-
-# --- Compuerta de movimiento (docs/METODO_VERIFICACION_LECTURA.md §2.4) ---
 # El detector de placas solo se ejecuta si desde la última inferencia cambió al menos
 # MOTION_GATE_MIN_FRACTION del área (o de la región de interés); si no, la última detección
 # sigue valiendo, con una inferencia de control cada MOTION_GATE_MAX_SKIP cuadros. "false" la
@@ -149,7 +123,6 @@ RUNNING_IN_DOCKER: bool = (
 # Comunicación con Backend
 # =============================================================================
 BACKEND_URL: str = os.getenv("BACKEND_URL", "http://localhost:5000")
-BACKEND_SOCKETIO_URL: str = os.getenv("BACKEND_SOCKETIO_URL", "http://localhost:5000")
 
 # Token compartido con el backend para las rutas máquina a máquina (/api/detecciones/ingreso,
 # /completar-ocr, /descarte). Debe coincidir con ANPR_SERVICE_TOKEN del backend.

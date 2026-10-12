@@ -4,6 +4,7 @@ import net from 'net';
 import sql from 'mssql';
 import { getDB } from '../db';
 import { revelar } from './custodiaCredenciales';
+import { verificarRed } from './redCamaras';
 import { emitEvent } from './socket';
 import { notificar } from './notificaciones';
 
@@ -14,7 +15,8 @@ import { notificar } from './notificaciones';
  * sin ejecutar comandos del sistema.
  */
 
-export type Diagnostico = 'ok' | 'requiere_credenciales' | 'credenciales_invalidas' | 'ruta_no_encontrada' | 'rechazado' | 'sin_respuesta' | 'url_invalida';
+export type Diagnostico = 'ok' | 'requiere_credenciales' | 'credenciales_invalidas' | 'ruta_no_encontrada' | 'rechazado' | 'sin_respuesta'
+  | 'url_invalida' | 'red_no_permitida';
 
 export interface ResultadoConexion {
   host: string | null;
@@ -219,7 +221,11 @@ export function iniciarMonitorCamaras(): void {
       // Cada cámara por separado: una credencial ilegible no impide verificar las demás
       await Promise.all(r.recordset.map(async c => {
         try {
-          await registrarConexion(c.id, await probarConexion(revelar(c.rtsp_url), c.ip));
+          const url = revelar(c.rtsp_url);
+          const motivo = await verificarRed(url, c.ip);
+          await registrarConexion(c.id, motivo
+            ? { host: null, puerto: null, en_linea: false, diagnostico: 'red_no_permitida', tiempo_ms: null, mensaje: motivo }
+            : await probarConexion(url, c.ip));
         } catch (e: any) {
           console.warn(`[CAMARAS] Cámara #${c.id}: ${e.message}`);
         }

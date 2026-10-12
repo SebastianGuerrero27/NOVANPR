@@ -13,6 +13,7 @@ import {
   ticketValido, urlLecturaMotor, urlWebrtcPublica,
 } from '../infraestructura/servicios/medios';
 import { cambiarCamaraAnpr, estadoServicioAnpr, fijarRoiAnpr, urlPublicaAnpr } from '../infraestructura/servicios/servicioAnpr';
+import { verificarRed } from '../infraestructura/servicios/redCamaras';
 
 /**
  * Raíz de composición del módulo de cámaras, monitoreo y medios: conecta los casos de uso con
@@ -24,6 +25,7 @@ const conectividad: PuertoConectividad = {
   destino: destinoRtsp,
   probar: probarConexion,
   diagnosticar,
+  verificarRed: (rtsp, ip) => verificarRed(rtsp, ip),
   registrar: registrarConexion,
 };
 

@@ -104,6 +104,12 @@ jobs:
         working-directory: ./frontend
         run: npm run lint
 
+      # Vitest: alineación del HUD, formulario de cámaras, estados de la página y guardas (sin
+      # webcam ni RTSP fijo)
+      - name: Run tests
+        working-directory: ./frontend
+        run: npm test
+
       - name: Build frontend
         working-directory: ./frontend
         run: npm run build

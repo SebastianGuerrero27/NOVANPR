@@ -6,7 +6,7 @@ import {
 } from 'lucide-react';
 import api from '../../infraestructura/api';
 import { useAuth } from '../../aplicacion/AuthContext';
-import { useEvento } from '../../aplicacion/tiempoReal';
+import { useEvento, useReconexion } from '../../aplicacion/tiempoReal';
 import { useConsulta, useDiferido, usePaginaVisible } from '../../aplicacion/hooks';
 import type { Deteccion, PanelAdministracion, ResumenPanel } from '../../dominio/tipos';
 import { diaCorto, fechaHora, numero, relativo, ROLES, SERIES_ESTADO } from '../../dominio/formato';
@@ -34,6 +34,7 @@ function useResumen() {
   useEvento('deteccion:actualizada', recargar);
   useEvento('deteccion:eliminada', recargar);
   useEvento('deteccion:eliminadas', recargar);
+  useReconexion(recargar);
   useEvento('camara:estado', recargar);
   useEvento('camara:actualizada', recargar);
   useEvento('listas:actualizadas', recargar);

@@ -223,7 +223,7 @@ BEGIN
         id                          INT IDENTITY(1,1) PRIMARY KEY,
         tracking_id                 INT           NULL DEFAULT -1,
         camara_id                   INT           NULL REFERENCES Camaras(id),
-        fuente                      VARCHAR(255)  NULL DEFAULT 'webcam',
+        fuente                      VARCHAR(255)  NULL DEFAULT 'rtsp',
         -- Fase 1: captura
         fecha_hora_ingreso          DATETIME      NOT NULL DEFAULT GETDATE(),
         ruta_imagen_ingreso         VARCHAR(255)  NULL,

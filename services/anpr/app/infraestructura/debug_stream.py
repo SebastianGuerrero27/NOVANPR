@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import asyncio
 import threading
-import time
 from typing import AsyncGenerator, Optional
 
 import cv2
@@ -188,124 +187,6 @@ async def _mjpeg_loop(buffer: DebugFrameBuffer, frame_interval: float) -> AsyncG
 
         # Limita la cadencia al objetivo de FPS
         await asyncio.sleep(max(0.002, espera - (asyncio.get_event_loop().time() - t0)))
-
-
-async def rtsp_direct_preview_generator(
-    rtsp_url: str,
-    target_fps: float = 25.0,
-) -> AsyncGenerator[bytes, None]:
-    """
-    Genera un stream MJPEG directo desde una URL RTSP específica para pruebas y previsualización.
-    Muestra un banner institucional y pantalla táctica de espera si el canal está conectando.
-    """
-    frame_interval = 1.0 / max(1.0, target_fps)
-    loop = asyncio.get_event_loop()
-
-    import os
-    os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = (
-        "stimeout;2500000"
-        "|timeout;2500000"
-        "|rtsp_transport;tcp"
-        "|fflags;nobuffer"
-        "|flags;low_delay"
-        "|max_delay;200000"
-    )
-
-    cap: Optional[cv2.VideoCapture] = None
-    last_connect_try = 0.0
-
-    def _open_cap():
-        c = cv2.VideoCapture(rtsp_url, cv2.CAP_FFMPEG)
-        if c.isOpened():
-            c.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-        return c
-
-    def _read_frame(c):
-        if c and c.isOpened():
-            return c.read()
-        return False, None
-
-    try:
-        while True:
-            t0 = loop.time()
-            now = time.time()
-            frame = None
-
-            if cap is None or not cap.isOpened():
-                if now - last_connect_try >= 2.0:
-                    last_connect_try = now
-                    try:
-                        cap = await loop.run_in_executor(None, _open_cap)
-                    except Exception as e:
-                        logger.debug("Error abriendo RTSP: %s", e)
-                        cap = None
-
-            if cap is not None and cap.isOpened():
-                ret, frame = await loop.run_in_executor(None, _read_frame, cap)
-                if not ret or frame is None:
-                    try:
-                        cap.release()
-                    except Exception:
-                        pass
-                    cap = None
-
-            if frame is not None:
-                h, w = frame.shape[:2]
-                cv2.rectangle(frame, (0, 0), (w, 34), (11, 19, 41), -1)
-                cv2.putText(
-                    frame,
-                    f"PREVISUALIZACION RTSP EN VIVO | {rtsp_url}",
-                    (14, 22),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.50,
-                    (0, 240, 255),
-                    1,
-                    cv2.LINE_AA,
-                )
-                _, buffer = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 70])
-                jpeg_bytes = buffer.tobytes()
-            else:
-                canvas = np.zeros((480, 720, 3), dtype=np.uint8)
-                canvas[:] = (18, 16, 15)
-
-                cv2.rectangle(canvas, (0, 0), (720, 42), (30, 24, 20), -1)
-                cv2.putText(canvas, "ECU 911 VIGS | PREVISUALIZACION DE CANAL RTSP", (20, 27), cv2.FONT_HERSHEY_SIMPLEX, 0.60, (240, 240, 240), 2, cv2.LINE_AA)
-
-                cx, cy = 360, 240
-                cv2.rectangle(canvas, (cx - 320, cy - 80), (cx + 320, cy + 80), (32, 22, 18), -1)
-                cv2.rectangle(canvas, (cx - 320, cy - 80), (cx + 320, cy + 80), (0, 165, 255), 2)
-
-                cv2.putText(canvas, "EN ESPERA DE TRANSMISION RTSP", (cx - 260, cy - 30), cv2.FONT_HERSHEY_SIMPLEX, 0.70, (0, 215, 255), 2, cv2.LINE_AA)
-                cv2.putText(canvas, f"URL: {rtsp_url}", (cx - 300, cy + 10), cv2.FONT_HERSHEY_SIMPLEX, 0.46, (200, 200, 200), 1, cv2.LINE_AA)
-                cv2.putText(canvas, "Inicie la transmision en su aplicacion movil o valide la IP y puerto.", (cx - 300, cy + 45), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (140, 180, 220), 1, cv2.LINE_AA)
-
-                cv2.putText(canvas, "Estado: Reintentando conexion automaticamente cada 2s...", (20, 460), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (130, 130, 130), 1, cv2.LINE_AA)
-
-                _, buffer = cv2.imencode(".jpg", canvas, [cv2.IMWRITE_JPEG_QUALITY, 60])
-                jpeg_bytes = buffer.tobytes()
-
-            yield (
-                b"--frame\r\n"
-                b"Content-Type: image/jpeg\r\n"
-                b"Content-Length: " + str(len(jpeg_bytes)).encode() + b"\r\n\r\n" +
-                jpeg_bytes + b"\r\n"
-            )
-
-            elapsed = loop.time() - t0
-            remaining = frame_interval - elapsed
-            if remaining > 0.001:
-                await asyncio.sleep(remaining)
-            else:
-                await asyncio.sleep(0.001)
-
-    finally:
-        if cap is not None:
-            try:
-                cap.release()
-                logger.info("Stream RTSP de prueba finalizado para: %s", rtsp_url)
-            except Exception:
-                pass
-
 
 
 def try_imshow(window_name: str, frame: np.ndarray) -> bool:

@@ -38,16 +38,16 @@ const CAMARA: Record<string, CampoDoc> = {
     tipo: 'string',
     descripcion: 'URL rtsp:// o rtsps:// del flujo principal, el que procesa el motor ANPR (máx. 255, sin espacios); si llega '
       + 'enmascarada (******) se conserva la contraseña guardada. La contraseña se guarda cifrada (AES-256-GCM) y nunca sale de la API',
-    requerido: true, ejemplo: 'rtsp://admin:clave@192.168.1.64:554/Streaming/Channels/101',
+    requerido: true, ejemplo: 'rtsp://admin:clave@192.0.2.10:554/Streaming/Channels/101',
   },
   rtsp_url_vista: {
     tipo: 'string',
     descripcion: 'Opcional: URL del flujo secundario para la vista en vivo del navegador (p. ej. Hikvision canal 102 en H.264 '
       + '640×360). Vacía = la vista usa el flujo principal. Mismas reglas que rtsp_url; enmascarada, conserva la contraseña de la vista '
       + 'guardada o, si no había, la del flujo principal',
-    ejemplo: 'rtsp://admin:clave@192.168.1.64:554/Streaming/Channels/102',
+    ejemplo: 'rtsp://admin:clave@192.0.2.10:554/Streaming/Channels/102',
   },
-  ip: { tipo: 'string', descripcion: 'IPv4 o nombre de host para el ping (máx. 45); por omisión, el host de la URL', ejemplo: '192.168.1.64' },
+  ip: { tipo: 'string', descripcion: 'IPv4 o nombre de host para el ping (máx. 45); por omisión, el host de la URL', ejemplo: '192.0.2.10' },
 };
 
 /** Cámara registrada cuya contraseña se recupera si la URL llega enmascarada (Ping o Play del formulario). */
@@ -374,7 +374,7 @@ export const RUTAS: RutaDoc[] = [
     resumen: 'Ping y diagnóstico RTSP de una URL antes de guardarla',
     descripcion: 'Una URL que no se puede interpretar se informa en el diagnóstico (`url_invalida`).',
     cuerpo: {
-      rtsp_url: { tipo: 'string', requerido: true, descripcion: CAMARA.rtsp_url.descripcion, ejemplo: 'rtsp://admin:clave@192.168.1.64:554/Streaming/Channels/101' },
+      rtsp_url: { tipo: 'string', requerido: true, descripcion: CAMARA.rtsp_url.descripcion, ejemplo: 'rtsp://admin:clave@192.0.2.10:554/Streaming/Channels/101' },
       ip: CAMARA.ip,
       camara_id: CAMARA_PRUEBA,
     },
@@ -400,7 +400,7 @@ export const RUTAS: RutaDoc[] = [
     resumen: 'Ruta temporal para reproducir una URL sin guardarla',
     descripcion: 'La ruta temporal se elimina al cerrar la vista previa o a los 3 minutos.',
     cuerpo: {
-      rtsp_url: { tipo: 'string', requerido: true, descripcion: CAMARA.rtsp_url.descripcion, ejemplo: 'rtsp://admin:clave@192.168.1.64:554/Streaming/Channels/101' },
+      rtsp_url: { tipo: 'string', requerido: true, descripcion: CAMARA.rtsp_url.descripcion, ejemplo: 'rtsp://admin:clave@192.0.2.10:554/Streaming/Channels/101' },
       camara_id: CAMARA_PRUEBA,
       vista: { tipo: 'boolean', descripcion: 'Con camara_id y la URL enmascarada: recuperar la contraseña del flujo de vista' },
     },
@@ -426,7 +426,7 @@ export const RUTAS: RutaDoc[] = [
       ruta_imagen_ingreso: { tipo: 'string', requerido: true, ejemplo: 'ingreso_20261001_083015_42.jpg' },
       tracking_id: { tipo: 'integer', ejemplo: 42 },
       confianza_deteccion: { tipo: 'number', ejemplo: 0.91 },
-      fuente: { tipo: 'string', ejemplo: 'webcam' },
+      fuente: { tipo: 'string', ejemplo: 'rtsp', descripcion: 'Tipo de entrada (rtsp); una URL se reduce a rtsp: nunca se guardan credenciales' },
       camara_id: { tipo: 'integer', ejemplo: 1 },
       placa: { tipo: 'string', descripcion: 'Pista de la placa para deduplicar', ejemplo: 'PBA1234' },
       metadatos: { tipo: 'object', descripcion: 'Condiciones de captura (luminancia, distancia, nitidez…)' },
@@ -457,7 +457,7 @@ export const RUTAS: RutaDoc[] = [
       motivo: { tipo: 'string', ejemplo: 'falso_positivo_ocr' },
       texto_candidato: { tipo: 'string', ejemplo: 'P8A12' },
       confianza: { tipo: 'number', ejemplo: 0.41 },
-      fuente: { tipo: 'string', ejemplo: 'webcam' },
+      fuente: { tipo: 'string', ejemplo: 'rtsp', descripcion: 'Tipo de entrada (rtsp); una URL se reduce a rtsp: nunca se guardan credenciales' },
       camara_id: { tipo: 'integer', ejemplo: 1 },
     },
     respuestas: { 201: 'Descarte registrado' },
@@ -566,9 +566,9 @@ export const RUTAS: RutaDoc[] = [
   {
     metodo: 'post', ruta: '/api/monitoreo/ticket', etiqueta: 'Monitoreo', acceso: 'operacion:monitorear',
     resumen: 'Credencial de 60 s para el video en vivo',
-    descripcion: 'El alcance `webcam` (enviar la webcam del navegador al motor) exige además el permiso `camaras:gestionar`.',
-    cuerpo: { alcance: { tipo: 'string', valores: ['stream', 'webcam'], descripcion: 'Por omisión `stream`' } },
-    respuestas: { 400: 'Alcance inválido', 403: 'Sin permiso para usar la webcam como fuente' },
+    descripcion: 'Ticket para el video WebRTC de las cámaras registradas y el WebSocket de pistas del motor.',
+    cuerpo: { alcance: { tipo: 'string', valores: ['stream'], descripcion: 'Por omisión `stream`' } },
+    respuestas: { 400: 'Alcance inválido' },
   },
 
   // ─── Reportes ───────────────────────────────────────────────────────────────

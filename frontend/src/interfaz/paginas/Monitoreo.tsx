@@ -1,9 +1,9 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Bell, BellOff, Camera, ClipboardPlus, Cpu, Film, Pause, Play, Search, ShieldAlert, ShieldCheck, Trash2, Webcam } from 'lucide-react';
+import { Bell, BellOff, Camera, ClipboardPlus, Cpu, Film, Pause, Play, Plus, Search, ShieldAlert, ShieldCheck, Trash2 } from 'lucide-react';
 import api, { mensajeError } from '../../infraestructura/api';
 import { useAuth } from '../../aplicacion/AuthContext';
-import { useEvento } from '../../aplicacion/tiempoReal';
+import { useEvento, useReconexion } from '../../aplicacion/tiempoReal';
 import { useConsulta, usePaginaVisible } from '../../aplicacion/hooks';
 import type { Camara, Deteccion, EstadoAnpr } from '../../dominio/tipos';
 import { codecVideo, ESTADOS, fecha, fechaHora, hora, numero, relativo } from '../../dominio/formato';
@@ -14,7 +14,7 @@ import { ImagenEvidencia, RegistroManualModal, TarjetaDeteccion, ValidarModal } 
 import { VisorZoom } from '../componentes/ZoomDual';
 import { EliminarUno, EliminarVarios } from '../componentes/EliminarDetecciones';
 import { alCambiarSonido, fijarSonido, sonarAutorizado, sonarDenegado, sonidoActivo } from '../../infraestructura/avisos';
-import { PERFILES, PerfilVideo, VisorVideo, WebcamPrueba } from '../componentes/video';
+import { PERFILES, PerfilVideo, VisorVideo } from '../componentes/video';
 import { VisorEnVivo } from '../componentes/envivo';
 import { useNotificar } from '../componentes/Notificaciones';
 
@@ -80,11 +80,11 @@ const BuscarPlacaModal: React.FC<{ onCerrar: () => void }> = ({ onCerrar }) => {
 
 const Monitoreo: React.FC = () => {
   const { user, puede } = useAuth();
+  const navigate = useNavigate();
   const notificar = useNotificar();
   const visible = usePaginaVisible();
   const [perfil, setPerfil] = useState<PerfilVideo>(() => (leer(CLAVE_PERFIL, 'media') as PerfilVideo) in PERFILES ? leer(CLAVE_PERFIL, 'media') as PerfilVideo : 'media');
   const [pausado, setPausado] = useState(false);
-  const [fuente, setFuente] = useState<'camara' | 'webcam'>('camara');
   // WebRTC (MediaMTX, sin re-codificar, ~0,2–0,5 s) o compatibilidad (JPEG por WebSocket desde el motor)
   const [modo, setModo] = useState<'webrtc' | 'compat'>(() => (leer(CLAVE_MODO, 'webrtc') === 'compat' ? 'compat' : 'webrtc'));
   const cambiarModo = (m: 'webrtc' | 'compat') => { setModo(m); guardar(CLAVE_MODO, m); };
@@ -103,7 +103,7 @@ const Monitoreo: React.FC = () => {
   const esAdmin = puede('camaras:gestionar');
   const puedeCambiarCamara = puede('camaras:operar');
 
-  const { datos: camaras } = useConsulta<Camara[]>(() => api.get('/camaras').then(r => r.data), []);
+  const { datos: camaras, recargar: recargarCamaras } = useConsulta<Camara[]>(() => api.get('/camaras').then(r => r.data), []);
   const estadoMotor = useConsulta<EstadoAnpr>(() => api.get('/monitoreo/estado').then(r => r.data), []);
 
   // Estado del motor: se refresca cada 30 s solo mientras la pestaña está visible
@@ -135,6 +135,7 @@ const Monitoreo: React.FC = () => {
   });
   useEvento<{ id: number }>('deteccion:eliminada', ({ id }) => setFeed(f => f.filter(x => x.id !== id)));
   useEvento('deteccion:eliminadas', () => cargarFeed());
+  useReconexion(() => { cargarFeed(); estadoMotor.recargar(true); recargarCamaras(true); });
   useEvento<{ camara_id: number; nombre: string; por: string }>('monitoreo:camara', e => {
     estadoMotor.recargar(true);
     setReinicioVideo(x => x + 1);
@@ -156,6 +157,7 @@ const Monitoreo: React.FC = () => {
 
   const motor = estadoMotor.datos;
   const camaraActiva = camaras?.find(c => c.id === motor?.camara_activa?.id);
+  const hayCamaras = Boolean(camaras?.some(c => c.activa));
   const pendientes = feed.filter(d => d.estado_validacion === 'pendiente_revision' && !d.validado_manualmente && d.estado_procesamiento !== 'pendiente_ocr');
   const ultima = feed.find(d => d.estado_procesamiento !== 'pendiente_ocr') ?? null;
 
@@ -164,44 +166,35 @@ const Monitoreo: React.FC = () => {
       <div className="grid-principal" style={{ gridTemplateColumns: 'minmax(0, 1.9fr) minmax(320px, 1fr)' }}>
         {/* ── Video y controles ── */}
         <div className="pila">
-          {motor?.en_linea && motor.camara_activa && !motor.camara_activa.conectada && fuente === 'camara' && (
+          {motor?.en_linea && motor.camara_activa && !motor.camara_activa.conectada && (
             <Aviso tipo="advertencia">
-              <b>El motor está conectado a {camaraActiva?.nombre ?? 'la cámara'}, pero no recibe video.</b> Si es un celular, mantenga la app
-              de cámara abierta en primer plano y la pantalla encendida (Android pausa la cámara al bloquearse). En una cámara IP, revise la ruta
-              del flujo en Administración › Cámaras con “Probar conexión”.
+              <b>El motor está asignado a {camaraActiva?.nombre ?? 'la cámara'}, pero no recibe video.</b> Revise que la cámara tenga energía y
+              red, y compruebe su enlace con <b>Ping</b> en Operación › Registro de cámaras. El motor se reconecta solo cuando la señal vuelve.
             </Aviso>
           )}
-          {motor?.en_linea && motor.fuente_externa && fuente === 'camara' && (
+          {motor?.en_linea && motor.fuente_externa && hayCamaras && (
             <Aviso tipo="advertencia">
-              {camaras?.some(c => c.activa)
-                ? <>El motor ANPR todavía procesa su fuente de arranque. {puedeCambiarCamara ? 'Seleccione la cámara en la lista para asignarla.' : 'Se asignará automáticamente en unos segundos.'}</>
-                : <>No hay cámaras habilitadas. {puede('camaras:gestionar') ? <>Registre una en <a href="/camaras">Operación › Registro de cámaras</a>.</> : 'Solicite al administrador que registre una.'}</>}
+              El motor ANPR todavía no procesa ninguna cámara registrada. {puedeCambiarCamara ? 'Seleccione la cámara en la lista para asignarla.' : 'Se asignará automáticamente en unos segundos.'}
             </Aviso>
           )}
           <Tarjeta sinPadding>
             <div className="fila" style={{ padding: '12px 14px', borderBottom: '1px solid var(--border)', gap: 10 }}>
               <div className="fila" style={{ gap: 8, minWidth: 0 }}>
                 <Camera size={16} color="var(--text-3)" />
-                {puedeCambiarCamara && camaras && camaras.length > 0 && fuente === 'camara' ? (
+                {puedeCambiarCamara && hayCamaras ? (
                   <select className="select" style={{ height: 32, width: 'auto', maxWidth: 280 }} value={motor?.camara_activa?.id ?? ''} disabled={cambiando || !motor?.en_linea}
                     onChange={e => e.target.value && cambiarCamara(Number(e.target.value))} aria-label="Cámara que procesa el motor ANPR">
                     <option value="" disabled>Seleccione la cámara…</option>
-                    {camaras.filter(c => c.activa).map(c => <option key={c.id} value={c.id}>{c.nombre} · {c.ubicacion}</option>)}
+                    {(camaras ?? []).filter(c => c.activa).map(c => <option key={c.id} value={c.id}>{c.nombre} · {c.ubicacion}</option>)}
                   </select>
                 ) : (
                   <strong className="truncar" style={{ fontSize: 13.5 }}>
-                    {fuente === 'webcam' ? 'Webcam del navegador' : camaraActiva ? `${camaraActiva.nombre} · ${camaraActiva.ubicacion}` : 'Cámara configurada en el motor'}
+                    {camaraActiva ? `${camaraActiva.nombre} · ${camaraActiva.ubicacion}` : hayCamaras ? 'Cámara sin asignar' : 'Sin cámaras habilitadas'}
                   </strong>
                 )}
               </div>
               <div className="fila" style={{ marginLeft: 'auto', gap: 8 }}>
-                {puede('camaras:gestionar') && (
-                  <Segmentado valor={fuente} onCambiar={setFuente} opciones={[
-                    { valor: 'camara', etiqueta: <><Camera size={13} /> Cámara</> },
-                    { valor: 'webcam', etiqueta: <><Webcam size={13} /> Webcam</> },
-                  ]} />
-                )}
-                {fuente === 'camara' && (
+                {hayCamaras && (
                   <>
                     <Segmentado valor={modo} onCambiar={cambiarModo} opciones={[
                       { valor: 'webrtc', etiqueta: 'Tiempo real' },
@@ -221,8 +214,15 @@ const Monitoreo: React.FC = () => {
               </div>
             </div>
             <div style={{ padding: 12 }}>
-              {fuente === 'webcam' ? <WebcamPrueba />
-                : modo === 'compat' ? <VisorVideo perfil={perfil} pausado={pausado} claveReinicio={reinicioVideo} />
+              {camaras && !hayCamaras ? (
+                <Vacio titulo="Sin cámaras habilitadas" icono={<Camera size={22} />}
+                  texto={puede('camaras:gestionar')
+                    ? 'Registre una cámara IP con su enlace RTSP para que el motor ANPR la procese y aparezca aquí con sus detecciones.'
+                    : 'El administrador registra las cámaras en Operación › Registro de cámaras.'}
+                  accion={puede('camaras:gestionar')
+                    ? <button className="btn btn-navy btn-sm" onClick={() => navigate('/camaras')}><Plus size={14} /> Registrar cámara</button>
+                    : undefined} />
+              ) : modo === 'compat' ? <VisorVideo perfil={perfil} pausado={pausado} claveReinicio={reinicioVideo} />
                   : !motor && estadoMotor.cargando ? <div style={{ aspectRatio: '16 / 9', background: '#050b16', borderRadius: 10 }} />
                     : <VisorEnVivo camaraId={motor?.camara_activa?.id ?? null} vista={Boolean(camaraActiva?.rtsp_url_vista)} pausado={pausado} claveReinicio={reinicioVideo}
                         onFallo={m => { cambiarModo('compat'); notificar('advertencia', 'Se activó el modo de compatibilidad', `WebRTC no disponible: ${m}`); }} />}

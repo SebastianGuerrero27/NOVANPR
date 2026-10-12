@@ -3,7 +3,7 @@ Control de acceso a los endpoints del microservicio ANPR.
 
 - Endpoints de control (cambio de cámara, previsualización RTSP, MJPEG de depuración):
   encabezado X-Servicio-Token igual a ANPR_SERVICE_TOKEN (solo el backend lo conoce).
-- WebSockets de video y webcam: ticket de 60 s emitido por el backend a un usuario con
+- WebSockets de video y pistas: ticket de 60 s emitido por el backend a un usuario con
   sesión válida (HMAC-SHA256 con ANPR_SERVICE_TOKEN sobre {u, a, exp}).
 
 Sin ANPR_SERVICE_TOKEN (desarrollo local) se permite el acceso con una advertencia.
@@ -45,7 +45,7 @@ def _b64decode(s: str) -> bytes:
 
 
 def ticket_valido(ticket: str | None, alcance: str) -> bool:
-    """Verifica firma, vencimiento y alcance ('stream' o 'webcam') del ticket del backend."""
+    """Verifica firma, vencimiento y alcance ('stream') del ticket del backend."""
     if _sin_token():
         return True
     if not ticket or "." not in ticket:
@@ -62,5 +62,4 @@ def ticket_valido(ticket: str | None, alcance: str) -> bool:
         return False
     if int(datos.get("exp", 0)) < time.time():
         return False
-    # Un ticket de webcam (administrador) también permite ver el video
-    return datos.get("a") == alcance or (alcance == "stream" and datos.get("a") == "webcam")
+    return datos.get("a") == alcance

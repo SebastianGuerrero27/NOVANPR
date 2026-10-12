@@ -59,7 +59,8 @@ export interface RepositorioCamaras {
   eliminar(id: number): Promise<void>;
 }
 
-export type DiagnosticoRtsp = 'ok' | 'requiere_credenciales' | 'credenciales_invalidas' | 'ruta_no_encontrada' | 'rechazado' | 'sin_respuesta' | 'url_invalida';
+export type DiagnosticoRtsp = 'ok' | 'requiere_credenciales' | 'credenciales_invalidas' | 'ruta_no_encontrada' | 'rechazado' | 'sin_respuesta'
+  | 'url_invalida' | 'red_no_permitida';
 
 /** Resultado del DESCRIBE RTSP a la cámara. */
 export interface ResultadoRtsp {
@@ -92,6 +93,11 @@ export interface PuertoConectividad {
   destino(rtsp: string, ip: string | null): { host: string } | null;
   probar(rtsp: string, ip: string | null): Promise<ResultadoRtsp>;
   diagnosticar(rtsp: string, ip: string | null): Promise<DiagnosticoCamara>;
+  /**
+   * Protección contra SSRF: null si el host de la URL (y la IP indicada) están en las redes
+   * permitidas para cámaras; si no, el motivo.
+   */
+  verificarRed(rtsp: string, ip: string | null): Promise<string | null>;
   /** Guarda el resultado en la cámara y avisa en tiempo real (y al personal si se desconectó) */
   registrar(camaraId: number, resultado: ResultadoRtsp, forzarAviso: boolean): Promise<void>;
 }
@@ -201,6 +207,17 @@ export function casosCamaras(d: DependenciasCamaras) {
   const verificar = (id: number, c: DatosCamara) =>
     enSegundoPlano(async () => d.conectividad.registrar(id, await d.conectividad.probar(d.custodia.revelar(c.rtsp), c.ip), true));
 
+  /** El sistema solo se conecta a cámaras de las redes permitidas (protección contra SSRF). */
+  async function exigirRed(rtsp: string, ip: string | null): Promise<void> {
+    const motivo = await d.conectividad.verificarRed(d.custodia.revelar(rtsp), ip);
+    if (motivo) throw errorValidacion(motivo);
+  }
+
+  /** Resultado de una cámara guardada que quedó fuera de las redes permitidas (no se conecta). */
+  const fueraDeRed = (motivo: string): DiagnosticoCamara => ({
+    ping: null, rtsp: { host: null, puerto: null, en_linea: false, diagnostico: 'red_no_permitida', tiempo_ms: null, mensaje: motivo },
+  });
+
   /** MediaMTX publica las cámaras habilitadas y el motor retoma la cámara que le corresponde. */
   const sincronizar = () => enSegundoPlano(async () => {
     await d.video.sincronizarRutas();
@@ -264,6 +281,8 @@ export function casosCamaras(d: DependenciasCamaras) {
 
     async registrar(entrada: unknown, actor: Actor) {
       const c = validar(entrada);
+      await exigirRed(c.rtsp, c.ip);
+      if (c.rtspVista) await exigirRed(c.rtspVista, null);
       const id = await d.repositorio.crear(c, actor.id);
       await d.auditoria.operacion(actor, 'CAMARA_ALTA', 'camara', id, `${c.nombre} · ${c.ubicacion}`);
       verificar(id, c);
@@ -277,6 +296,8 @@ export function casosCamaras(d: DependenciasCamaras) {
       const actual = await d.repositorio.obtener(id);
       if (!actual) throw errorNoEncontrado('Cámara no encontrada.');
       const c = validar(entrada, actual);
+      await exigirRed(c.rtsp, c.ip);
+      if (c.rtspVista) await exigirRed(c.rtspVista, null);
       await d.repositorio.actualizar(id, c);
       const cambios = cambiosCamara(actual, c);
       await d.auditoria.operacion(actor, 'CAMARA_EDICION', 'camara', id, `${c.nombre}: ${cambios.join(', ') || 'sin cambios'}`);
@@ -339,13 +360,15 @@ export function casosCamaras(d: DependenciasCamaras) {
       if (!ip.ok) throw errorValidacion(ip.error);
       const rtsp = await urlDePrueba(b);
       if (!rtsp.ok) throw errorValidacion(rtsp.error);
+      await exigirRed(rtsp.valor, ip.valor);
       return d.conectividad.diagnosticar(rtsp.valor, ip.valor);
     },
 
     /** Ping ICMP (red) + diagnóstico RTSP de una cámara registrada; el resultado se guarda. */
     async diagnosticar(id: number) {
       const c = await conexion(id);
-      const r = await d.conectividad.diagnosticar(d.custodia.revelar(c.rtsp_url), c.ip);
+      const motivo = await d.conectividad.verificarRed(d.custodia.revelar(c.rtsp_url), c.ip);
+      const r = motivo ? fueraDeRed(motivo) : await d.conectividad.diagnosticar(d.custodia.revelar(c.rtsp_url), c.ip);
       await d.conectividad.registrar(id, r.rtsp, true);
       return r;
     },
@@ -353,7 +376,8 @@ export function casosCamaras(d: DependenciasCamaras) {
     async diagnosticarTodas() {
       const camaras = await d.repositorio.habilitadas();
       const detalles = await Promise.all(camaras.map(async c => {
-        const r = await d.conectividad.diagnosticar(d.custodia.revelar(c.rtsp_url), c.ip);
+        const motivo = await d.conectividad.verificarRed(d.custodia.revelar(c.rtsp_url), c.ip);
+        const r = motivo ? fueraDeRed(motivo) : await d.conectividad.diagnosticar(d.custodia.revelar(c.rtsp_url), c.ip);
         await d.conectividad.registrar(c.id, r.rtsp, true);
         return { id: c.id, nombre: c.nombre, ...r };
       }));
@@ -377,7 +401,9 @@ export function casosCamaras(d: DependenciasCamaras) {
     /** Ruta temporal para reproducir una URL sin guardarla (se elimina al cerrar o a los 3 minutos). */
     async pruebaVideo(entrada: unknown, actor: Actor) {
       const rtsp = await urlDePrueba(cuerpo(entrada));
-      if (!rtsp.ok || !d.conectividad.destino(rtsp.valor, null)) throw errorValidacion('URL RTSP inválida.');
+      if (!rtsp.ok) throw errorValidacion(rtsp.error);
+      if (!d.conectividad.destino(rtsp.valor, null)) throw errorValidacion('URL RTSP inválida.');
+      await exigirRed(rtsp.valor, null);
       const ruta = await d.video.crearRutaPrueba(rtsp.valor);
       return { ruta, ticket: d.tickets.emitir(actor.id, 'stream'), webrtc: d.video.urlWebrtc() };
     },

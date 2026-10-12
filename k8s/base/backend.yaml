@@ -127,6 +127,10 @@ spec:
               value: "6379"
             - name: SOCKET_REDIS_ADAPTER
               value: "true"
+            # Detrás del Ingress (nginx): un salto de proxy. La IP del cliente sale de
+            # X-Forwarded-For para el límite de solicitudes y la auditoría
+            - name: TRUST_PROXY
+              value: "1"
           volumeMounts:
             - name: media
               mountPath: /app/media
@@ -136,9 +140,10 @@ spec:
               port: http
             periodSeconds: 5
             failureThreshold: 60
+          # Listo = API arriba y SQL Server respondiendo; vivo = el proceso responde (sin depender de la base)
           readinessProbe:
             httpGet:
-              path: /health
+              path: /health/ready
               port: http
             periodSeconds: 10
           livenessProbe:

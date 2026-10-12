@@ -273,7 +273,8 @@ describe('API · cámaras, monitoreo y medios', () => {
       const p = await request(app).post('/api/camaras/prueba-video').set(como('Admin')).send({ rtsp_url: URL_ENMASCARADA, camara_id: 3 }).expect(200);
       expect(p.body).toEqual({ ruta: 'prueba_0123456789ab', ticket: expect.any(String), webrtc: expect.any(String) });
       expect(medios.crearRutaPrueba).toHaveBeenCalledWith(URL_GUARDADA);
-      await request(app).post('/api/camaras/prueba-video').set(como('Admin')).send({ rtsp_url: 'http://10.0.0.5' }).expect(400, { error: 'URL RTSP inválida.' });
+      await request(app).post('/api/camaras/prueba-video').set(como('Admin')).send({ rtsp_url: 'http://10.0.0.5' })
+        .expect(400, { error: 'Ingrese una URL RTSP válida (rtsp://…).' });
       await request(app).get('/api/camaras/video/cam_3/estado').set(como('Guardia')).expect(200, { lista: false, lectores: 0, pistas: [] });
       await request(app).get('/api/camaras/video/otra/estado').set(como('Guardia')).expect(400, { error: 'Ruta inválida.' });
       await request(app).delete('/api/camaras/prueba-video/cam_3').set(como('Admin')).expect(200, { ok: true });
@@ -284,16 +285,17 @@ describe('API · cámaras, monitoreo y medios', () => {
   });
 
   describe('monitoreo', () => {
-    it('estado del motor y ticket de video (webcam solo para el administrador; alcance acotado)', async () => {
+    it('estado del motor y ticket de video (solo el alcance stream: la webcam se retiró)', async () => {
       await request(app).get('/api/monitoreo/estado').set(como('Guardia')).expect(200, { en_linea: false, error: 'Servicio no disponible' });
       await request(app).get('/api/monitoreo/estado').set(como('GestorPermisos')).expect(403);
       const t = await request(app).post('/api/monitoreo/ticket').set(como('Guardia')).send({}).expect(200);
       expect(Object.keys(t.body).sort()).toEqual(['ticket', 'url', 'webrtc']);
-      await request(app).post('/api/monitoreo/ticket').set(como('Guardia')).send({ alcance: 'webcam' })
-        .expect(403, { error: 'Solo el administrador puede usar la webcam como fuente de prueba.' });
-      await request(app).post('/api/monitoreo/ticket').set(como('Admin')).send({ alcance: 'webcam' }).expect(200);
+      for (const rol of ['Guardia', 'Admin'] as const) {
+        await request(app).post('/api/monitoreo/ticket').set(como(rol)).send({ alcance: 'webcam' })
+          .expect(400, { error: 'Alcance inválido. Valores: stream.' });
+      }
       await request(app).post('/api/monitoreo/ticket').set(como('Admin')).send({ alcance: 'pantalla' })
-        .expect(400, { error: 'Alcance inválido. Valores: stream, webcam.' });
+        .expect(400, { error: 'Alcance inválido. Valores: stream.' });
     });
 
     it('cambiar la cámara del motor: 400, 409, 200, 502 si el motor no responde y 403 sin camaras:operar', async () => {

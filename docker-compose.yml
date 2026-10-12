@@ -7,7 +7,8 @@ services:
       - MSSQL_SA_PASSWORD=${MSSQL_SA_PASSWORD:?Defina MSSQL_SA_PASSWORD en .env}
       - MSSQL_PID=Developer
     ports:
-      - "14333:1433"
+      # Solo en el equipo anfitrión (herramientas de administración); la aplicación usa la red de Docker
+      - "127.0.0.1:14333:1433"
     volumes:
       - db_data:/var/opt/mssql
       - ./db:/docker-entrypoint-initdb.d
@@ -17,6 +18,12 @@ services:
       interval: 10s
       timeout: 10s
       retries: 10
+    # Límites de memoria con holgura sobre lo medido en reposo (docker stats: SQL Server ≈1,8 GiB);
+    # SQL Server en Linux ajusta su caché al límite del contenedor
+    deploy:
+      resources:
+        limits:
+          memory: 3g
 
   redis:
     image: redis:7-alpine
@@ -33,12 +40,18 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 384m
 
   prometheus:
     image: prom/prometheus:latest
     container_name: anpr-prometheus
     ports:
-      - "9090:9090"
+      # Prometheus no tiene autenticación: solo en el equipo anfitrión
+      - "127.0.0.1:9090:9090"
     volumes:
       - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
       - ./monitoring/prometheus/rules:/etc/prometheus/rules
@@ -50,6 +63,16 @@ services:
       - '--web.console.templates=/usr/share/prometheus/consoles'
       - '--storage.tsdb.retention.time=30d'
     restart: always
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:9090/-/healthy"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 512m
     depends_on:
       - backend
       - anpr
@@ -58,7 +81,9 @@ services:
     image: grafana/grafana:latest
     container_name: anpr-grafana
     ports:
-      - "3001:3000"
+      # Tableros de administración: solo en el equipo anfitrión (para otros equipos, publicarlo
+      # tras un proxy con HTTPS)
+      - "127.0.0.1:3001:3000"
     volumes:
       - ./monitoring/grafana/provisioning:/etc/grafana/provisioning
       - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards
@@ -70,6 +95,16 @@ services:
       - GF_SERVER_ROOT_URL=http://localhost:3001
       - GF_INSTALL_PLUGINS=
     restart: always
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:3000/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 512m
     depends_on:
       - prometheus
 
@@ -78,17 +113,25 @@ services:
     container_name: anpr-mediamtx
     environment:
       # IP del equipo (host) que el navegador usa para WebRTC; agregar la IP de la LAN para
-      # ver el video desde otros equipos, p. ej. WEBRTC_HOSTS=127.0.0.1,192.168.0.105
+      # ver el video desde otros equipos, p. ej. WEBRTC_HOSTS=127.0.0.1,<IP de este equipo en la LAN>
       - MTX_WEBRTCADDITIONALHOSTS=${WEBRTC_HOSTS:-127.0.0.1}
     ports:
-      - "8554:8554"      # RTSP (lectura autenticada)
-      - "8889:8889"      # WebRTC (señalización WHEP)
-      - "8189:8189/udp"  # WebRTC (medios)
-      - "8189:8189/tcp"  # WebRTC (respaldo TCP)
+      # RTSP: lo lee el motor dentro de la red de Docker; en el anfitrión solo para diagnóstico local
+      - "127.0.0.1:8554:8554"
+      # WebRTC: lo usan los navegadores de los operadores en la red local (lectura con ticket del backend)
+      - "8889:8889"      # señalización WHEP
+      - "8189:8189/udp"  # medios
+      - "8189:8189/tcp"  # respaldo TCP
       # La API (9997) no se publica: solo la usa el backend dentro de la red de Docker
     volumes:
       - ./mediamtx/mediamtx.yml:/mediamtx.yml:ro
     restart: always
+    # La imagen no trae shell ni utilidades para un healthcheck; el backend sincroniza las rutas de
+    # las cámaras por su API cada minuto (las vuelve a crear si MediaMTX se reinicia)
+    deploy:
+      resources:
+        limits:
+          memory: 512m
 
   backend:
     build: ./backend
@@ -108,6 +151,13 @@ services:
       # Al cambiarla, la anterior va en CAMARAS_CLAVE_CIFRADO_ANTERIOR: al arrancar se recifra todo
       - CAMARAS_CLAVE_CIFRADO=${CAMARAS_CLAVE_CIFRADO:-}
       - CAMARAS_CLAVE_CIFRADO_ANTERIOR=${CAMARAS_CLAVE_CIFRADO_ANTERIOR:-}
+      # Redes donde pueden estar las cámaras (CIDR separados por coma; protección contra SSRF).
+      # Vacío = redes privadas; en producción, la VLAN de cámaras (p. ej. 10.20.30.0/24)
+      - CAMARAS_REDES_PERMITIDAS=${CAMARAS_REDES_PERMITIDAS:-}
+      # Proxy inverso delante del backend: número de saltos (p. ej. 1). Vacío = conexión directa
+      - TRUST_PROXY=${TRUST_PROXY:-}
+      - LIMITE_API_POR_MINUTO=${LIMITE_API_POR_MINUTO:-600}
+      - LIMITE_ACCESO_POR_15_MIN=${LIMITE_ACCESO_POR_15_MIN:-20}
       - ANPR_SERVICE_TOKEN=${ANPR_SERVICE_TOKEN:?Defina ANPR_SERVICE_TOKEN en .env}
       - SMTP_HOST=${SMTP_HOST:-}
       - SMTP_PORT=${SMTP_PORT:-587}
@@ -143,6 +193,18 @@ services:
       redis:
         condition: service_healthy
     restart: always
+    healthcheck:
+      # Listo = API arriba y SQL Server respondiendo (Redis se informa, pero no lo bloquea)
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:5000/health/ready').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+    deploy:
+      resources:
+        limits:
+          cpus: "2"
+          memory: 768m
 
   frontend:
     build: ./frontend
@@ -155,6 +217,17 @@ services:
     depends_on:
       - backend
     restart: always
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+    deploy:
+      resources:
+        limits:
+          cpus: "1"
+          memory: 768m
 
   anpr:
     build: ./services/anpr
@@ -162,16 +235,12 @@ services:
     ports:
       - "8000:8000"
     environment:
-      - PORT=8000
       - BACKEND_URL=http://backend:5000
-      - BACKEND_SOCKETIO_URL=http://backend:5000
       - ANPR_SERVICE_TOKEN=${ANPR_SERVICE_TOKEN:?Defina ANPR_SERVICE_TOKEN en .env}
       - OCR_ENGINE=plate
       - MEDIA_DIR=/app/media
-      - CAMERA_SOURCE=rtsp
-      # Fuente inicial vacía: el backend asigna la cámara (vía MediaMTX) al arrancar
+      # Sin fuente inicial: el backend asigna la cámara registrada (su ruta en MediaMTX) al arrancar
       - RTSP_URL=
-      - RTSP_STREAM_URL=
       - RUNNING_IN_DOCKER=true
       - DEBUG_VISUAL=true
       - DEBUG_SHOW_WINDOW=false
@@ -182,9 +251,25 @@ services:
       # Caché de pesos descargados (CLIP, PP-OCRv6, fast-plate-ocr): evita volver a bajarlos al recrear
       - anpr_model_cache:/root/.cache
     depends_on:
-      - mediamtx
-      - backend
+      mediamtx:
+        condition: service_started
+      # El motor pide su cámara al backend al arrancar: espera a que la API y la base estén listas
+      backend:
+        condition: service_healthy
     restart: always
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/status', timeout=4)"]
+      interval: 30s
+      timeout: 6s
+      retries: 3
+      # Carga del detector y del OCR
+      start_period: 180s
+    # Sin límite de CPU: la inferencia (YOLO + OCR) usa todos los núcleos disponibles. La memoria
+    # tiene tope con holgura (≈1,4 GiB medidos con los modelos cargados)
+    deploy:
+      resources:
+        limits:
+          memory: 6g
 
 volumes:
   anpr_model_cache:

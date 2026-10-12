@@ -24,30 +24,27 @@ from app.infraestructura.config import (
     BACKEND_HEADERS,
     BACKEND_URL,
     CAMERA_ID,
-    CAMERA_SOURCE,
     DEBUG_SHOW_WINDOW,
     DEBUG_VISUAL,
     MEDIA_DIR,
     OCR_VERIFIER_VOTE_WEIGHT,
     RTSP_URL,
     RUNNING_IN_DOCKER,
-    WEBCAM_INDEX,
 )
 from app.infraestructura.debug_stream import DebugFrameBuffer, cuadro_espera, try_imshow
 from app.infraestructura.logger import get_logger
 from app.infraestructura.ocr_engine import create_ocr_engine
 from app.infraestructura.ocr_verifier import get_verifier
 from app.infraestructura.vehicle_attributes import get_vehicle_recognizer
-from app.infraestructura.video_source import RTSPSource, WebcamSource, create_video_source
+from app.infraestructura.video_source import RTSPSource, create_video_source
 from app.interfaz.api import crear_app
 
 motor = MotorAnpr(
     ConfigMotor(
         backend_url=BACKEND_URL,
         camara_id=CAMERA_ID,
-        fuente_camara=CAMERA_SOURCE,
+        fuente_camara=RTSP_URL,
         rtsp_url=RTSP_URL,
-        indice_webcam=WEBCAM_INDEX,
         dir_media=MEDIA_DIR,
         hud_activo=DEBUG_VISUAL,
         ventana_local=DEBUG_SHOW_WINDOW and not RUNNING_IN_DOCKER,
@@ -62,7 +59,6 @@ motor = MotorAnpr(
         verificador=get_verifier,
         reconocedor_vehiculo=get_vehicle_recognizer,
         fuente_rtsp=lambda url: RTSPSource(url=url),
-        fuente_webcam=lambda indice: WebcamSource(index=indice),
         cuadro_espera=cuadro_espera,
         mostrar_ventana=try_imshow,
         cerrar_ventanas=cv2.destroyAllWindows,

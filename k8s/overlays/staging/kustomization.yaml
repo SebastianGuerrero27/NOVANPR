@@ -18,6 +18,9 @@ configMapGenerator:
       # IP pública del Service mediamtx-webrtc (LoadBalancer) que el navegador usa para los medios
       - WEBRTC_HOSTS=127.0.0.1
       - ALLOWED_EMAIL_DOMAINS=ecu911.gob.ec
+      # Redes donde están las cámaras (CIDR separados por coma), p. ej. la VLAN de cámaras
+      # 10.20.30.0/24. Vacío = cualquier red privada, incluida la red interna del clúster: defínala.
+      - CAMARAS_REDES_PERMITIDAS=
       - SMTP_HOST=
       - SMTP_PORT=587
       - SMTP_USER=

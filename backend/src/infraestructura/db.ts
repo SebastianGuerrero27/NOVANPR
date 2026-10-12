@@ -53,6 +53,7 @@ export const MIGRACIONES = [
   'migration_v7_auditoria_retencion.sql',
   'migration_v8_solicitudes_version.sql',
   'migration_v9_camaras_vista_cifrado.sql',
+  'migration_v10_fuente_rtsp.sql',
 ];
 
 let pool: sql.ConnectionPool;
@@ -188,6 +189,18 @@ async function verificarConfiguracionInicial() {
     }
   } catch (error: any) {
     console.error('[DB] No se pudo verificar la configuración inicial:', error.message);
+  }
+}
+
+/** Comprobación de disponibilidad: la base responde a una consulta trivial (para /health/ready). */
+export async function comprobarBaseDatos(): Promise<{ ok: boolean; ms: number | null }> {
+  if (!pool?.connected) return { ok: false, ms: null };
+  const inicio = Date.now();
+  try {
+    await pool.request().query('SELECT 1 AS ok');
+    return { ok: true, ms: Date.now() - inicio };
+  } catch {
+    return { ok: false, ms: null };
   }
 }
 

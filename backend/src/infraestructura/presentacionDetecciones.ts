@@ -1,6 +1,6 @@
 import type { DeteccionDTO, Fila } from '../aplicacion/detecciones';
 import type { EstadoValidacion, RestriccionAcceso } from '../dominio/decisionAcceso';
-import { evidenciaDe, motivoRevision, type PasoGuardado } from '../dominio/detecciones';
+import { evidenciaDe, motivoRevision, normalizarFuente, type PasoGuardado } from '../dominio/detecciones';
 import { politicaAutorizacion } from './servicios/configuracion';
 import { urlMedia } from './servicios/media';
 
@@ -21,7 +21,8 @@ export function presentarDeteccion(d: Fila, detalle = false): DeteccionDTO {
     confianza_ocr: d.confianza_ocr,
     fecha_hora_ingreso: d.fecha_hora_ingreso,
     fecha_hora_procesamiento: d.fecha_hora_procesamiento,
-    fuente: d.fuente,
+    // Los registros anteriores a la corrección pueden guardar la URL de lectura (con credenciales)
+    fuente: d.fuente ? normalizarFuente(d.fuente) : null,
     tracking_id: d.tracking_id,
     imagen_vehiculo: urlMedia(d.ruta_imagen_ingreso),
     imagen_placa: urlMedia(d.ruta_imagen_placa || d.ruta_imagen_ingreso),

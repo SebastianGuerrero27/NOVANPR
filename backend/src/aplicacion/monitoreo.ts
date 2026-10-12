@@ -1,9 +1,8 @@
 import {
-  type Actor, errorConflicto, errorNoEncontrado, errorProhibido, errorValidacion, type PuertoAuditoria, type PuertoEventos,
+  type Actor, errorConflicto, errorNoEncontrado, errorValidacion, type PuertoAuditoria, type PuertoEventos,
 } from './comun';
 import type { PuertoMotorAnpr, PuertoServidorVideo, PuertoTickets, RepositorioCamaras } from './camaras';
 import { leerAlcance, leerIdCamara } from '../dominio/camaras';
-import { esRol, tienePermiso } from '../dominio/permisos';
 
 /**
  * Casos de uso del monitoreo en vivo:
@@ -38,7 +37,7 @@ export function casosMonitoreo(d: DependenciasMonitoreo) {
   return {
     /**
      * La cámara activa se informa solo si el motor procesa realmente la ruta de la cámara
-     * registrada; si procesa otra fuente (su .env, una webcam) se marca `fuente_externa`.
+     * registrada; si procesa otra fuente (p. ej. la RTSP_URL de su .env) se marca `fuente_externa`.
      */
     async estado() {
       const estado = await d.motor.estado();
@@ -67,13 +66,10 @@ export function casosMonitoreo(d: DependenciasMonitoreo) {
       return { id: c.id, nombre: c.nombre };
     },
 
-    /** Enviar la webcam del navegador al motor es un modo de prueba: exige camaras:gestionar. */
+    /** Ticket de 60 s para ver el video de las cámaras registradas y las pistas del motor. */
     ticket(alcanceSolicitado: unknown, actor: Actor) {
       const alcance = leerAlcance(alcanceSolicitado);
       if (!alcance.ok) throw errorValidacion(alcance.error);
-      if (alcance.valor === 'webcam' && !(esRol(actor.rol) && tienePermiso(actor.rol, 'camaras:gestionar'))) {
-        throw errorProhibido('Solo el administrador puede usar la webcam como fuente de prueba.');
-      }
       return { ticket: d.tickets.emitir(actor.id, alcance.valor), url: d.motor.urlPublica(), webrtc: d.video.urlWebrtc() };
     },
   };

@@ -6,9 +6,12 @@ Las rutas solo verifican el acceso, leen la petición y delegan en `MotorAnpr`
 servidor con un motor de prueba.
 
 Acceso (app/infraestructura/acceso.py):
-  - Control (cambio de cámara, región de interés, previsualización RTSP, MJPEG de depuración):
-    encabezado X-Servicio-Token, que solo conoce el backend.
-  - Video, pistas y webcam: ticket de 60 s emitido por el backend a un usuario con sesión.
+  - Control (cambio de cámara, región de interés, MJPEG de depuración): encabezado
+    X-Servicio-Token, que solo conoce el backend.
+  - Video y pistas: ticket de 60 s emitido por el backend a un usuario con sesión.
+
+La única entrada de video es la cámara RTSP asignada por el backend (su ruta en MediaMTX): el motor
+no recibe cuadros del navegador ni abre conexiones a URLs arbitrarias.
 """
 
 from __future__ import annotations
@@ -17,15 +20,12 @@ import asyncio
 import time
 from contextlib import asynccontextmanager
 
-import cv2
-import numpy as np
-from fastapi import FastAPI, File, Query, Request, UploadFile, WebSocket, WebSocketDisconnect
-from fastapi.middleware.cors import CORSMiddleware
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 from app.aplicacion.motor import MotorAnpr
 from app.infraestructura.acceso import ticket_valido, token_servicio_valido
-from app.infraestructura.debug_stream import _get_standby_jpeg, mjpeg_generator, rtsp_direct_preview_generator
+from app.infraestructura.debug_stream import _get_standby_jpeg, mjpeg_generator
 from app.infraestructura.logger import get_logger
 from app.infraestructura.metrics import get_metrics
 
@@ -58,8 +58,10 @@ def crear_app(motor: MotorAnpr) -> FastAPI:
         version="2.0.0",
         lifespan=ciclo_de_vida,
     )
-    app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
-    # La evidencia fotográfica se sirve solo desde el backend, con enlaces firmados.
+    # Sin CORS: el navegador solo abre los WebSocket con ticket (/ws/pistas, /ws/stream), que no lo
+    # usan; el estado y el control los consulta el backend. Así ninguna página de otro sitio puede
+    # leer el estado del motor desde el navegador de un operador. La evidencia fotográfica se sirve
+    # solo desde el backend, con enlaces firmados.
 
     @app.websocket("/ws/stream")
     @app.websocket("/api/ws/stream")
@@ -141,43 +143,6 @@ def crear_app(motor: MotorAnpr) -> FastAPI:
         except Exception as e:
             logger.debug("WebSocket de pistas cerrado: %s", e)
 
-    @app.websocket("/ws/webcam")
-    @app.websocket("/api/ws/webcam")
-    async def webcam(websocket: WebSocket):
-        """
-        Cuadros JPEG de la webcam del navegador → JSON con las detecciones. Si el cuadro anterior
-        aún se procesa, el nuevo se descarta (latencia mínima). Requiere ticket de alcance "webcam".
-        """
-        if not ticket_valido(websocket.query_params.get("ticket"), "webcam"):
-            await websocket.close(code=4401)
-            return
-        await websocket.accept()
-        loop = asyncio.get_event_loop()
-        ocupado = False
-        logger.info("Cliente WebSocket de webcam conectado.")
-        try:
-            while motor.activo:
-                data = await websocket.receive_bytes()
-                if ocupado:
-                    continue
-                ocupado = True
-                try:
-                    frame = cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_COLOR)
-                    pipeline = motor.pipeline
-                    if frame is None or pipeline is None:
-                        await websocket.send_json({"rois": []})
-                        continue
-                    rois = await loop.run_in_executor(motor.ejecutor_navegador, pipeline.detect_fast, frame)
-                    await websocket.send_json(motor.procesar_cuadro_ws(frame, rois))
-                except Exception as e:
-                    logger.debug("Error en detección webcam WS: %s", e)
-                finally:
-                    ocupado = False
-        except WebSocketDisconnect:
-            logger.info("Cliente WebSocket de webcam desconectado normalmente.")
-        except Exception as e:
-            logger.debug("WebSocket webcam cerrado: %s", e)
-
     @app.get("/debug/stream")
     def mjpeg_depuracion(request: Request):
         """Stream MJPEG anotado (diagnóstico; requiere X-Servicio-Token)."""
@@ -186,18 +151,9 @@ def crear_app(motor: MotorAnpr) -> FastAPI:
         return StreamingResponse(mjpeg_generator(motor.buffer_video, target_fps=30.0),
                                  media_type="multipart/x-mixed-replace; boundary=frame", headers=SIN_CACHE)
 
-    @app.get("/stream/preview")
-    @app.get("/api/stream/preview")
-    async def previsualizar(request: Request, url: str = Query(..., description="RTSP URL o fuente de video a previsualizar")):
-        """MJPEG directo desde una URL RTSP (requiere X-Servicio-Token: abre conexiones salientes)."""
-        if not token_servicio_valido(request.headers.get("X-Servicio-Token")):
-            return _denegado()
-        return StreamingResponse(rtsp_direct_preview_generator(url, target_fps=25.0),
-                                 media_type="multipart/x-mixed-replace; boundary=frame", headers=SIN_CACHE)
-
     @app.post("/api/camera/switch")
     async def cambiar_camara(request: Request):
-        """Cambia en caliente la fuente de video del motor (RTSP o webcam) sin reiniciar el servicio."""
+        """Cambia en caliente la cámara RTSP del motor sin reiniciar el servicio."""
         if not token_servicio_valido(request.headers.get("X-Servicio-Token")):
             return _denegado()
         try:
@@ -236,44 +192,6 @@ def crear_app(motor: MotorAnpr) -> FastAPI:
     def metricas():
         """Métricas Prometheus."""
         return Response(content=get_metrics(), media_type="text/plain")
-
-    @app.post("/process/frame")
-    @app.post("/api/process/frame")
-    async def cuadro_del_navegador(file: UploadFile = File(...), ticket: str | None = Query(None)):
-        """
-        Cuadro de la webcam del navegador por HTTP. Si el anterior aún se procesa, este se descarta
-        para no acumular latencia. Requiere ticket de alcance "webcam".
-        """
-        if not ticket_valido(ticket, "webcam"):
-            return JSONResponse({"error": "Ticket inválido o vencido"}, status_code=401)
-        if not motor.candado_navegador.acquire(blocking=False):
-            return {"success": True, "rois": [], "dropped": True}
-        try:
-            t_inicio = time.perf_counter()
-            contenido = await file.read()
-            if not contenido:
-                return JSONResponse({"error": "Fotograma vacío"}, status_code=400)
-            buffer = np.frombuffer(contenido, np.uint8)
-            if buffer.size == 0:
-                return JSONResponse({"error": "Buffer de imagen inválido"}, status_code=400)
-            frame = cv2.imdecode(buffer, cv2.IMREAD_COLOR)
-            if frame is None or frame.size == 0:
-                return JSONResponse({"error": "No se pudo decodificar el fotograma"}, status_code=400)
-
-            pipeline = motor.pipeline
-            t0 = time.perf_counter()
-            rois = await asyncio.get_event_loop().run_in_executor(motor.ejecutor_navegador, pipeline.detect_fast, frame) if pipeline else []
-            t_deteccion = (time.perf_counter() - t0) * 1000
-            respuesta = motor.procesar_cuadro_http(frame, rois)
-            t_total = (time.perf_counter() - t_inicio) * 1000
-            if t_total > 50:
-                logger.info("process_browser_frame en %.1f ms (detección: %.1f ms)", t_total, t_deteccion)
-            return respuesta
-        except Exception as e:
-            logger.error("Error en process_browser_frame: %s", e)
-            return JSONResponse({"error": str(e)}, status_code=500)
-        finally:
-            motor.candado_navegador.release()
 
     @app.get("/")
     def raiz():

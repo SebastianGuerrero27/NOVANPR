@@ -3,7 +3,7 @@ import { Link, useNavigate, useParams } from 'react-router-dom';
 import { ArrowLeft, CheckCircle2, Clock, Edit3, FileCheck2, FileSearch, MinusCircle, ShieldAlert, ShieldCheck, Trash2, UserSearch, XCircle } from 'lucide-react';
 import api, { mensajeError, respuestaError } from '../../infraestructura/api';
 import { useAuth } from '../../aplicacion/AuthContext';
-import { useEvento } from '../../aplicacion/tiempoReal';
+import { useEvento, useReconexion } from '../../aplicacion/tiempoReal';
 import { useConsulta } from '../../aplicacion/hooks';
 import type { Deteccion, DeteccionDetalle, EvidenciaLectura } from '../../dominio/tipos';
 import { ESTADOS, fechaHora, NIVELES_ALERTA, numero, porcentaje, relativo } from '../../dominio/formato';
@@ -110,6 +110,7 @@ const DetalleDeteccion: React.FC = () => {
 
   useEvento<Deteccion>('deteccion:actualizada', x => { if (String(x.id) === id) recargar(true); });
   useEvento<{ id: number }>('deteccion:eliminada', x => { if (String(x.id) === id) navigate('/detecciones', { replace: true }); });
+  useReconexion(() => recargar(true));
 
   if (cargando && !d) return <div className="pagina"><Cargando alto={400} /></div>;
   if (error || !d) {

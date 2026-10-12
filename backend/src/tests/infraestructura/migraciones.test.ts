@@ -90,8 +90,8 @@ describe('migraciones de esquema', () => {
   describe('migración v9 · flujo de vista y credenciales cifradas de las cámaras', () => {
     const v9 = fs.readFileSync(path.join(DIR_DB, 'migration_v9_camaras_vista_cifrado.sql'), 'utf8');
 
-    it('es la última migración registrada', () => {
-      expect(MIGRACIONES[MIGRACIONES.length - 1]).toBe('migration_v9_camaras_vista_cifrado.sql');
+    it('se aplica antes de la v10', () => {
+      expect(MIGRACIONES.indexOf('migration_v9_camaras_vista_cifrado.sql')).toBe(MIGRACIONES.indexOf('migration_v10_fuente_rtsp.sql') - 1);
     });
 
     it('amplía rtsp_url a 512 (el texto cifrado ocupa más) y agrega rtsp_url_vista, ambas idempotentes', () => {
@@ -99,6 +99,24 @@ describe('migraciones de esquema', () => {
       expect(v9).toMatch(/ALTER TABLE Camaras ALTER COLUMN rtsp_url VARCHAR\(512\) NOT NULL;/);
       expect(v9).toContain("IF COL_LENGTH('dbo.Camaras', 'rtsp_url_vista') IS NULL");
       expect(v9).toMatch(/ALTER TABLE Camaras ADD rtsp_url_vista VARCHAR\(512\) NULL;/);
+    });
+  });
+  describe('migración v10 · fuente por omisión rtsp (sin webcam)', () => {
+    const v10 = fs.readFileSync(path.join(DIR_DB, 'migration_v10_fuente_rtsp.sql'), 'utf8');
+
+    it('es la última migración registrada', () => {
+      expect(MIGRACIONES[MIGRACIONES.length - 1]).toBe('migration_v10_fuente_rtsp.sql');
+    });
+
+    it('solo reemplaza el DEFAULT de la columna (busca su nombre en el catálogo) y no toca registros', () => {
+      expect(v10).toContain('sys.default_constraints');
+      expect(v10).toMatch(/DROP CONSTRAINT ' \+ QUOTENAME\(@restriccion\)/);
+      expect(v10).toMatch(/ADD CONSTRAINT DF_DeteccionVehiculo_fuente DEFAULT 'rtsp' FOR fuente/);
+      expect(v10).not.toMatch(/\b(UPDATE|DELETE)\b/i);
+    });
+
+    it('init.sql crea la columna con el mismo valor por omisión', () => {
+      expect(fs.readFileSync(path.join(DIR_DB, 'init.sql'), 'utf8')).toMatch(/fuente\s+VARCHAR\(255\)\s+NULL DEFAULT 'rtsp'/);
     });
   });
 });

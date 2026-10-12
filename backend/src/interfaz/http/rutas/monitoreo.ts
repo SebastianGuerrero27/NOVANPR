@@ -10,7 +10,7 @@ import { controladorExterno } from '../servicioExterno';
  *   GET  /estado         estado del motor ANPR y cámara que está procesando   operacion:monitorear
  *   POST /camara-activa  cambia la cámara que procesa el motor                camaras:operar
  *   POST /ticket         credencial de 60 s para el video (WebRTC de MediaMTX  operacion:monitorear
- *                        o WebSocket del motor); `webcam` exige camaras:gestionar
+ *                        o WebSocket de pistas del motor)
  *
  * Los casos de uso están en aplicacion/monitoreo.ts.
  */

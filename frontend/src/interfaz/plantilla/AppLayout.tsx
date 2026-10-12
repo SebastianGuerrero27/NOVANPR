@@ -3,7 +3,7 @@ import { NavLink, useLocation, useNavigate } from 'react-router-dom';
 import { Bell, ChevronsLeft, ChevronsRight, Clock, KeyRound, LogOut, Menu, UserCircle, Volume2, VolumeX } from 'lucide-react';
 import api from '../../infraestructura/api';
 import { useAuth } from '../../aplicacion/AuthContext';
-import { useEvento, useTiempoReal } from '../../aplicacion/tiempoReal';
+import { useEvento, useReconexion, useTiempoReal } from '../../aplicacion/tiempoReal';
 import { useDiferido, useTic } from '../../aplicacion/hooks';
 import { iniciales, ROLES } from '../../dominio/formato';
 import { Cargando } from '../componentes/ui';
@@ -26,6 +26,7 @@ function useColaRevision(activo: boolean): number {
   useEvento('deteccion:actualizada', diferido);
   useEvento('deteccion:eliminada', diferido);
   useEvento('deteccion:eliminadas', diferido);
+  useReconexion(diferido);
   return n;
 }
 
@@ -36,6 +37,7 @@ function useSolicitudesPendientes(activo: boolean): number {
   const diferido = useDiferido(cargar, 800);
   useEffect(() => { cargar(); }, [activo]); // eslint-disable-line react-hooks/exhaustive-deps
   useEvento('solicitudes:actualizadas', diferido);
+  useReconexion(diferido);
   return n;
 }
 

@@ -48,11 +48,7 @@ spec:
             - containerPort: 8000
               name: http
           env:
-            - name: PORT
-              value: "8000"
             - name: BACKEND_URL
-              value: http://backend:5000
-            - name: BACKEND_SOCKETIO_URL
               value: http://backend:5000
             - name: ANPR_SERVICE_TOKEN
               valueFrom:
@@ -63,11 +59,8 @@ spec:
               value: plate
             - name: MEDIA_DIR
               value: /app/media
-            - name: CAMERA_SOURCE
-              value: rtsp
+            # Sin fuente inicial: el backend asigna la cámara registrada (su ruta en MediaMTX)
             - name: RTSP_URL
-              value: ""
-            - name: RTSP_STREAM_URL
               value: ""
             - name: RUNNING_IN_DOCKER
               value: "true"

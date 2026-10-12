@@ -1,6 +1,6 @@
 import {
-  cambiosCamara, enmascarar, leerAlcance, leerCamara, leerIdCamara, leerIp, leerRoi, leerUrlRtsp, leerUrlVista, MASCARA,
-  parsearRoi, presentarCamara, RE_RUTA_VIDEO, restaurarClave, tieneCredenciales,
+  cambiosCamara, enmascarar, enmascararEnTexto, fuenteParaMediamtx, leerAlcance, leerCamara, leerIdCamara, leerIp, leerRoi,
+  leerUrlRtsp, leerUrlVista, MASCARA, parsearRoi, presentarCamara, RE_RUTA_VIDEO, restaurarClave, tieneCredenciales,
 } from '../../dominio/camaras';
 
 describe('Cámaras · credenciales RTSP', () => {
@@ -42,6 +42,71 @@ describe('Cámaras · credenciales RTSP', () => {
     expect(restaurarClave('rtsp://admin:nueva@10.0.0.5/101', guardada)).toBe('rtsp://admin:nueva@10.0.0.5/101');
     expect(restaurarClave(`rtsp://admin:${MASCARA}@10.0.0.5/101`, 'rtsp://10.0.0.5/101')).toBe(`rtsp://admin:${MASCARA}@10.0.0.5/101`);
     expect(restaurarClave(`rtsp://admin:${MASCARA}@10.0.0.5/101`, null)).toBe(`rtsp://admin:${MASCARA}@10.0.0.5/101`);
+  });
+});
+
+describe('Cámaras · la contraseña guardada solo vuelve al mismo equipo', () => {
+  const guardada = 'rtsp://admin:S3cr3t0@10.0.0.5/live';
+
+  it('se restaura con el mismo esquema, host y puerto (mayúsculas y puerto por omisión no cuentan como cambio)', () => {
+    expect(restaurarClave(`rtsp://admin:${MASCARA}@10.0.0.5:554/otra`, guardada)).toBe('rtsp://admin:S3cr3t0@10.0.0.5:554/otra');
+    expect(restaurarClave(`rtsp://admin:${MASCARA}@CAMARA.local/live`, 'rtsp://admin:x@camara.local/live')).toBe('rtsp://admin:x@CAMARA.local/live');
+    expect(restaurarClave(`rtsp://admin:${MASCARA}@[fd00::5]/live`, 'rtsp://admin:x@[fd00::5]:554/live')).toBe('rtsp://admin:x@[fd00::5]/live');
+    expect(restaurarClave(`rtsps://admin:${MASCARA}@10.0.0.5:322/live`, 'rtsps://admin:x@10.0.0.5/live')).toBe('rtsps://admin:x@10.0.0.5:322/live');
+  });
+
+  it.each([
+    ['otro host', `rtsp://admin:${MASCARA}@10.0.0.66/live`],
+    ['un host que solo comparte el prefijo', `rtsp://admin:${MASCARA}@10.0.0.55/live`],
+    ['otro puerto', `rtsp://admin:${MASCARA}@10.0.0.5:8554/live`],
+    ['otro esquema', `rtsps://admin:${MASCARA}@10.0.0.5/live`],
+  ])('con %s la máscara no se reemplaza y la validación pide la contraseña', (_caso, url) => {
+    expect(restaurarClave(url, guardada)).toBe(url);
+    expect(leerUrlRtsp(url, guardada)).toEqual({
+      ok: false, error: 'URL RTSP: escriba de nuevo la contraseña de la cámara (la guardada solo se conserva si no cambian el equipo, el puerto ni el esquema).',
+    });
+  });
+
+  it('la vista solo hereda la contraseña del flujo principal si apunta al mismo equipo', () => {
+    const base = { nombre: 'Garita principal', ubicacion: 'Acceso norte', rtsp_url: `rtsp://admin:${MASCARA}@10.0.0.5/101` };
+    expect(leerCamara({ ...base, rtsp_url_vista: `rtsp://admin:${MASCARA}@10.0.0.5/102` }, guardada, null))
+      .toMatchObject({ ok: true, valor: { rtspVista: 'rtsp://admin:S3cr3t0@10.0.0.5/102' } });
+    expect(leerCamara({ ...base, rtsp_url_vista: `rtsp://admin:${MASCARA}@10.0.0.99/102` }, guardada, null))
+      .toEqual({ ok: false, error: expect.stringMatching(/^URL del flujo de vista: escriba de nuevo la contraseña/) });
+  });
+
+  it('el esquema se guarda en minúsculas (MediaMTX rechaza «RTSP://»)', () => {
+    expect(leerUrlRtsp('RTSP://admin:clave@10.0.0.5/live')).toEqual({ ok: true, valor: 'rtsp://admin:clave@10.0.0.5/live' });
+    expect(leerUrlRtsp('Rtsps://10.0.0.5/live')).toEqual({ ok: true, valor: 'rtsps://10.0.0.5/live' });
+    expect(leerUrlRtsp(`RTSP://admin:${MASCARA}@10.0.0.5/live`, guardada)).toEqual({ ok: true, valor: guardada });
+  });
+});
+
+describe('Cámaras · contraseñas fuera de los mensajes y fuente para MediaMTX', () => {
+  it('enmascara las contraseñas de las URL que aparecen dentro de un texto libre (errores de MediaMTX)', () => {
+    const error = `HTTP 400 {"status":"error","error":"invalid source: 'RTSP://admin:Clave@Secreta123@10.0.0.5:554/x'"} y rtsp://u:otra@h/y`;
+    const r = enmascararEnTexto(error);
+    expect(r).not.toMatch(/Clave|Secreta123|otra/);
+    expect(r).toContain(`'RTSP://admin:${MASCARA}@10.0.0.5:554/x'`);
+    expect(r).toContain(`rtsp://u:${MASCARA}@h/y`);
+    expect(enmascararEnTexto('MediaMTX POST /v3/config/paths/add/cam_1: HTTP 500')).toBe('MediaMTX POST /v3/config/paths/add/cam_1: HTTP 500');
+    expect(enmascararEnTexto("'rtsp://10.0.0.5:554/live@1'")).toBe("'rtsp://10.0.0.5:554/live@1'");
+  });
+
+  it('fuente para MediaMTX: esquema en minúsculas; una URL ya válida no cambia', () => {
+    expect(fuenteParaMediamtx('RTSP://admin:Ecu%40911@10.0.0.5:554/Streaming/Channels/101'))
+      .toBe('rtsp://admin:Ecu%40911@10.0.0.5:554/Streaming/Channels/101');
+    expect(fuenteParaMediamtx('rtsp://10.0.0.5/live?canal=1')).toBe('rtsp://10.0.0.5/live?canal=1');
+    expect(fuenteParaMediamtx('rtsp://admin:abc@def@10.0.0.5/live')).toBe('rtsp://admin:abc@def@10.0.0.5/live');
+  });
+
+  it('fuente para MediaMTX: codifica lo que su lector rechaza sin cambiar la credencial', () => {
+    expect(fuenteParaMediamtx('rtsp://admin:mi clave@10.0.0.5/live')).toBe('rtsp://admin:mi%20clave@10.0.0.5/live');
+    expect(fuenteParaMediamtx('rtsp://admin:50%off@10.0.0.5/canal%zz')).toBe('rtsp://admin:50%25off@10.0.0.5/canal%25zz');
+    expect(fuenteParaMediamtx('rtsp://admin:clave😀ñ@10.0.0.5/live')).toBe(`rtsp://admin:clave${encodeURIComponent('😀ñ')}@10.0.0.5/live`);
+    // Al decodificar (lo que hace MediaMTX antes de autenticarse) vuelve la contraseña original
+    const u = fuenteParaMediamtx('rtsp://admin:mi clave 50%@10.0.0.5/live');
+    expect(decodeURIComponent(u.slice('rtsp://admin:'.length, u.lastIndexOf('@')))).toBe('mi clave 50%');
   });
 });
 
@@ -188,13 +253,13 @@ describe('Cámaras · presentación y alcance del ticket', () => {
     });
   });
 
-  it('alcance del ticket: stream por omisión; solo los valores exactos stream o webcam', () => {
+  it('alcance del ticket: stream por omisión y único valor (la webcam de pruebas se retiró)', () => {
     expect(leerAlcance(undefined)).toEqual({ ok: true, valor: 'stream' });
     expect(leerAlcance(null)).toEqual({ ok: true, valor: 'stream' });
     expect(leerAlcance('')).toEqual({ ok: true, valor: 'stream' });
-    expect(leerAlcance('webcam')).toEqual({ ok: true, valor: 'webcam' });
-    for (const malo of ['Webcam', ' stream', 'video', 1, true]) {
-      expect(leerAlcance(malo)).toEqual({ ok: false, error: 'Alcance inválido. Valores: stream, webcam.' });
+    expect(leerAlcance('stream')).toEqual({ ok: true, valor: 'stream' });
+    for (const malo of ['webcam', 'Webcam', ' stream', 'video', 1, true]) {
+      expect(leerAlcance(malo)).toEqual({ ok: false, error: 'Alcance inválido. Valores: stream.' });
     }
   });
 });

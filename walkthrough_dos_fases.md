@@ -5,7 +5,7 @@
 ```mermaid
 sequenceDiagram
     autonumber
-    participant Cam as Cámara / Webcam
+    participant Cam as Cámara IP (RTSP vía MediaMTX)
     participant Vid as Hilo Video (30 FPS)
     participant Sel as BestFrameSelector (Nitidez Laplaciana)
     participant Disk as Almacenamiento Local (Disco)

@@ -42,15 +42,65 @@ export const enmascarar = (url: string) => url.replace(RE_CREDENCIALES, `$1${MAS
 export const tieneCredenciales = (url: string) => RE_CREDENCIALES.test(url);
 
 /**
+ * Enmascara las contraseñas de todas las URL RTSP que aparezcan dentro de un texto libre (p. ej. el
+ * mensaje de error de MediaMTX, que repite la fuente rechazada). Como en una URL suelta, la
+ * contraseña llega hasta la última «@» de la autoridad (antes de / ? #, un espacio o una comilla).
+ */
+export const enmascararEnTexto = (texto: string) =>
+  texto.replace(/(rtsps?:\/\/[^\s'"`/?#@:]*:)[^\s'"`/?#]*@/gi, `$1${MASCARA}@`);
+
+/**
+ * Esquema, equipo y puerto de una URL con credenciales («rtsp://10.0.0.5:554»), en minúsculas y con
+ * el puerto por omisión del esquema; null si no tiene credenciales.
+ */
+function destinoConCredenciales(url: string): string | null {
+  const m = url.match(RE_CREDENCIALES);
+  if (!m) return null;
+  const esquema = m[1].slice(0, m[1].indexOf('://')).toLowerCase();
+  const autoridad = url.slice(m[0].length).split(/[/?#]/)[0].toLowerCase();
+  const conPuerto = /^\[[^\]]*\]:\d+$|^[^:[\]]+:\d+$/.test(autoridad);
+  return `${esquema}://${conPuerto ? autoridad : `${autoridad}:${esquema === 'rtsps' ? 322 : 554}`}`;
+}
+
+/**
  * El formulario recibe la URL enmascarada; si la devuelve sin cambiar la contraseña, se
  * recupera la guardada. Solo cuenta la máscara en el lugar de la contraseña (no en la ruta ni en
  * el usuario), y se reemplaza con una función para que un `$` de la contraseña no se interprete
  * como patrón de reemplazo.
+ *
+ * La contraseña solo vuelve al mismo equipo (esquema, host y puerto de la URL guardada): si la
+ * máscara llega con otro destino, la URL queda tal cual (con la máscara) y la validación pide
+ * escribirla de nuevo. Así nadie con acceso al formulario puede enviar la contraseña custodiada a
+ * un equipo propio para leerla.
  */
 export function restaurarClave(rtsp: string, guardada?: string | null): string {
   if (!guardada || rtsp.match(RE_CREDENCIALES)?.[2] !== MASCARA) return rtsp;
   const clave = guardada.match(RE_CREDENCIALES)?.[2];
-  return clave ? rtsp.replace(RE_CREDENCIALES, (_url, inicio: string, _mascara: string, arroba: string) => `${inicio}${clave}${arroba}`) : rtsp;
+  if (!clave || destinoConCredenciales(rtsp) !== destinoConCredenciales(guardada)) return rtsp;
+  return rtsp.replace(RE_CREDENCIALES, (_url, inicio: string, _mascara: string, arroba: string) => `${inicio}${clave}${arroba}`);
+}
+
+/**
+ * Fuente que se entrega a MediaMTX. Su lector de URL (Go, net/url) es más estricto que el de la
+ * API: rechaza el esquema en mayúsculas, un «%» que no forme un código %XX y ciertos caracteres
+ * sin codificar en el usuario o la contraseña (p. ej. el espacio de cámaras antiguas), y al
+ * rechazarla escribe la URL completa, con la contraseña, en su registro. Aquí se lleva a la forma
+ * equivalente que acepta: esquema en minúsculas, «%» suelto como %25 y esos caracteres
+ * codificados (MediaMTX los decodifica antes de autenticarse, así que la credencial es la misma).
+ */
+export function fuenteParaMediamtx(url: string): string {
+  const esquema = url.match(/^rtsps?:\/\//i);
+  if (!esquema) return url;
+  const resto = url.slice(esquema[0].length);
+  const fin = resto.search(/[/?#]/);
+  const autoridad = fin === -1 ? resto : resto.slice(0, fin);
+  const ruta = fin === -1 ? '' : resto.slice(fin);
+  const arroba = autoridad.lastIndexOf('@');
+  const sueltos = (s: string) => s.replace(/%(?![0-9a-f]{2})/gi, '%25');
+  const usuario = arroba === -1 ? '' : sueltos(autoridad.slice(0, arroba))
+    .replace(/[^A-Za-z0-9\-._~!$&'()*+,;=:%@]/gu, c => encodeURIComponent(c));
+  const equipo = arroba === -1 ? autoridad : autoridad.slice(arroba + 1);
+  return `${esquema[0].toLowerCase()}${arroba === -1 ? '' : `${usuario}@`}${equipo}${sueltos(ruta)}`;
 }
 
 /**
@@ -63,7 +113,11 @@ export function leerUrlRtsp(valor: unknown, guardada?: string | null): Validado<
   const escrita = typeof valor === 'string' ? valor.trim() : '';
   if (!escrita) return { ok: false, error: 'El campo «URL RTSP» es obligatorio.' };
   if (!RE_URL_RTSP.test(escrita)) return { ok: false, error: MENSAJE_URL_RTSP };
-  const rtsp = restaurarClave(escrita, guardada);
+  // Esquema en minúsculas: MediaMTX rechaza «RTSP://» (y al rechazarla registra la URL completa)
+  const rtsp = restaurarClave(escrita.replace(/^rtsps?:\/\//i, e => e.toLowerCase()), guardada);
+  if (guardada && rtsp.match(RE_CREDENCIALES)?.[2] === MASCARA) {
+    return { ok: false, error: 'URL RTSP: escriba de nuevo la contraseña de la cámara (la guardada solo se conserva si no cambian el equipo, el puerto ni el esquema).' };
+  }
   if (rtsp.length > LARGO_MAXIMO_RTSP) return { ok: false, error: `URL RTSP: máximo ${LARGO_MAXIMO_RTSP} caracteres.` };
   return { ok: true, valor: rtsp };
 }
@@ -71,7 +125,8 @@ export function leerUrlRtsp(valor: unknown, guardada?: string | null): Validado<
 /**
  * URL del flujo de vista (opcional; vacía = la vista usa el flujo principal). Si llega
  * enmascarada se recupera la contraseña guardada de la vista o, si aún no había vista, la del
- * flujo principal (las cámaras usan las mismas credenciales en ambos canales).
+ * flujo principal (las cámaras usan las mismas credenciales en ambos canales), siempre que apunte
+ * al mismo equipo que esa URL guardada.
  */
 export function leerUrlVista(valor: unknown, guardada?: string | null): Validado<string | null> {
   if (valor === undefined || valor === null || (typeof valor === 'string' && !valor.trim())) return { ok: true, valor: null };
@@ -251,8 +306,8 @@ export const RE_RUTA_PRUEBA = /^prueba_[a-f0-9]{12}$/;
 /** Rutas de video consultables: cam_<id> (flujo principal), cam_<id>_vista o una ruta de prueba. */
 export const RE_RUTA_VIDEO = /^(cam_\d+(_vista)?|prueba_[a-f0-9]{12})$/;
 
-/** stream: ver el video · webcam: enviar la webcam del navegador al motor (modo de prueba). */
-export const ALCANCES_TICKET = ['stream', 'webcam'] as const;
+/** stream: ver el video de una cámara registrada (WebRTC) y las pistas del motor. */
+export const ALCANCES_TICKET = ['stream'] as const;
 export type AlcanceTicket = typeof ALCANCES_TICKET[number];
 
 /** Alcance del ticket de video: uno de los valores exactos; por omisión `stream`. */

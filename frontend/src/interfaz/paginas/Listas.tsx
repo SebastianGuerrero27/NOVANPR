@@ -3,7 +3,7 @@ import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { Clock, Download, Edit3, History, Plus, Search, ShieldAlert, ShieldCheck, Trash2 } from 'lucide-react';
 import api, { mensajeError } from '../../infraestructura/api';
 import { useAuth } from '../../aplicacion/AuthContext';
-import { useEvento } from '../../aplicacion/tiempoReal';
+import { useEvento, useReconexion } from '../../aplicacion/tiempoReal';
 import { useConsulta, useDiferido } from '../../aplicacion/hooks';
 import type { RegistroLista } from '../../dominio/tipos';
 import { CATEGORIAS_PERMISO, fecha, fechaIsoLocal, NIVELES_ALERTA, numero } from '../../dominio/formato';
@@ -68,6 +68,7 @@ const Listas: React.FC<{ tipo?: TipoLista; incrustada?: boolean }> = ({ tipo: ti
 
   const { datos, cargando, error, recargar } = useConsulta<RegistroLista[]>(() => api.get(RUTA_API[tipo]).then(r => r.data), [tipo]);
   const diferido = useDiferido(() => recargar(true), 800);
+  useReconexion(() => recargar(true));
   useEvento<{ lista: string }>('listas:actualizadas', e => { if (e.lista === (tipo === 'alertas' ? 'lista_negra' : 'autorizado')) diferido(); });
 
   const conteo = useMemo(() => {

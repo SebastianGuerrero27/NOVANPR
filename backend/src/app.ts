@@ -4,6 +4,9 @@ import cors from 'cors';
 import path from 'path';
 import fs from 'fs';
 import { origenesPermitidos } from './infraestructura/servicios/origenes';
+import { comprobarBaseDatos } from './infraestructura/db';
+import { estadoRedis } from './infraestructura/servicios/socket';
+import { cabecerasSeguridad, confianzaProxy, limitadorAcceso, limitadorApi, RUTAS_ACCESO } from './interfaz/http/middlewares/seguridad';
 import { archivoDe, DIRECTORIOS_MEDIA, firmaValida } from './infraestructura/servicios/media';
 import { metricsMiddleware, getMetrics, register } from './infraestructura/servicios/metrics';
 import authRoutes from './interfaz/http/rutas/auth';
@@ -52,7 +55,10 @@ export const MONTAJES: [string, express.Router][] = [
  */
 export function crearApp(): express.Express {
   const app = express();
+  app.set('trust proxy', confianzaProxy());
+  app.disable('x-powered-by');
 
+  app.use(cabecerasSeguridad);
   app.use(cors({
     origin: origenesPermitidos(),
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'],
@@ -78,6 +84,8 @@ export function crearApp(): express.Express {
     return res.status(404).end();
   });
 
+  app.use(RUTAS_ACCESO, limitadorAcceso());
+  app.use('/api', limitadorApi());
   for (const [prefijo, router] of MONTAJES) app.use(prefijo, router);
 
   // Documentación interactiva (Swagger UI) y especificación OpenAPI. En producción se publica
@@ -91,8 +99,18 @@ export function crearApp(): express.Express {
     }));
   }
 
+  // Vida: el proceso responde (no consulta dependencias)
   app.get('/health', (_req, res) => {
     res.json({ status: 'OK', service: 'ECU 911 ANPR API', time: new Date() });
+  });
+
+  // Disponibilidad: la base de datos responde (503 si no); Redis se informa, pero sin él el
+  // backend sigue funcionando (difunde los eventos solo en su instancia)
+  app.get('/health/ready', async (_req, res) => {
+    const baseDatos = await comprobarBaseDatos();
+    res.status(baseDatos.ok ? 200 : 503).json({
+      status: baseDatos.ok ? 'OK' : 'NO_DISPONIBLE', base_datos: baseDatos, redis: estadoRedis(), time: new Date(),
+    });
   });
 
   app.get('/metrics', async (_req, res) => {
