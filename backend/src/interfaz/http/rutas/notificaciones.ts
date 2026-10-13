@@ -14,6 +14,9 @@ import { actorDe, controlador, idDe } from '../respuesta';
  *   POST   /leer-todas               marca todas como leídas
  *   POST   /:id/reconocer            reconocimiento (ACK) de una alarma
  *   POST   /reconocer-deteccion/:id  ACK de las alarmas de un paso (botón "Enterado" del aviso de garita)
+ *   DELETE /:id                      quita de la bandeja propia una notificación revisada (409 si está
+ *                                    sin leer o es una alarma pendiente de atención)
+ *   DELETE /revisadas                quita de la bandeja propia todas las revisadas
  *   GET    /push/clave               clave pública VAPID y si el canal push está activo
  *   POST   /push/suscripcion         registra la suscripción push del navegador
  *   DELETE /push/suscripcion         la elimina (el usuario desactivó las notificaciones)
@@ -54,6 +57,15 @@ router.post('/:id(\\d+)/reconocer', controlador('NOTIFICACIONES reconocer', 'No 
 router.post('/reconocer-deteccion/:id(\\d+)', controlador('NOTIFICACIONES reconocer detección', 'No se pudo registrar el reconocimiento.', async (req, res) => {
   const id = idDe(req, res);
   if (id !== null) res.json(await notificaciones.reconocerDeteccion(actorDe(req), id));
+}));
+
+router.delete('/revisadas', controlador('NOTIFICACIONES limpiar revisadas', 'No se pudieron eliminar las notificaciones.', async (req, res) => {
+  res.json(await notificaciones.eliminarRevisadas(actorDe(req)));
+}));
+
+router.delete('/:id(\\d+)', controlador('NOTIFICACIONES eliminar', 'No se pudo eliminar la notificación.', async (req, res) => {
+  const id = idDe(req, res);
+  if (id !== null) res.json(await notificaciones.eliminar(actorDe(req), id));
 }));
 
 // ─── Web Push ────────────────────────────────────────────────────────────────

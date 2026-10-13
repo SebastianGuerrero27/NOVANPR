@@ -133,10 +133,11 @@ export const puertosSql: Puertos = {
     return r.recordset[0] ? Number(r.recordset[0].id) : null;
   },
   async incrementarRepeticion(id) {
-    // Una repetición vuelve a marcar la notificación como no leída para todos
+    // Una repetición vuelve a marcar la notificación como no leída para todos, y la devuelve a la
+    // bandeja de quien la había quitado: es una ocurrencia nueva del evento
     await db().request().input('id', sql.BigInt, id).query(`
       UPDATE Notificaciones SET repeticiones = repeticiones + 1, fecha_ultima = SYSDATETIME() WHERE id = @id;
-      UPDATE NotificacionUsuario SET fecha_lectura = NULL WHERE notificacion_id = @id;`);
+      UPDATE NotificacionUsuario SET fecha_lectura = NULL, fecha_eliminacion = NULL WHERE notificacion_id = @id;`);
   },
   async insertar(f) {
     const r = await db().request()
@@ -187,7 +188,9 @@ export const puertosSql: Puertos = {
     return r.recordset[0] ? mapearNotificacion(r.recordset[0]) : null;
   },
   async destinatariosDe(id) {
-    const r = await db().request().input('id', sql.BigInt, id).query('SELECT usuario_id FROM NotificacionUsuario WHERE notificacion_id = @id');
+    // Quien la quitó de su bandeja no recibe sus cambios de estado (no le reaparece)
+    const r = await db().request().input('id', sql.BigInt, id)
+      .query('SELECT usuario_id FROM NotificacionUsuario WHERE notificacion_id = @id AND fecha_eliminacion IS NULL');
     return r.recordset.map(x => Number(x.usuario_id));
   },
   async suscripciones(usuarios) {

@@ -123,8 +123,8 @@ describe('migraciones de esquema', () => {
   describe('migración v11 · zonas de exclusión de las cámaras', () => {
     const v11 = fs.readFileSync(path.join(DIR_DB, 'migration_v11_zonas_exclusion.sql'), 'utf8');
 
-    it('es la última migración registrada', () => {
-      expect(MIGRACIONES[MIGRACIONES.length - 1]).toBe('migration_v11_zonas_exclusion.sql');
+    it('se aplica antes de la v12', () => {
+      expect(MIGRACIONES.indexOf('migration_v11_zonas_exclusion.sql')).toBe(MIGRACIONES.indexOf('migration_v12_eliminar_notificaciones.sql') - 1);
     });
 
     it('agrega la columna de forma idempotente y no toca registros', () => {
@@ -135,6 +135,19 @@ describe('migraciones de esquema', () => {
 
     it('init.sql crea la columna', () => {
       expect(fs.readFileSync(path.join(DIR_DB, 'init.sql'), 'utf8')).toMatch(/exclusiones\s+NVARCHAR\(MAX\)\s+NULL/);
+    });
+  });
+  describe('migración v12 · quitar notificaciones de la bandeja', () => {
+    const v12 = fs.readFileSync(path.join(DIR_DB, 'migration_v12_eliminar_notificaciones.sql'), 'utf8');
+
+    it('es la última migración registrada', () => {
+      expect(MIGRACIONES[MIGRACIONES.length - 1]).toBe('migration_v12_eliminar_notificaciones.sql');
+    });
+
+    it('agrega la marca por usuario de forma idempotente y no borra ni modifica registros', () => {
+      expect(v12).toContain("IF COL_LENGTH('dbo.NotificacionUsuario', 'fecha_eliminacion') IS NULL");
+      expect(v12).toMatch(/ALTER TABLE NotificacionUsuario ADD fecha_eliminacion DATETIME2 NULL;/);
+      expect(v12).not.toMatch(/(UPDATE|DELETE|DROP)/i);
     });
   });
 });

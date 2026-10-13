@@ -1,5 +1,5 @@
-import { type Actor, errorNoDisponible, errorNoEncontrado, errorValidacion } from './comun';
-import { CATALOGO, type ConsultaBandeja, leerConsultaBandeja, leerDiasMetricas } from '../dominio/notificaciones';
+import { type Actor, errorConflicto, errorNoDisponible, errorNoEncontrado, errorValidacion } from './comun';
+import { CATALOGO, type ConsultaBandeja, type EstadoEnBandeja, leerConsultaBandeja, leerDiasMetricas, puedeEliminarse } from '../dominio/notificaciones';
 import { leerSuscripcionPush, type SuscripcionPush } from '../dominio/suscripcionPush';
 
 /**
@@ -16,6 +16,8 @@ export type Fila = Record<string, any>;
 export interface ResumenNotificaciones {
   no_leidas: number;
   pendientes: number;
+  /** Revisadas (leídas y sin alarma pendiente): las que se pueden quitar de la bandeja */
+  revisadas: number;
 }
 
 /** Suscripción push guardada (con su id y su usuario). */
@@ -35,6 +37,12 @@ export interface RepositorioNotificaciones {
   leer(usuarioId: number, id: number): Promise<void>;
   /** Reconocimiento de una alarma o de las alarmas de un paso vehicular; devuelve cuántas */
   reconocer(usuarioId: number, filtro: { id?: number; deteccionId?: number }): Promise<number>;
+  /** Estado de una notificación en la bandeja del usuario (null si no la tiene o ya la quitó) */
+  estadoEnBandeja(usuarioId: number, id: number): Promise<EstadoEnBandeja | null>;
+  /** Quita una notificación revisada de la bandeja del usuario; false si no cumple la regla */
+  eliminar(usuarioId: number, id: number): Promise<boolean>;
+  /** Quita todas las revisadas de la bandeja del usuario; devuelve sus ids */
+  eliminarRevisadas(usuarioId: number): Promise<number[]>;
   /** Un mismo navegador puede pasar a otra cuenta: la suscripción se reasigna al usuario actual */
   guardarSuscripcion(usuarioId: number, s: SuscripcionPush, agente: string): Promise<void>;
   eliminarSuscripcion(usuarioId: number, endpoint: string): Promise<void>;
@@ -62,6 +70,8 @@ export interface PuertoPush {
 
 export interface DependenciasNotificaciones {
   repositorio: RepositorioNotificaciones;
+  /** Aviso a las demás sesiones del mismo usuario (otras pestañas o equipos) */
+  eventos: { aUsuario(usuarioId: number, canal: string, datos: unknown): void };
   push: PuertoPush;
   /** Parámetro notif_push_habilitado de la configuración */
   pushActivado: () => boolean;
@@ -102,6 +112,34 @@ export function casosNotificaciones(d: DependenciasNotificaciones) {
     async reconocerDeteccion(actor: Actor, deteccionId: number) {
       const reconocidas = await d.repositorio.reconocer(actor.id, { deteccionId });
       return { reconocidas, ...(await resumen(actor)) };
+    },
+
+    /**
+     * Quita una notificación de la bandeja del usuario (solo de la suya), como en vigilance-heart:
+     * únicamente si ya la revisó. Una alarma pendiente de atención no se puede quitar.
+     */
+    async eliminar(actor: Actor, id: number) {
+      if (!(await d.repositorio.eliminar(actor.id, id))) {
+        const estado = await d.repositorio.estadoEnBandeja(actor.id, id);
+        if (!estado) throw errorNoEncontrado('La notificación no está en su bandeja.');
+        const regla = puedeEliminarse(estado);
+        throw errorConflicto(regla.ok ? 'No se pudo quitar la notificación; intente de nuevo.' : regla.motivo);
+      }
+      d.eventos.aUsuario(actor.id, 'notificacion:eliminada', { ids: [id] });
+      return { message: 'Notificación eliminada de su bandeja.', ...(await resumen(actor)) };
+    },
+
+    /** "Limpiar revisadas": quita de la bandeja todas las leídas sin alarma pendiente. */
+    async eliminarRevisadas(actor: Actor) {
+      const ids = await d.repositorio.eliminarRevisadas(actor.id);
+      if (ids.length) d.eventos.aUsuario(actor.id, 'notificacion:eliminada', { ids });
+      const n = ids.length;
+      return {
+        message: n
+          ? `Se ${n === 1 ? 'eliminó 1 notificación revisada' : `eliminaron ${n} notificaciones revisadas`}. Las alarmas pendientes siguen en la bandeja.`
+          : 'No había notificaciones revisadas para eliminar.',
+        eliminadas: n, ...(await resumen(actor)),
+      };
     },
 
     clavePush: () => ({ habilitado: d.push.habilitado() && d.pushActivado(), clave_publica: d.push.clavePublica() }),

@@ -137,6 +137,29 @@ export function urgenciaPush(s: Severidad): 'very-low' | 'low' | 'normal' | 'hig
   return s === 'critica' || s === 'alta' ? 'high' : s === 'media' ? 'normal' : 'low';
 }
 
+// ─── Quitar notificaciones de la bandeja ─────────────────────────────────────
+
+/** Estado de una notificación en la bandeja de una persona. */
+export interface EstadoEnBandeja {
+  leida: boolean;
+  requiereAck: boolean;
+  atendida: boolean;
+  resuelta: boolean;
+}
+
+/**
+ * Una notificación se puede quitar de la bandeja cuando ya se revisó: está leída y no es una alarma
+ * pendiente de atención (ISA-18.2: una alarma no se descarta sin atenderla, y seguiría escalando).
+ * Solo desaparece de la bandeja de esa persona; la notificación y su trazabilidad se conservan.
+ */
+export function puedeEliminarse(n: EstadoEnBandeja): { ok: true } | { ok: false; motivo: string } {
+  if (n.requiereAck && !n.atendida && !n.resuelta) {
+    return { ok: false, motivo: 'Esta alarma está pendiente de atención: regístrela como atendida antes de quitarla de la bandeja.' };
+  }
+  if (!n.leida) return { ok: false, motivo: 'Abra la notificación o márquela como leída antes de quitarla de la bandeja.' };
+  return { ok: true };
+}
+
 // ─── Consulta de la bandeja y de las métricas ────────────────────────────────
 
 export const FILTROS_BANDEJA = ['no_leidas', 'pendientes'] as const;

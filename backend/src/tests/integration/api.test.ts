@@ -100,7 +100,16 @@ describe('API · integración', () => {
   it('la bandeja de notificaciones es por usuario y responde a todos los roles', async () => {
     for (const rol of Object.keys(ROLES) as Rol[]) {
       const r = await request(app).get('/api/notificaciones').set('Authorization', `Bearer ${token(rol)}`).expect(200);
-      expect(r.body).toEqual({ items: [], no_leidas: 0, pendientes: 0 });
+      expect(r.body).toEqual({ items: [], no_leidas: 0, pendientes: 0, revisadas: 0 });
+    }
+  });
+
+  it('quitar notificaciones de la bandeja exige sesión y cada rol limpia solo la suya', async () => {
+    await request(app).delete('/api/notificaciones/revisadas').expect(401);
+    await request(app).delete('/api/notificaciones/12').expect(401);
+    for (const rol of Object.keys(ROLES) as Rol[]) {
+      const r = await request(app).delete('/api/notificaciones/revisadas').set('Authorization', `Bearer ${token(rol)}`).expect(200);
+      expect(r.body).toMatchObject({ eliminadas: 0, no_leidas: 0, pendientes: 0, revisadas: 0 });
     }
   });
 

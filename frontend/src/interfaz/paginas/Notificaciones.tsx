@@ -1,19 +1,17 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { BellOff, BellRing, CheckCheck, Loader2, Send, Smartphone } from 'lucide-react';
+import { BellOff, BellRing, CheckCheck, Loader2, Send, Smartphone, Trash2 } from 'lucide-react';
 import api, { mensajeError } from '../../infraestructura/api';
 import { useAuth } from '../../aplicacion/AuthContext';
 import type { Permiso } from '../../dominio/permisos';
-import { useCentroNotificaciones } from '../../aplicacion/notificaciones';
+import { pendienteDeAtencion, useCentroNotificaciones } from '../../aplicacion/notificaciones';
 import { activarPush, desactivarPush, estadoPush, EstadoPush } from '../../infraestructura/push';
 import { useConsulta } from '../../aplicacion/hooks';
-import type { Notificacion, Severidad } from '../../dominio/tipos';
+import type { Severidad } from '../../dominio/tipos';
 import { Aviso, Segmentado, Tarjeta, Vacio } from '../componentes/ui';
-import { ETIQUETA_SEVERIDAD, ItemNotificacion } from '../componentes/CentroNotificaciones';
+import { ConfirmarLimpieza, ETIQUETA_SEVERIDAD, ItemNotificacion } from '../componentes/CentroNotificaciones';
 import { useNotificar } from '../componentes/Notificaciones';
 
 type Filtro = 'todas' | 'no_leidas' | 'pendientes';
-
-const pendiente = (n: Notificacion) => n.requiere_ack && !n.atendida && !n.resuelta;
 
 const TEXTO_ESTADO: Record<EstadoPush, string> = {
   no_soportado: 'Este navegador no admite notificaciones push.',
@@ -100,16 +98,20 @@ const AvisosQueRecibe: React.FC = () => {
 };
 
 const Notificaciones: React.FC = () => {
-  const { items, noLeidas, pendientes, hayMas, cargando, cargarMas, marcarTodas } = useCentroNotificaciones();
+  const { items, noLeidas, pendientes, revisadas, hayMas, cargando, cargarMas, marcarTodas } = useCentroNotificaciones();
   const [filtro, setFiltro] = useState<Filtro>('todas');
   const [cargandoMas, setCargandoMas] = useState(false);
-  const filas = useMemo(() => items.filter(n => filtro === 'todas' || (filtro === 'no_leidas' ? !n.leida : pendiente(n))), [items, filtro]);
+  const [confirmarLimpieza, setConfirmarLimpieza] = useState(false);
+  const filas = useMemo(() => items.filter(n => filtro === 'todas' || (filtro === 'no_leidas' ? !n.leida : pendienteDeAtencion(n))), [items, filtro]);
 
   return (
     <div className="pagina">
       <div className="grid-principal">
         <Tarjeta titulo="Bandeja" subtitulo="Alarmas y avisos del sistema; las que requieren atención se escalan si nadie las reconoce."
-          acciones={noLeidas > 0 ? <button className="btn btn-secondary btn-sm" onClick={() => void marcarTodas()}><CheckCheck size={14} /> Marcar todas leídas</button> : undefined}
+          acciones={(noLeidas > 0 || revisadas > 0) ? <>
+            {noLeidas > 0 && <button className="btn btn-secondary btn-sm" onClick={() => void marcarTodas()}><CheckCheck size={14} /> Marcar todas leídas</button>}
+            {revisadas > 0 && <button className="btn btn-ghost btn-sm" onClick={() => setConfirmarLimpieza(true)}><Trash2 size={14} /> Limpiar revisadas ({revisadas})</button>}
+          </> : undefined}
           sinPadding>
           <div className="filtros" style={{ padding: '12px 16px', borderBottom: '1px solid var(--border)' }}>
             <Segmentado<Filtro> valor={filtro} onCambiar={setFiltro} opciones={[
@@ -138,6 +140,7 @@ const Notificaciones: React.FC = () => {
           <AvisosQueRecibe />
         </div>
       </div>
+      {confirmarLimpieza && <ConfirmarLimpieza onCerrar={() => setConfirmarLimpieza(false)} />}
     </div>
   );
 };

@@ -55,6 +55,7 @@ export const MIGRACIONES = [
   'migration_v9_camaras_vista_cifrado.sql',
   'migration_v10_fuente_rtsp.sql',
   'migration_v11_zonas_exclusion.sql',
+  'migration_v12_eliminar_notificaciones.sql',
 ];
 
 let pool: sql.ConnectionPool;

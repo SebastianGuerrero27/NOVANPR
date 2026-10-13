@@ -1,4 +1,4 @@
-import { CATALOGO, debeEscalar, severidadDeNivel, urgenciaPush } from '../../dominio/notificaciones';
+import { CATALOGO, debeEscalar, puedeEliminarse, severidadDeNivel, urgenciaPush } from '../../dominio/notificaciones';
 import { PERMISOS } from '../../dominio/permisos';
 
 describe('catálogo de notificaciones', () => {
@@ -38,5 +38,18 @@ describe('escalamiento (ISA-18.2)', () => {
     expect(debeEscalar({ ...base, severidad: 'media' }, en(500), 90)).toBe(false);
     expect(debeEscalar({ ...base, requiereAck: false }, en(500), 90)).toBe(false);
     expect(debeEscalar(base, en(500), 0)).toBe(false);
+  });
+});
+
+describe('quitar notificaciones de la bandeja', () => {
+  const base = { leida: true, requiereAck: false, atendida: false, resuelta: false };
+  it('solo las revisadas: leídas y sin alarma pendiente de atención', () => {
+    expect(puedeEliminarse(base).ok).toBe(true);
+    expect(puedeEliminarse({ ...base, requiereAck: true, atendida: true }).ok).toBe(true);
+    expect(puedeEliminarse({ ...base, requiereAck: true, resuelta: true }).ok).toBe(true);
+    expect(puedeEliminarse({ ...base, leida: false }).ok).toBe(false);
+    expect(puedeEliminarse({ ...base, requiereAck: true })).toEqual({
+      ok: false, motivo: 'Esta alarma está pendiente de atención: regístrela como atendida antes de quitarla de la bandeja.',
+    });
   });
 });

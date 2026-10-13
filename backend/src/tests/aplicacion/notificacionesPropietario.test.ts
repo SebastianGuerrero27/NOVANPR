@@ -55,10 +55,13 @@ describe('Casos de uso · notificaciones', () => {
   const preparar = (pushHabilitado = true) => {
     const repositorio: jest.Mocked<RepositorioNotificaciones> = {
       bandeja: jest.fn().mockResolvedValue([{ id: 9 }]),
-      resumen: jest.fn().mockResolvedValue({ no_leidas: 2, pendientes: 1 }),
+      resumen: jest.fn().mockResolvedValue({ no_leidas: 2, pendientes: 1, revisadas: 4 }),
       leerTodas: jest.fn().mockResolvedValue(undefined),
       leer: jest.fn().mockResolvedValue(undefined),
       reconocer: jest.fn().mockResolvedValue(3),
+      estadoEnBandeja: jest.fn().mockResolvedValue(null),
+      eliminar: jest.fn().mockResolvedValue(true),
+      eliminarRevisadas: jest.fn().mockResolvedValue([7, 8, 9]),
       guardarSuscripcion: jest.fn().mockResolvedValue(undefined),
       eliminarSuscripcion: jest.fn().mockResolvedValue(undefined),
       suscripciones: jest.fn().mockResolvedValue([{ id: 5, usuario_id: 3, endpoint: SUSCRIPCION.endpoint, p256dh: 'a', auth: 'b' }]),
@@ -74,22 +77,59 @@ describe('Casos de uso · notificaciones', () => {
       clavePublica: jest.fn(() => 'BClave'),
       enviar: jest.fn().mockResolvedValue({ enviados: 1, vencidas: [5], fallidas: [] }),
     };
-    return { casos: casosNotificaciones({ repositorio, push, pushActivado: () => true }), repositorio, push };
+    const eventos = { aUsuario: jest.fn() };
+    return { casos: casosNotificaciones({ repositorio, eventos, push, pushActivado: () => true }), repositorio, push, eventos };
   };
+
+  it('eliminar: quita una notificación revisada de la bandeja propia y avisa a las demás sesiones del usuario', async () => {
+    const { casos, repositorio, eventos } = preparar();
+    expect(await casos.eliminar(GUARDIA, 12)).toEqual({ message: 'Notificación eliminada de su bandeja.', no_leidas: 2, pendientes: 1, revisadas: 4 });
+    expect(repositorio.eliminar).toHaveBeenCalledWith(GUARDIA.id, 12);
+    expect(eventos.aUsuario).toHaveBeenCalledWith(GUARDIA.id, 'notificacion:eliminada', { ids: [12] });
+  });
+
+  it('eliminar: una alarma pendiente o una sin leer no se quitan (409) y lo ajeno no existe (404)', async () => {
+    const pendiente = preparar();
+    pendiente.repositorio.eliminar.mockResolvedValue(false);
+    pendiente.repositorio.estadoEnBandeja.mockResolvedValue({ leida: true, requiereAck: true, atendida: false, resuelta: false });
+    const e1 = await pendiente.casos.eliminar(GUARDIA, 12).catch(e => e);
+    expect([e1.tipo, e1.message]).toEqual(['conflicto', 'Esta alarma está pendiente de atención: regístrela como atendida antes de quitarla de la bandeja.']);
+    expect(pendiente.eventos.aUsuario).not.toHaveBeenCalled();
+
+    const sinLeer = preparar();
+    sinLeer.repositorio.eliminar.mockResolvedValue(false);
+    sinLeer.repositorio.estadoEnBandeja.mockResolvedValue({ leida: false, requiereAck: false, atendida: false, resuelta: false });
+    expect((await sinLeer.casos.eliminar(GUARDIA, 12).catch(e => e)).message).toMatch(/márquela como leída/);
+
+    const ajena = preparar();
+    ajena.repositorio.eliminar.mockResolvedValue(false);
+    expect((await ajena.casos.eliminar(GUARDIA, 99).catch(e => e)).tipo).toBe('no_encontrado');
+  });
+
+  it('limpiar revisadas: quita todas las revisadas, informa cuántas y avisa a las demás sesiones', async () => {
+    const { casos, eventos } = preparar();
+    expect(await casos.eliminarRevisadas(GUARDIA)).toMatchObject({ eliminadas: 3, message: 'Se eliminaron 3 notificaciones revisadas. Las alarmas pendientes siguen en la bandeja.' });
+    expect(eventos.aUsuario).toHaveBeenCalledWith(GUARDIA.id, 'notificacion:eliminada', { ids: [7, 8, 9] });
+
+    const vacia = preparar();
+    vacia.repositorio.eliminarRevisadas.mockResolvedValue([]);
+    expect(await vacia.casos.eliminarRevisadas(GUARDIA)).toMatchObject({ eliminadas: 0, message: 'No había notificaciones revisadas para eliminar.' });
+    expect(vacia.eventos.aUsuario).not.toHaveBeenCalled();
+  });
 
   it('bandeja: valida los parámetros antes de consultar y añade el resumen', async () => {
     const { casos, repositorio } = preparar();
     expect((await fallo(casos.bandeja(GUARDIA, { limite: '500' }))).tipo).toBe('validacion');
     expect(repositorio.bandeja).not.toHaveBeenCalled();
-    expect(await casos.bandeja(GUARDIA, { filtro: 'no_leidas' })).toEqual({ items: [{ id: 9 }], no_leidas: 2, pendientes: 1 });
+    expect(await casos.bandeja(GUARDIA, { filtro: 'no_leidas' })).toEqual({ items: [{ id: 9 }], no_leidas: 2, pendientes: 1, revisadas: 4 });
     expect(repositorio.bandeja).toHaveBeenCalledWith(GUARDIA.id, { limite: 30, antesDe: null, desde: null, filtro: 'no_leidas' });
   });
 
   it('leer, reconocer y reconocer las alarmas de un paso: siempre del usuario de la sesión', async () => {
     const { casos, repositorio } = preparar();
-    expect(await casos.leer(GUARDIA, 9)).toEqual({ no_leidas: 2, pendientes: 1 });
+    expect(await casos.leer(GUARDIA, 9)).toEqual({ no_leidas: 2, pendientes: 1, revisadas: 4 });
     expect(repositorio.leer).toHaveBeenCalledWith(GUARDIA.id, 9);
-    expect(await casos.reconocer(GUARDIA, 9)).toEqual({ reconocidas: 3, no_leidas: 2, pendientes: 1 });
+    expect(await casos.reconocer(GUARDIA, 9)).toEqual({ reconocidas: 3, no_leidas: 2, pendientes: 1, revisadas: 4 });
     expect(await casos.reconocerDeteccion(GUARDIA, 1532)).toMatchObject({ reconocidas: 3 });
     expect(repositorio.reconocer).toHaveBeenLastCalledWith(GUARDIA.id, { deteccionId: 1532 });
   });

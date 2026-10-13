@@ -753,6 +753,17 @@ export const RUTAS: RutaDoc[] = [
     descripcion: 'Botón "Enterado" del aviso de garita; el id es el de la detección.',
   },
   {
+    metodo: 'delete', ruta: '/api/notificaciones/:id(\\d+)', etiqueta: 'Notificaciones', acceso: 'sesion',
+    resumen: 'Quita de la bandeja propia una notificación revisada',
+    descripcion: 'Solo si está leída y no es una alarma pendiente de atención. La notificación se conserva para la trazabilidad y las demás personas la siguen viendo.',
+    respuestas: { 200: 'Eliminada (devuelve el resumen de la bandeja)', 404: 'No está en la bandeja del usuario', 409: 'Sin leer o alarma pendiente de atención' },
+  },
+  {
+    metodo: 'delete', ruta: '/api/notificaciones/revisadas', etiqueta: 'Notificaciones', acceso: 'sesion',
+    resumen: 'Quita de la bandeja propia todas las notificaciones revisadas',
+    descripcion: 'Las alarmas pendientes de atención y las no leídas se conservan.',
+  },
+  {
     metodo: 'get', ruta: '/api/notificaciones/push/clave', etiqueta: 'Notificaciones', acceso: 'sesion',
     resumen: 'Clave pública VAPID y estado del canal push',
   },

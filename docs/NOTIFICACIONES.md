@@ -89,6 +89,13 @@ stateDiagram-v2
   La cota superior del tiempo sin atención es umbral + 15 s (periodo del barrido).
 - **Supresión de avalanchas:** la misma clave (p. ej. `no_registrado:ABC1234`) dentro de la ventana
   del tipo incrementa `repeticiones` y vuelve a marcarla como no leída, en lugar de crear otra alarma.
+- **Quitar de la bandeja** (como en vigilance-heart): cada persona puede eliminar de su bandeja las
+  notificaciones ya **revisadas** (leídas y sin alarma pendiente de atención), una a una con la
+  papelera o todas con *Limpiar revisadas* (pide confirmación). Una alarma pendiente no se puede
+  quitar: primero se atiende. Solo se marca su fila de `NotificacionUsuario`
+  (`fecha_eliminacion`, migración v12): la notificación se conserva para las demás personas, para la
+  trazabilidad (quién la atendió y cuándo) y para las métricas de la §8. Quien la quitó ya no recibe
+  sus cambios de estado; si el evento se repite, le vuelve a aparecer.
 
 ## 5. Catálogo
 
@@ -111,17 +118,20 @@ stateDiagram-v2
 | Método y ruta | Uso |
 |---|---|
 | `GET /api/notificaciones?limite&antes_de&desde&filtro=no_leidas\|pendientes` | Bandeja de la sesión |
-| `GET /api/notificaciones/resumen` | `{ no_leidas, pendientes }` |
+| `GET /api/notificaciones/resumen` | `{ no_leidas, pendientes, revisadas }` |
 | `POST /api/notificaciones/:id/leer` · `POST /leer-todas` | Lectura |
 | `POST /api/notificaciones/:id/reconocer` | ACK de una alarma |
 | `POST /api/notificaciones/reconocer-deteccion/:id` | ACK de las alarmas de un paso (aviso de garita) |
+| `DELETE /api/notificaciones/:id` | Quita una notificación revisada de la bandeja propia (409 si está sin leer o es una alarma pendiente) |
+| `DELETE /api/notificaciones/revisadas` | Quita todas las revisadas de la bandeja propia |
 | `GET /api/notificaciones/push/clave` | Clave pública VAPID |
 | `POST`/`DELETE /api/notificaciones/push/suscripcion` | Alta/baja del navegador |
 | `POST /api/notificaciones/push/prueba` | Push de prueba a los equipos del usuario |
 | `GET /api/notificaciones/metricas?dias` | TTA, escalamiento, avalanchas (permiso `evaluacion:ver`) |
 
 Eventos Socket.IO (sala `usuario:{id}`): `notificacion:nueva`, `notificacion:actualizada`
-(repetición, ACK, resolución o escalamiento). Además: `solicitudes:actualizadas`.
+(repetición, ACK, resolución o escalamiento), `notificacion:eliminada` (`{ ids }`: las quitó la
+misma persona desde otra pestaña o equipo). Además: `solicitudes:actualizadas`.
 
 ## 7. Configuración
 

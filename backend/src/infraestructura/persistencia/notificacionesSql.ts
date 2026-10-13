@@ -7,11 +7,13 @@ import { hashEndpoint } from '../servicios/webPush';
 /** Repositorio SQL Server de la bandeja (Notificaciones, NotificacionUsuario) y de las suscripciones push. */
 
 const db = () => getDB();
+/** Alarma que exige atención y nadie atendió ni se resolvió (no se puede quitar de la bandeja) */
+const PENDIENTE = 'n.requiere_ack = 1 AND n.fecha_atencion IS NULL AND n.fecha_resolucion IS NULL';
 
 export const repositorioNotificacionesSql: RepositorioNotificaciones = {
   async bandeja(usuarioId, c) {
     const request = db().request().input('uid', sql.Int, usuarioId).input('n', sql.Int, c.limite);
-    const filtros = ['nu.usuario_id = @uid'];
+    const filtros = ['nu.usuario_id = @uid', 'nu.fecha_eliminacion IS NULL'];
     if (c.antesDe !== null) { request.input('antes', sql.BigInt, c.antesDe); filtros.push('n.id < @antes'); }
     if (c.desde !== null) {
       // Recuperación: nuevas o modificadas después del último id conocido por el cliente
@@ -33,15 +35,17 @@ export const repositorioNotificacionesSql: RepositorioNotificaciones = {
     const r = await db().request().input('uid', sql.Int, usuarioId).query(`
       SELECT
         SUM(CASE WHEN nu.fecha_lectura IS NULL THEN 1 ELSE 0 END) AS no_leidas,
-        SUM(CASE WHEN n.requiere_ack = 1 AND n.fecha_atencion IS NULL AND n.fecha_resolucion IS NULL THEN 1 ELSE 0 END) AS pendientes
+        SUM(CASE WHEN ${PENDIENTE} THEN 1 ELSE 0 END) AS pendientes,
+        SUM(CASE WHEN nu.fecha_lectura IS NOT NULL AND NOT (${PENDIENTE}) THEN 1 ELSE 0 END) AS revisadas
       FROM NotificacionUsuario nu JOIN Notificaciones n ON n.id = nu.notificacion_id
-      WHERE nu.usuario_id = @uid`);
-    return { no_leidas: Number(r.recordset[0]?.no_leidas ?? 0), pendientes: Number(r.recordset[0]?.pendientes ?? 0) };
+      WHERE nu.usuario_id = @uid AND nu.fecha_eliminacion IS NULL`);
+    const f = r.recordset[0] ?? {};
+    return { no_leidas: Number(f.no_leidas ?? 0), pendientes: Number(f.pendientes ?? 0), revisadas: Number(f.revisadas ?? 0) };
   },
 
   async leerTodas(usuarioId) {
     await db().request().input('uid', sql.Int, usuarioId)
-      .query('UPDATE NotificacionUsuario SET fecha_lectura = SYSDATETIME() WHERE usuario_id = @uid AND fecha_lectura IS NULL');
+      .query('UPDATE NotificacionUsuario SET fecha_lectura = SYSDATETIME() WHERE usuario_id = @uid AND fecha_lectura IS NULL AND fecha_eliminacion IS NULL');
   },
 
   async leer(usuarioId, id) {
@@ -51,6 +55,35 @@ export const repositorioNotificacionesSql: RepositorioNotificaciones = {
   },
 
   reconocer,
+
+  async estadoEnBandeja(usuarioId, id) {
+    const r = await db().request().input('uid', sql.Int, usuarioId).input('id', sql.BigInt, id).query(`
+      SELECT nu.fecha_lectura, n.requiere_ack, n.fecha_atencion, n.fecha_resolucion
+      FROM NotificacionUsuario nu JOIN Notificaciones n ON n.id = nu.notificacion_id
+      WHERE nu.usuario_id = @uid AND nu.notificacion_id = @id AND nu.fecha_eliminacion IS NULL`);
+    const f = r.recordset[0];
+    return f ? { leida: Boolean(f.fecha_lectura), requiereAck: Boolean(f.requiere_ack), atendida: Boolean(f.fecha_atencion), resuelta: Boolean(f.fecha_resolucion) } : null;
+  },
+
+  // Misma regla que dominio/notificaciones.ts (puedeEliminarse), aplicada en la propia consulta
+  async eliminar(usuarioId, id) {
+    const r = await db().request().input('uid', sql.Int, usuarioId).input('id', sql.BigInt, id).query(`
+      UPDATE nu SET fecha_eliminacion = SYSDATETIME()
+      FROM NotificacionUsuario nu JOIN Notificaciones n ON n.id = nu.notificacion_id
+      WHERE nu.usuario_id = @uid AND nu.notificacion_id = @id AND nu.fecha_eliminacion IS NULL
+        AND nu.fecha_lectura IS NOT NULL AND NOT (${PENDIENTE})`);
+    return r.rowsAffected[0] > 0;
+  },
+
+  async eliminarRevisadas(usuarioId) {
+    const r = await db().request().input('uid', sql.Int, usuarioId).query(`
+      UPDATE nu SET fecha_eliminacion = SYSDATETIME()
+      OUTPUT INSERTED.notificacion_id
+      FROM NotificacionUsuario nu JOIN Notificaciones n ON n.id = nu.notificacion_id
+      WHERE nu.usuario_id = @uid AND nu.fecha_eliminacion IS NULL
+        AND nu.fecha_lectura IS NOT NULL AND NOT (${PENDIENTE})`);
+    return r.recordset.map(x => Number(x.notificacion_id));
+  },
 
   async guardarSuscripcion(usuarioId, s, agente) {
     await db().request()

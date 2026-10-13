@@ -1,10 +1,11 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { BellRing, Bell, CheckCheck, CheckCircle2, ChevronRight, Loader2 } from 'lucide-react';
-import { useCentroNotificaciones } from '../../aplicacion/notificaciones';
+import { BellRing, Bell, CheckCheck, CheckCircle2, ChevronRight, Loader2, Trash2 } from 'lucide-react';
+import { esRevisada, useCentroNotificaciones } from '../../aplicacion/notificaciones';
 import { relativo } from '../../dominio/formato';
 import type { Notificacion, Severidad } from '../../dominio/tipos';
 import { useNotificar } from './Notificaciones';
+import { Confirmar } from './ui';
 import { mensajeError } from '../../infraestructura/api';
 
 export const ETIQUETA_SEVERIDAD: Record<Severidad, string> = { critica: 'Crítica', alta: 'Alta', media: 'Media', baja: 'Informativa' };
@@ -19,7 +20,7 @@ function estadoAlarma(n: Notificacion): { texto: string; clase: string } | null 
 
 /** Fila de una notificación (campana y página). */
 export const ItemNotificacion: React.FC<{ n: Notificacion; compacto?: boolean; onAbrir?: () => void }> = ({ n, compacto, onAbrir }) => {
-  const { marcarLeida, reconocer } = useCentroNotificaciones();
+  const { marcarLeida, reconocer, eliminar } = useCentroNotificaciones();
   const navigate = useNavigate();
   const notificar = useNotificar();
   const [enviando, setEnviando] = useState(false);
@@ -35,6 +36,11 @@ export const ItemNotificacion: React.FC<{ n: Notificacion; compacto?: boolean; o
     e.stopPropagation();
     setEnviando(true);
     try { await reconocer(n.id); } catch (err) { notificar('error', 'No se pudo registrar la atención', mensajeError(err)); } finally { setEnviando(false); }
+  };
+  const quitar = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    setEnviando(true);
+    try { await eliminar(n.id); } catch (err) { notificar('error', 'No se pudo eliminar la notificación', mensajeError(err)); setEnviando(false); }
   };
 
   return (
@@ -56,6 +62,12 @@ export const ItemNotificacion: React.FC<{ n: Notificacion; compacto?: boolean; o
               {enviando ? <Loader2 size={13} className="girar" /> : <CheckCircle2 size={13} />} Atendida
             </button>
           )}
+          {esRevisada(n) && (
+            <button className="btn btn-ghost btn-sm btn-icono notif-eliminar" onClick={quitar} disabled={enviando}
+              title="Eliminar notificación revisada" aria-label={`Eliminar notificación revisada: ${n.titulo}`}>
+              {enviando ? <Loader2 size={13} className="girar" /> : <Trash2 size={13} />}
+            </button>
+          )}
         </div>
       </div>
     </div>
@@ -64,9 +76,10 @@ export const ItemNotificacion: React.FC<{ n: Notificacion; compacto?: boolean; o
 
 /** Campana del encabezado: contador de no leídas y alarmas pendientes, y bandeja desplegable. */
 export const CampanaNotificaciones: React.FC = () => {
-  const { items, noLeidas, pendientes, marcarTodas } = useCentroNotificaciones();
+  const { items, noLeidas, pendientes, revisadas, marcarTodas } = useCentroNotificaciones();
   const navigate = useNavigate();
   const [abierto, setAbierto] = useState(false);
+  const [confirmarLimpieza, setConfirmarLimpieza] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -98,11 +111,42 @@ export const CampanaNotificaciones: React.FC = () => {
               ? <div className="notif-vacio">No hay notificaciones.</div>
               : items.slice(0, 12).map(n => <ItemNotificacion key={n.id} n={n} compacto onAbrir={() => setAbierto(false)} />)}
           </div>
+          {revisadas > 0 && (
+            <div className="notif-panel-limpiar">
+              <span>{pendientes ? `${pendientes} pendientes de atención` : 'Sin alarmas pendientes'}</span>
+              {/* La confirmación se abre fuera del panel: un clic en ella cerraría el panel */}
+              <button className="btn btn-ghost btn-sm" onClick={() => { setAbierto(false); setConfirmarLimpieza(true); }}>
+                <Trash2 size={13} /> Limpiar revisadas ({revisadas})
+              </button>
+            </div>
+          )}
           <button className="notif-panel-pie" onClick={() => { setAbierto(false); navigate('/notificaciones'); }}>
             Ver todas y configurar <ChevronRight size={14} />
           </button>
         </div>
       )}
+      {confirmarLimpieza && <ConfirmarLimpieza onCerrar={() => setConfirmarLimpieza(false)} />}
     </div>
+  );
+};
+
+/** "Limpiar revisadas": quita de la bandeja propia las leídas sin alarma pendiente, tras confirmar. */
+export const ConfirmarLimpieza: React.FC<{ onCerrar: () => void }> = ({ onCerrar }) => {
+  const { revisadas, eliminarRevisadas } = useCentroNotificaciones();
+  const notificar = useNotificar();
+  return (
+    <Confirmar titulo="Limpiar notificaciones revisadas" textoBoton="Sí, limpiar revisadas" peligro onCerrar={onCerrar}
+      mensaje={<>
+        Se quitarán de su bandeja las <b>{revisadas}</b> {revisadas === 1 ? 'notificación revisada' : 'notificaciones revisadas'} (leídas y sin
+        alarma pendiente). Las alarmas pendientes de atención y las no leídas se conservan. Las demás personas las siguen viendo y
+        queda la trazabilidad de cada alarma.
+      </>}
+      onConfirmar={async () => {
+        try {
+          notificar('exito', await eliminarRevisadas());
+        } catch (e) {
+          throw new Error(mensajeError(e));
+        }
+      }} />
   );
 };

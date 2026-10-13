@@ -33,6 +33,9 @@ Matriz completa de permisos: [docs/ROLES_Y_PERMISOS.md](docs/ROLES_Y_PERMISOS.md
 
 ## Puesta en marcha
 
+Guía paso a paso para el uso diario, la instalación en otro equipo, los ajustes y los problemas
+frecuentes: **[EJECUTAR_SISTEMA.md](EJECUTAR_SISTEMA.md)**.
+
 Requisitos: Docker Desktop y los puertos 3000 (frontend), 5000 (API), 8000 (motor), 8554/8889/8189
 (MediaMTX), 14333 (SQL Server), 9090/3001 (Prometheus/Grafana) libres.
 
