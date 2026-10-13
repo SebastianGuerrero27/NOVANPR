@@ -11,6 +11,7 @@ import { type ReglaTexto, type Validado, validarEntero, validarHost, validarText
  *                      la vista en vivo del navegador; mismas reglas que rtsp_url
  *   ip                 IPv4 o nombre de host para el ping (máximo 45); por omisión, el host de la URL
  *   roi                región de interés: polígono de 3 a 12 vértices normalizados (0–1)
+ *   exclusiones        zonas de exclusión: hasta 8 polígonos con las mismas reglas
  *
  * La resolución del host (destinoRtsp) y el diagnóstico de red son adaptadores de
  * infraestructura; aquí solo están las reglas.
@@ -240,6 +241,47 @@ export function parsearRoi(texto: unknown): Punto[] | null {
   }
 }
 
+// ─── Zonas de exclusión ──────────────────────────────────────────────────────
+
+export const MAX_EXCLUSIONES = 8;
+
+/**
+ * Zonas de exclusión: hasta 8 polígonos (cada uno con las reglas de la región de interés) donde
+ * el motor no cuenta el movimiento ni busca placas: árboles, banderas, reflejos, la vereda o la
+ * hora sobreimpresa, que de otro modo disparan el detector con movimiento falso. null o [] =
+ * ninguna.
+ */
+export function leerExclusiones(entrada: unknown): Validado<Punto[][]> {
+  if (entrada === null) return { ok: true, valor: [] };
+  if (!Array.isArray(entrada)) return { ok: false, error: 'Las zonas de exclusión deben ser una lista de polígonos.' };
+  if (entrada.length > MAX_EXCLUSIONES) return { ok: false, error: `Máximo ${MAX_EXCLUSIONES} zonas de exclusión.` };
+  const zonas: Punto[][] = [];
+  for (const [i, z] of entrada.entries()) {
+    const zona = `Zona de exclusión ${i + 1}`;
+    if (!Array.isArray(z) || z.length < VERTICES_ROI.min || z.length > VERTICES_ROI.max) {
+      return { ok: false, error: `${zona}: debe tener entre ${VERTICES_ROI.min} y ${VERTICES_ROI.max} vértices.` };
+    }
+    const poligono = leerRoi(z);
+    if (!poligono.ok || !poligono.valor) return { ok: false, error: `${zona}: cada vértice debe ser [x, y] con valores entre 0 y 1.` };
+    zonas.push(poligono.valor);
+  }
+  return { ok: true, valor: zonas };
+}
+
+/** Zonas de exclusión guardadas (JSON) → polígonos; [] si no hay o no son válidas. */
+export function parsearExclusiones(texto: unknown): Punto[][] {
+  if (typeof texto !== 'string' || !texto) return [];
+  try {
+    const r = leerExclusiones(JSON.parse(texto));
+    return r.ok ? r.valor : [];
+  } catch {
+    return [];
+  }
+}
+
+/** "2 zonas de exclusión", "1 zona de exclusión", "sin zonas de exclusión". */
+export const describirExclusiones = (n: number) => (n === 0 ? 'sin zonas de exclusión' : n === 1 ? '1 zona de exclusión' : `${n} zonas de exclusión`);
+
 // ─── Presentación ────────────────────────────────────────────────────────────
 
 /** Cámara tal como está guardada (con la contraseña RTSP y el número de detecciones). */
@@ -259,6 +301,8 @@ export interface CamaraGuardada {
   detecciones?: number | null;
   /** Región de interés serializada (JSON) */
   roi: string | null;
+  /** Zonas de exclusión serializadas (JSON) */
+  exclusiones?: string | null;
 }
 
 /** Cámara tal como la entrega la API. */
@@ -282,9 +326,10 @@ export interface CamaraPublica {
   created_at: Date;
   detecciones?: number;
   roi: Punto[] | null;
+  exclusiones: Punto[][];
 }
 
-/** Presentación segura: contraseña enmascarada y región de interés interpretada. */
+/** Presentación segura: contraseña enmascarada, región de interés y zonas de exclusión interpretadas. */
 export function presentarCamara(c: CamaraGuardada): CamaraPublica {
   return {
     id: c.id, nombre: c.nombre, ip: c.ip, ubicacion: c.ubicacion,
@@ -296,6 +341,7 @@ export function presentarCamara(c: CamaraGuardada): CamaraPublica {
     ultimo_ping: c.ultimo_ping, tiempo_respuesta_ms: c.tiempo_respuesta_ms, mensaje_ping: c.mensaje_ping,
     created_at: c.created_at, detecciones: c.detecciones ?? undefined,
     roi: parsearRoi(c.roi),
+    exclusiones: parsearExclusiones(c.exclusiones),
   };
 }
 

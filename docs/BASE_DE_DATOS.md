@@ -68,7 +68,7 @@ ListaNegra 1───* DeteccionVehiculo (alerta_id) · VehiculosAutorizados 1�
   verifica el estado vigente de la cuenta (caché de 20 s), no solo el token.
 - Las listas se retiran con baja lógica y motivo; una cámara con historial no se elimina (se
   deshabilita). Eliminar una detección exige motivo y rol Administrador.
-- Las rutas del servicio ANPR (`/detecciones/ingreso`, `/completar-ocr`, `/descarte`) exigen
+- Las rutas del servicio ANPR (`/detecciones/ingreso`, `/completar-ocr`, `/reevaluar`, `/descarte`) exigen
   el encabezado `X-Servicio-Token` (`ANPR_SERVICE_TOKEN`); el resto exige sesión y rol.
 
 ## Cambios de la versión 5 (`migration_v5_accesos_notificaciones.sql`)

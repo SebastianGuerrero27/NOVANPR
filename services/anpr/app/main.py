@@ -27,6 +27,8 @@ from app.infraestructura.config import (
     DEBUG_SHOW_WINDOW,
     DEBUG_VISUAL,
     MEDIA_DIR,
+    OCR_VERIFIER_MAX_MS,
+    REGISTRO_MAX_MS,
     OCR_VERIFIER_VOTE_WEIGHT,
     RTSP_URL,
     RUNNING_IN_DOCKER,
@@ -49,6 +51,8 @@ motor = MotorAnpr(
         hud_activo=DEBUG_VISUAL,
         ventana_local=DEBUG_SHOW_WINDOW and not RUNNING_IN_DOCKER,
         peso_voto_verificador=OCR_VERIFIER_VOTE_WEIGHT,
+        espera_verificador_s=OCR_VERIFIER_MAX_MS / 1000.0,
+        presupuesto_registro_s=REGISTRO_MAX_MS / 1000.0 if REGISTRO_MAX_MS > 0 else None,
     ),
     DependenciasMotor(
         crear_fuente_video=create_video_source,

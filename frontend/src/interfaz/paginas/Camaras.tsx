@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { Link } from 'react-router-dom';
-import { Camera, Cpu, Crop, Edit3, Loader2, Play, Plus, RadioTower, RefreshCw, Trash2 } from 'lucide-react';
+import { Ban, Camera, Cpu, Crop, Edit3, Loader2, Play, Plus, RadioTower, RefreshCw, Trash2 } from 'lucide-react';
 import api, { mensajeError } from '../../infraestructura/api';
 import { useEvento, useReconexion } from '../../aplicacion/tiempoReal';
 import { useConsulta } from '../../aplicacion/hooks';
@@ -63,7 +63,7 @@ const Camaras: React.FC = () => {
   return (
     <div className="pagina">
       <div className="pila">
-        <Aviso tipo="info"><b>Ping</b> comprueba la conectividad de red y el servicio RTSP de la cámara; <b>Play</b> reproduce el flujo real para confirmar que el video llega; <b>Área</b> delimita la zona donde el motor busca placas. Cada minuto se verifica automáticamente el flujo RTSP de las cámaras habilitadas.</Aviso>
+        <Aviso tipo="info"><b>Ping</b> comprueba la conectividad de red y el servicio RTSP de la cámara; <b>Play</b> reproduce el flujo real para confirmar que el video llega; <b>Zonas</b> delimita dónde el motor busca placas y excluye las áreas con movimiento falso (árboles, banderas, reflejos). Cada minuto se verifica automáticamente el flujo RTSP de las cámaras habilitadas.</Aviso>
         {error && <Aviso tipo="error">{error}</Aviso>}
         <Tarjeta titulo="Cámaras registradas" subtitulo={datos ? `${datos.length} cámaras · ${datos.filter(c => c.activa && c.estado === 'EN_LINEA').length} en línea` : undefined}
           acciones={<>
@@ -84,7 +84,8 @@ const Camaras: React.FC = () => {
                     <tr key={c.id} className={c.activa ? '' : 'inactivo'}>
                       <td><strong style={{ color: 'var(--text)' }}>{c.nombre}</strong><span className="secundario">{c.ubicacion}</span>
                         {motor.datos?.camara_activa?.id === c.id && <span className="insignia info" style={{ marginTop: 4 }}><Cpu size={12} /> Procesando en el motor ANPR</span>}
-                        {c.roi && <span className="insignia" style={{ marginTop: 4 }} title="El motor solo busca placas dentro del área marcada"><Crop size={12} /> Área de interés ({c.roi.length} vértices)</span>}</td>
+                        {c.roi && <span className="insignia" style={{ marginTop: 4 }} title="El motor solo busca placas dentro del área marcada"><Crop size={12} /> Área de interés ({c.roi.length} vértices)</span>}
+                        {Boolean(c.exclusiones?.length) && <span className="insignia" style={{ marginTop: 4 }} title="Ahí no cuenta el movimiento ni se buscan placas"><Ban size={12} /> {c.exclusiones!.length === 1 ? '1 zona excluida' : `${c.exclusiones!.length} zonas excluidas`}</span>}</td>
                       <td>
                         <span className="fila" style={{ gap: 6 }}><span className={`punto ${c.activa ? e.p : 'gris'}`} />{c.activa ? e.t : 'Deshabilitada'}{c.activa && c.tiempo_respuesta_ms !== null && c.estado === 'EN_LINEA' && <span className="texto-secundario">· {c.tiempo_respuesta_ms} ms</span>}</span>
                         <span className="secundario">{c.ultimo_ping ? `${c.mensaje_ping ?? ''} · ${relativo(c.ultimo_ping)}` : 'Aún no verificada'}</span>
@@ -97,8 +98,8 @@ const Camaras: React.FC = () => {
                           {probando === c.id ? <Loader2 size={14} className="girar" /> : <RadioTower size={14} />} Ping</button>
                         <button className="btn btn-secondary btn-sm" title={c.activa ? 'Reproducir el flujo de video' : 'Habilite la cámara para reproducirla'} disabled={!c.activa} onClick={() => setReproduciendo(c)}>
                           <Play size={14} /> Play</button>
-                        <button className="btn btn-secondary btn-sm" title={c.activa ? 'Dibujar el área donde se buscan placas' : 'Habilite la cámara para dibujar su área'} disabled={!c.activa} onClick={() => setArea(c)}>
-                          <Crop size={14} /> Área</button>
+                        <button className="btn btn-secondary btn-sm" title={c.activa ? 'Dibujar el área de detección y las zonas de exclusión' : 'Habilite la cámara para dibujar sus zonas'} disabled={!c.activa} onClick={() => setArea(c)}>
+                          <Crop size={14} /> Zonas</button>
                         <button className="btn btn-ghost btn-sm btn-icono" title="Editar" aria-label="Editar" onClick={() => setEditando(c)}><Edit3 size={15} /></button>
                         <button className="btn btn-ghost btn-sm btn-icono" title={c.detecciones ? 'Tiene historial: deshabilítela en su lugar' : 'Eliminar'} aria-label="Eliminar"
                           disabled={Boolean(c.detecciones)} onClick={() => setEliminando(c)}><Trash2 size={15} color={c.detecciones ? undefined : 'var(--alerta)'} /></button>
@@ -123,7 +124,7 @@ const Camaras: React.FC = () => {
         </Modal>
       )}
       {area && <EditorRoi camara={area} onCerrar={() => setArea(null)}
-        onGuardada={c => { reemplazar(c); setArea(null); notificar('exito', c.roi ? 'Área de interés guardada' : 'Se analizará el cuadro completo', 'El motor la aplica de inmediato si procesa esta cámara.'); }} />}
+        onGuardada={c => { reemplazar(c); setArea(null); notificar('exito', 'Zonas guardadas', 'El motor las aplica de inmediato si procesa esta cámara.'); }} />}
       {reproduciendo && <ReproductorPrueba titulo={reproduciendo.nombre} camaraId={reproduciendo.id} onCerrar={() => setReproduciendo(null)} />}
       {eliminando && (
         <Confirmar titulo="Eliminar cámara" peligro textoBoton="Eliminar" mensaje={<>Se eliminará <b>{eliminando.nombre}</b>. Solo es posible porque no tiene detecciones registradas.</>}

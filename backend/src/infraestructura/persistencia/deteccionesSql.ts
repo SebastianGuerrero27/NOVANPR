@@ -3,7 +3,7 @@ import { getDB } from '../db';
 import type { Cruce, RepositorioDetecciones } from '../../aplicacion/detecciones';
 import type { Decision } from '../../dominio/decisionAcceso';
 import { type FiltrosDetecciones, VENTANA_MISMO_PASO_S } from '../../dominio/detecciones';
-import { guardarMetadatosCaptura, type LecturaAutomatica, registrarLecturaAutomatica } from '../servicios/evaluacion';
+import { guardarAtributosVehiculo, guardarMetadatosCaptura, type LecturaAutomatica, registrarLecturaAutomatica } from '../servicios/evaluacion';
 
 /**
  * Repositorio SQL Server de los pasos vehiculares (DeteccionVehiculo), con la cámara, la alerta,
@@ -70,16 +70,24 @@ export const repositorioDeteccionesSql: RepositorioDetecciones = {
     return r.recordset[0] ?? null;
   },
 
-  async mismoPaso(trackingId, pista) {
+  /**
+   * Ingreso del mismo paso físico: misma placa (o, sin placa, el mismo tracking) en la misma cámara
+   * dentro de la ventana, medida en milisegundos igual que en el motor. El tracking solo cuenta sin
+   * placa: sus números vuelven a empezar cuando el motor se reinicia y podrían ser de otro vehículo.
+   */
+  async mismoPaso(trackingId, pista, camaraId) {
     const r = await db().request()
       .input('tid', sql.Int, trackingId)
       .input('placa', sql.VarChar(20), pista)
+      .input('camara', sql.Int, camaraId)
+      .input('ventana', sql.Int, VENTANA_MISMO_PASO_S * 1000)
       .query(`
         SELECT TOP 1 id, fecha_hora_ingreso FROM DeteccionVehiculo
-        WHERE ((tracking_id = @tid AND @tid > 0)
+        WHERE ((LEN(@placa) < 4 AND tracking_id = @tid AND @tid > 0)
                OR (LEN(@placa) >= 4 AND REPLACE(REPLACE(COALESCE(placa_reconocida, ''), '-', ''), ' ', '') = @placa))
+          AND (@camara IS NULL OR camara_id IS NULL OR camara_id = @camara)
           AND estado_procesamiento IN ('pendiente_ocr', 'procesado')
-          AND DATEDIFF(SECOND, fecha_hora_ingreso, GETDATE()) <= ${VENTANA_MISMO_PASO_S}
+          AND fecha_hora_ingreso > DATEADD(MILLISECOND, -@ventana, GETDATE())
         ORDER BY fecha_hora_ingreso DESC`);
     return r.recordset[0] ?? null;
   },
@@ -107,6 +115,8 @@ export const repositorioDeteccionesSql: RepositorioDetecciones = {
 
   guardarMetadatos: (id, metadatos) => guardarMetadatosCaptura(db(), id, metadatos as never),
 
+  guardarVehiculo: (id, vehiculo) => guardarAtributosVehiculo(db(), id, vehiculo as never),
+
   registrarLecturaAutomatica: (id, l) => registrarLecturaAutomatica(db(), id, l as LecturaAutomatica),
 
   async marcarNoLegible(id, rutaPlaca) {
@@ -122,15 +132,19 @@ export const repositorioDeteccionesSql: RepositorioDetecciones = {
         WHERE id = @id`);
   },
 
+  /** Otro paso ya procesado con la misma placa, en la misma cámara y dentro de la ventana. */
   async pasoProcesadoConPlaca(idExcluido, placa) {
     const r = await db().request()
       .input('id', sql.Int, idExcluido)
       .input('placa', sql.VarChar(20), placa)
+      .input('ventana', sql.Int, VENTANA_MISMO_PASO_S * 1000)
       .query(`
+        DECLARE @camara INT = (SELECT camara_id FROM DeteccionVehiculo WHERE id = @id);
         SELECT TOP 1 id FROM DeteccionVehiculo
         WHERE id <> @id AND estado_procesamiento = 'procesado'
           AND REPLACE(REPLACE(COALESCE(placa_reconocida, ''), '-', ''), ' ', '') = @placa
-          AND DATEDIFF(SECOND, fecha_hora_ingreso, GETDATE()) <= ${VENTANA_MISMO_PASO_S}
+          AND (@camara IS NULL OR camara_id IS NULL OR camara_id = @camara)
+          AND fecha_hora_ingreso > DATEADD(MILLISECOND, -@ventana, GETDATE())
         ORDER BY fecha_hora_ingreso DESC`);
     return r.recordset[0]?.id ?? null;
   },

@@ -22,7 +22,7 @@ CPU) para:
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
-from typing import Optional
+from typing import Optional, Sequence
 
 import cv2
 import numpy as np
@@ -406,6 +406,14 @@ def punto_en_roi(x: float, y: float, roi_px: Optional[np.ndarray]) -> bool:
     return cv2.pointPolygonTest(roi_px, (float(x), float(y)), False) >= 0
 
 
+def punto_permitido(x: float, y: float, roi_px: Optional[np.ndarray], exclusiones_px: Sequence[np.ndarray] = ()) -> bool:
+    """True si el punto está dentro de la región de interés (o no hay región) y fuera de todas las
+    zonas de exclusión (el borde de una zona cuenta como dentro de ella)."""
+    if not punto_en_roi(x, y, roi_px):
+        return False
+    return not any(len(z) >= 3 and cv2.pointPolygonTest(z, (float(x), float(y)), False) >= 0 for z in exclusiones_px)
+
+
 @dataclass
 class ValidezLectura:
     valido: bool
@@ -415,6 +423,8 @@ class ValidezLectura:
     lecturas: int
     verificador_coincide: bool
     motivos: list[str]
+    #: Caracteres de la placa que ningún lector leyó tal cual: [posición, carácter]
+    caracteres_inferidos: list = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -422,7 +432,7 @@ class ValidezLectura:
 
 def evaluar_lectura(*, formato_valido: bool, bbox: list[int], ancho_img: int, alto_img: int,
                     analisis: AnalisisCaracteres, lecturas_concordantes: int, verificador_coincide: bool,
-                    min_lecturas: int = 2) -> ValidezLectura:
+                    min_lecturas: int = 2, caracteres_inferidos: Sequence[tuple[int, str]] = ()) -> ValidezLectura:
     """
     Una lectura es VÁLIDA (y el sistema puede decidir sin intervención) cuando se cumplen
     todas las evidencias independientes:
@@ -431,6 +441,8 @@ def evaluar_lectura(*, formato_valido: bool, bbox: list[int], ancho_img: int, al
       3. Fila de caracteres plausible en el recorte (análisis de caracteres).
       4. Confirmación: la misma placa leída en ≥ `min_lecturas` cuadros del track, o
          coincidencia exacta con el segundo OCR (PP-OCRv6).
+      5. Lectura directa: cada carácter lo leyó tal cual algún lector. Uno que solo resulta de una
+         sustitución por el formato (S→5, D→P…) es una hipótesis (`caracteres_inferidos`).
     """
     dentro = not toca_borde(bbox, ancho_img, alto_img)
     motivos = []
@@ -447,7 +459,11 @@ def evaluar_lectura(*, formato_valido: bool, bbox: list[int], ancho_img: int, al
     confirmada = lecturas_concordantes >= min_lecturas or verificador_coincide
     if not confirmada:
         motivos.append('una sola lectura sin confirmación del segundo OCR')
+    if caracteres_inferidos:
+        detalle = ', '.join(f'{c} (posición {i + 1})' for i, c in caracteres_inferidos)
+        motivos.append(f'caracteres inferidos por el formato, sin lectura directa: {detalle}')
     return ValidezLectura(
         valido=not motivos, formato=formato_valido, dentro_cuadro=dentro, caracteres=analisis.caracteres,
         lecturas=lecturas_concordantes, verificador_coincide=verificador_coincide, motivos=motivos,
+        caracteres_inferidos=[[i, c] for i, c in caracteres_inferidos],
     )

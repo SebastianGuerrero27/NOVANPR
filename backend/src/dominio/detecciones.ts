@@ -89,6 +89,28 @@ export interface PasoGuardado {
   autorizado_vence?: Date | string | null;
 }
 
+/** Longitud de la columna DeteccionVehiculo.evidencia_lectura (NVARCHAR) */
+export const MAX_EVIDENCIA = 1500;
+/** Campos de la evidencia que se omiten, del menos al más importante, si no cabe en la columna */
+const EVIDENCIA_PRESCINDIBLE = ['etapas_ms', 'lecturas_rapidas_crudas', 'cuadrilatero', 'motivos'];
+
+/**
+ * Evidencia del motor como JSON que cabe en la columna. Antes se cortaba el texto a 1500
+ * caracteres: si lo excedía quedaba un JSON inválido y el detalle del paso perdía sus evidencias.
+ * Ahora se omiten campos prescindibles; si aun así no cabe (o no es un objeto), no se guarda.
+ */
+export function serializarEvidencia(evidencia: unknown): string | null {
+  if (!evidencia || typeof evidencia !== 'object' || Array.isArray(evidencia)) return null;
+  const copia: Record<string, unknown> = { ...(evidencia as Record<string, unknown>) };
+  let json = JSON.stringify(copia);
+  for (const campo of EVIDENCIA_PRESCINDIBLE) {
+    if (json.length <= MAX_EVIDENCIA) break;
+    delete copia[campo];
+    json = JSON.stringify(copia);
+  }
+  return json.length <= MAX_EVIDENCIA ? json : null;
+}
+
 /** Evidencias guardadas del veredicto del motor; null si faltan o el JSON está dañado. */
 export function evidenciaDe(p: { evidencia_lectura?: string | null }): EvidenciaLectura | null {
   if (!p.evidencia_lectura) return null;

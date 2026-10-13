@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import threading
+import time
 import types
 
 import numpy as np
@@ -53,13 +54,22 @@ class ClienteHttp:
 
     def __init__(self):
         self.envios: list[tuple[str, dict]] = []
+        #: Respuestas del ingreso que se entregan antes de la normal (p. ej. 503, una excepción o un duplicado)
+        self.ingresos: list = []
 
     def post(self, url, json=None, timeout=None):
         self.envios.append((url.rsplit("/api/", 1)[-1], json))
         if url.endswith("/detecciones/ingreso"):
+            if self.ingresos:
+                r = self.ingresos.pop(0)
+                if isinstance(r, Exception):
+                    raise r
+                return r
             return Respuesta(201, {"ingreso_id": 77})
         if url.endswith("/detecciones/completar-ocr"):
             return Respuesta(200, {"deteccion": {"estado_validacion": "autorizado"}})
+        if url.endswith("/detecciones/reevaluar"):
+            return Respuesta(200, {"reevaluado": True, "deteccion": {"estado_validacion": "autorizado"}})
         return Respuesta(201, {"success": True})
 
     def close(self):
@@ -73,6 +83,7 @@ class Pipeline:
     def __init__(self, conteo=None):
         self.fps = 12.34
         self.roi = None
+        self.exclusiones = []
         self.detector = types.SimpleNamespace(model_path="/modelos/yolo26n_ecuador.pt", arquitectura="yolo26")
         self._conteo = conteo or {}
         self.votos: list[tuple] = []
@@ -112,13 +123,19 @@ class Pipeline:
         self.roi = roi
         return roi
 
+    def set_exclusiones(self, zonas):
+        self.exclusiones = list(zonas or [])
+        return self.exclusiones
+
     def clear_all_tracks(self):
         self.limpiado = True
 
 
 class Agente:
-    def __init__(self, placa="PBA1234", estado="procesado", confianza=0.93):
+    def __init__(self, placa="PBA1234", estado="procesado", confianza=0.93, texto_crudo=None):
         self.resultado = types.SimpleNamespace(placa=placa, estado=estado, confianza=confianza)
+        if texto_crudo is not None:   # el agente real informa el texto leído antes de interpretarlo
+            self.resultado.texto_crudo = texto_crudo
 
     def process_image(self, frame, initial_bbox=None, fast_mode=True):
         return self.resultado
@@ -150,6 +167,7 @@ class Servicio:
         monkeypatch.setattr(motor, "_http", self.http)
         monkeypatch.setattr(motor, "_ejecutor_disco", self.disco)
         monkeypatch.setattr(motor, "_ejecutor_ocr", self.ocr)
+        monkeypatch.setattr(motor, "_ejecutor_reevaluacion", self.disco)
         monkeypatch.setattr(motor, "_dir_media", str(tmp_path))
         monkeypatch.setattr(motor._dep, "verificador", lambda: None)
         monkeypatch.setattr(motor._dep, "reconocedor_vehiculo", lambda: None)
@@ -160,6 +178,18 @@ class Servicio:
         for registro in ("_capturas_por_track", "_placas_registradas", "_ultimo_intento_ocr", "_intentos_captura", "_vehiculos"):
             monkeypatch.setattr(motor, registro, {})
         monkeypatch.setattr(motor, "_ocr_en_curso", set())
+        for registro in ("_pistas_resueltas", "_placa_de_pista", "_crudos_rapidos"):
+            monkeypatch.setattr(motor, registro, {})
+        monkeypatch.setattr(motor, "_pistas_activas", set())
+        # Sin esperas reales entre reintentos de envío
+        from app.aplicacion import motor as modulo_motor
+        monkeypatch.setattr(modulo_motor, "_ESPERAS_REINTENTO_S", (0.0, 0.0, 0.0))
+        # El motor es uno solo para todas las pruebas: la latencia y el cuadro compartido empiezan vacíos
+        from app.dominio.latencia import Cronometros, VentanaDescartes, VentanaLatencia
+        for nombre, valor in {"_tiempos": Cronometros(), "_lat_edad": VentanaLatencia(300), "_lat_vivo": VentanaLatencia(200), "_lat_registro": VentanaLatencia(100),
+                              "_descartes": VentanaDescartes(300), "_horas_cuadro": {}, "_cuadro_compartido": None, "_indice_cuadro": 0,
+                              "_ultimo_tomado": -1, "_ultimo_seq_publicado": None}.items():
+            monkeypatch.setattr(motor, nombre, valor)
         self.client = TestClient(main.app)
 
     def fijar(self, **estado):
@@ -245,6 +275,8 @@ def test_estado_del_servicio_sin_iniciar_y_sin_credenciales(servicio):
         "status": "online", "running": False, "camera_source": "rtsp://anpr:******@mediamtx:8554/cam_1",
         "capture_fps": 0.0, "tracker_fps": 0.0, "inferencias_omitidas_pct": None, "enlace_video": None, "detector": None,
         "detector_arquitectura": None, "ocr_engine": None, "ocr_verifier": None,
+        "latencia": {"edad_cuadro": None, "lectura_en_vivo": None, "registro": None, "cuadros_descartados_pct": None},
+        "etapas_ms": {},
         "architecture": "Two-Phase: Fast Capture + Async OCR",
     }
     assert servicio.client.get("/").json() == {
@@ -273,6 +305,7 @@ def test_estado_con_modelos_cargados(servicio):
 def test_camara_activa_conectada_por_fuente_o_por_fps(servicio):
     assert servicio.client.get("/api/camera/active").json() == {
         "camera_id": 1, "camera_source": "rtsp://anpr:******@mediamtx:8554/cam_1", "is_connected": False, "roi": None,
+        "exclusiones": [],
     }
     servicio.fijar(fps_captura=12.0)
     assert servicio.client.get("/api/camera/active").json()["is_connected"] is True
@@ -302,6 +335,7 @@ def test_pistas_por_websocket_con_zona_de_movimiento(servicio, monkeypatch):
             "placa": None, "parcial": "PB", "confianza_placa": 0.0, "estado": None, "verificada": False,
         }],
         "roi": None,
+        "exclusiones": [],
         "movimiento": {"caja": [0.1, 0.1, 0.5, 0.5], "porcentaje": 42},
         "aspecto": 1.3333,
     }
@@ -313,6 +347,77 @@ def test_metricas_prometheus(servicio):
     assert "anpr_" in r.text
 
 
+# ─── Latencia de tiempo real (desde la captura de cada cuadro) ───────────────
+
+def test_ventanas_de_latencia_y_de_descartes():
+    from app.dominio.latencia import VentanaDescartes, VentanaLatencia
+    v = VentanaLatencia(5)
+    assert v.resumen() is None
+    for s in (0.1, 0.2, 0.3, 0.4, 0.5, 1.0):      # conserva las últimas 5
+        v.registrar(s)
+    assert v.resumen() == {"p50_ms": 400, "p95_ms": 1000, "max_ms": 1000, "muestras": 5}
+    d = VentanaDescartes(10)
+    assert d.porcentaje() is None
+    for perdidos in (0, 3, 1):
+        d.registrar(perdidos)
+    assert d.porcentaje() == round(100 * 4 / 7, 1)
+
+
+def test_el_detector_toma_siempre_el_cuadro_mas_reciente_y_cuenta_los_descartados(servicio):
+    """Un solo lugar entre la captura y la detección: si la inferencia no alcanza a la cámara, se
+    analiza el último cuadro y los intermedios se descartan (y se cuentan), sin acumular retraso."""
+    motor = servicio.motor
+    cuadro = np.zeros((48, 64, 3), np.uint8)
+    hace_250_ms = time.time() - 0.25
+    for seq in range(1, 6):
+        assert motor._publicar_cuadro(cuadro, seq, hace_250_ms)
+    assert not motor._publicar_cuadro(cuadro, 5, time.time())   # el mismo cuadro repetido no se vuelve a analizar
+    _, idx, hora = motor._tomar_cuadro()
+    assert idx == 5 and hora == pytest.approx(hace_250_ms)
+    assert motor._tomar_cuadro() is None                        # nada nuevo
+    for seq in range(6, 9):
+        motor._publicar_cuadro(cuadro, seq, time.time())
+    assert motor._tomar_cuadro()[1] == 8                         # el 6 y el 7 se descartan
+    lat = motor.latencia()
+    assert lat["cuadros_descartados_pct"] == 50.0                # 2 descartados en 2 análisis
+    assert lat["edad_cuadro"]["muestras"] == 2 and lat["edad_cuadro"]["max_ms"] >= 250
+
+
+def test_latencia_de_la_lectura_en_vivo_y_del_registro(servicio):
+    servicio.fijar(pipeline=Pipeline(conteo={"PBA1234": 2}), trabajador_ocr=types.SimpleNamespace(_agent=Agente()), activo=True)
+    # Lectura en vivo: el cuadro leído se capturó hace 0,4 s
+    servicio.motor.encolar_ocr(3, np.full((480, 640, 3), 128, np.uint8), [10, 10, 80, 30], time.time() - 0.4)
+    vivo = servicio.motor.latencia()["lectura_en_vivo"]
+    assert vivo["muestras"] == 1 and vivo["p50_ms"] >= 400
+    # Registro: el mejor cuadro del paso se capturó hace 0,6 s
+    antes = _valor("anpr_capture_to_reading_seconds_count", etapa="registro")
+    cand = candidato()
+    cand.frame_idx = 41
+    servicio.motor._horas_cuadro[41] = time.time() - 0.6
+    servicio.disparar_captura(cand)
+    registro = servicio.motor.latencia()["registro"]
+    assert registro["muestras"] == 1 and registro["p50_ms"] >= 600
+    assert _valor("anpr_capture_to_reading_seconds_count", etapa="registro") - antes == 1
+    assert servicio.client.get("/status").json()["latencia"]["registro"]["muestras"] == 1
+    # Dónde se fue el tiempo: OCR rápido, etapas del registro y envíos al backend
+    etapas = servicio.client.get("/status").json()["etapas_ms"]
+    assert {"ocr_rapido", "registro_http_ingreso", "registro_http_completar"} <= set(etapas)
+    assert etapas["ocr_rapido"]["muestras"] == 1
+
+
+def test_el_pipeline_mide_cada_etapa_del_cuadro():
+    from app.aplicacion.detector import DetectionPipeline
+    from app.dominio.models import Detection
+    from app.infraestructura.detectors import MockDetector
+
+    p = DetectionPipeline(detector=MockDetector([Detection(bbox=[100.0, 150.0, 220.0, 190.0], confidence=0.88, class_name="plate")]))
+    for _ in range(3):
+        p.detect_and_track(np.full((480, 640, 3), 128, np.uint8))
+    etapas = p.tiempos.resumen()
+    assert set(etapas) == {"movimiento", "detector", "seguimiento", "pistas"}
+    assert all(e["muestras"] == 3 for e in etapas.values())
+
+
 # ─── Región de interés y cambio de cámara ────────────────────────────────────
 
 def test_region_de_interes(servicio):
@@ -320,10 +425,17 @@ def test_region_de_interes(servicio):
     pipeline = Pipeline()
     servicio.fijar(pipeline=pipeline)
     roi = [[0, 0], [1, 0], [1, 1]]
+    exclusiones = [[[0.0, 0.0], [0.2, 0.0], [0.2, 0.2]]]
     assert servicio.client.post("/api/camera/roi", headers=SERVICIO, json={"roi": roi, "camara_id": 9}).json() == \
-        {"success": True, "aplicada": False, "roi": None}
+        {"success": True, "aplicada": False, "roi": None, "exclusiones": []}
     assert servicio.client.post("/api/camera/roi", headers=SERVICIO, json={"roi": roi, "camara_id": 1}).json() == \
-        {"success": True, "aplicada": True, "roi": roi}
+        {"success": True, "aplicada": True, "roi": roi, "exclusiones": []}
+    # Con zonas de exclusión; sin el campo, las vigentes no cambian
+    assert servicio.client.post("/api/camera/roi", headers=SERVICIO, json={"roi": roi, "exclusiones": exclusiones, "camara_id": 1}).json() == \
+        {"success": True, "aplicada": True, "roi": roi, "exclusiones": exclusiones}
+    assert servicio.client.post("/api/camera/roi", headers=SERVICIO, json={"roi": None, "camara_id": 1}).json() == \
+        {"success": True, "aplicada": True, "roi": None, "exclusiones": exclusiones}
+    assert servicio.client.get("/api/camera/active").json()["exclusiones"] == exclusiones
     assert servicio.client.post("/api/camera/roi", headers=SERVICIO, content=b"{no json").status_code == 400
 
 
@@ -347,12 +459,13 @@ def test_cambio_de_camara_reinicia_el_seguimiento_y_oculta_credenciales(servicio
     servicio.fijar(pipeline=pipeline, selector=selector)
     r = servicio.client.post("/api/camera/switch", headers=SERVICIO, json={
         "camera_id": 2, "rtsp_url": "rtsp://anpr:otra@mediamtx:8554/cam_2", "nombre": "Garita sur", "roi": [[0, 0], [1, 0], [1, 1]],
+        "exclusiones": [[[0.0, 0.0], [0.2, 0.0], [0.2, 0.2]]],
     }).json()
     assert r == {"success": True, "message": "Cámara cambiada exitosamente a ID 2 (Garita sur)",
                  "camera_id": 2, "camera_source": "rtsp://anpr:******@mediamtx:8554/cam_2"}
     assert servicio.camara == (2, "rtsp://anpr:otra@mediamtx:8554/cam_2")
     assert [f.url for f in creadas] == ["rtsp://anpr:otra@mediamtx:8554/cam_2"]
-    assert pipeline.limpiado and pipeline.roi == [[0, 0], [1, 0], [1, 1]]
+    assert pipeline.limpiado and pipeline.roi == [[0, 0], [1, 0], [1, 1]] and pipeline.exclusiones == [[[0.0, 0.0], [0.2, 0.0], [0.2, 0.2]]]
     assert selector._active_candidates == selector._captured_history == selector._prev_area == selector._track_first_seen == {}
 
     # La misma cámara, conectada y sin `force`: no se reconecta
@@ -360,6 +473,10 @@ def test_cambio_de_camara_reinicia_el_seguimiento_y_oculta_credenciales(servicio
     creadas[0]._url = "rtsp://anpr:otra@mediamtx:8554/cam_2"
     r = servicio.client.post("/api/camera/switch", headers=SERVICIO, json={"camera_id": 2, "rtsp_url": "rtsp://anpr:otra@mediamtx:8554/cam_2"}).json()
     assert r["message"] == "Cámara ID 2 ya se encuentra activa" and len(creadas) == 1
+    # Sin zonas en la solicitud no cambian; con otra cámara llegan las suyas (las anteriores no se conservan)
+    assert pipeline.exclusiones == [[[0.0, 0.0], [0.2, 0.0], [0.2, 0.2]]]
+    servicio.client.post("/api/camera/switch", headers=SERVICIO, json={"camera_id": 3, "rtsp_url": "rtsp://anpr:x@mediamtx:8554/cam_3", "roi": None})
+    assert pipeline.roi is None and pipeline.exclusiones == []
 
 
 # ─── Compuerta de captura (verificación en dos fases y registro) ─────────────
@@ -456,11 +573,14 @@ def test_el_vehiculo_se_analiza_por_adelantado_y_el_registro_reutiliza_el_result
 class VerificadorFijo:
     description = "verificador de prueba"
 
-    def __init__(self, placa):
-        self.placa = placa
+    def __init__(self, placa, crudo=None):
+        self.placa, self.crudo = placa, crudo
 
     def read(self, recorte):
-        return types.SimpleNamespace(plate=self.placa, confidence=0.97, within_budget=True, elapsed_ms=50.0)
+        lectura = types.SimpleNamespace(plate=self.placa, confidence=0.97, within_budget=True, elapsed_ms=50.0)
+        if self.crudo is not None:
+            lectura.raw = self.crudo
+        return lectura
 
 
 def _con_fila_de_caracteres(monkeypatch):
@@ -510,6 +630,225 @@ def test_el_verificador_confirma_cuando_coincide_con_el_ocr(servicio, monkeypatc
     assert ocr["lectura_valida"] is True and ocr["evidencia_lectura"]["verificador_coincide"] is True
 
 
+# ─── Lectura directa: una sustitución por el formato no confirma la placa ─────
+
+def test_una_sustitucion_compartida_no_confirma_la_lectura(servicio, monkeypatch):
+    """El OCR y el verificador leyeron "PSYS89" y el formato puso "5" en lugar de la "S": coinciden,
+    pero gracias a la misma sustitución, y nadie leyó el "5". Se registra para el personal, con la
+    salida cruda de cada lector, sin validarse."""
+    _con_fila_de_caracteres(monkeypatch)
+    monkeypatch.setattr(servicio.motor._dep, "verificador", lambda: VerificadorFijo("PSY589", crudo="PSYS89"))
+    servicio.fijar(pipeline=Pipeline(conteo={"PSY589": 2}),
+                   trabajador_ocr=types.SimpleNamespace(_agent=Agente(placa="PSY-589", texto_crudo="PSYS89")))
+    servicio.disparar_captura(candidato())
+    ocr = servicio.http.envios[1][1]
+    evidencia = ocr["evidencia_lectura"]
+    assert ocr["placa_reconocida"].replace("-", "") == "PSY589" and ocr["lectura_valida"] is False
+    assert evidencia["verificador_coincide"] is True and evidencia["caracteres_inferidos"] == [[3, "5"]]
+    assert (evidencia["lectura_ocr_cruda"], evidencia["lectura_verificador_cruda"]) == ("PSYS89", "PSYS89")
+    assert any("sin lectura directa" in m for m in evidencia["motivos"])
+
+
+def test_la_sustitucion_respaldada_por_la_lectura_de_otro_lector_si_confirma(servicio, monkeypatch):
+    _con_fila_de_caracteres(monkeypatch)
+    monkeypatch.setattr(servicio.motor._dep, "verificador", lambda: VerificadorFijo("PSY589", crudo="PSY589"))
+    servicio.fijar(pipeline=Pipeline(conteo={"PSY589": 1}),
+                   trabajador_ocr=types.SimpleNamespace(_agent=Agente(placa="PSY-589", texto_crudo="PSYS89")))
+    servicio.disparar_captura(candidato())
+    ocr = servicio.http.envios[1][1]
+    assert ocr["lectura_valida"] is True and ocr["evidencia_lectura"]["caracteres_inferidos"] == []
+
+
+def test_las_lecturas_rapidas_de_otros_cuadros_respaldan_la_placa(servicio, monkeypatch):
+    """El OCR rápido guarda el texto crudo de cada cuadro del track: si en otro cuadro leyó el "5"
+    tal cual, la sustitución de la foto final queda respaldada."""
+    _con_fila_de_caracteres(monkeypatch)
+    pipeline = Pipeline(conteo={"PSY589": 2})
+    servicio.fijar(pipeline=pipeline, trabajador_ocr=types.SimpleNamespace(_agent=Agente(placa="PSY-589", texto_crudo="PSY589")))
+    servicio.encolar_ocr(5, np.zeros((100, 200, 3), np.uint8), [10, 10, 80, 30])
+    assert servicio.motor._crudos_rapidos[5][0] == ["PSY589"]
+    servicio.fijar(trabajador_ocr=types.SimpleNamespace(_agent=Agente(placa="PSY-589", texto_crudo="PSYS89")))
+    servicio.disparar_captura(candidato())
+    ocr = servicio.http.envios[1][1]
+    assert ocr["lectura_valida"] is True
+    assert ocr["evidencia_lectura"]["lecturas_rapidas_crudas"] == ["PSY589"]
+    assert 5 not in servicio.motor._crudos_rapidos     # la pista resuelta ya no los necesita
+
+
+def test_el_descarte_audita_el_texto_leido_y_no_una_interpretacion(servicio):
+    from app.aplicacion.motor import MAX_INTENTOS_CAPTURA
+
+    servicio.fijar(pipeline=Pipeline(), selector=SelectorDePrueba(), trabajador_ocr=types.SimpleNamespace(
+        _agent=Agente(placa="TR-4N51", estado="no_legible", confianza=0.2, texto_crudo="TRANS1")))
+    for _ in range(MAX_INTENTOS_CAPTURA):
+        servicio.disparar_captura(candidato())
+    assert servicio.http.envios[-1][1]["texto_candidato"] == "TRANS1"
+
+
+def test_el_registro_no_espera_al_verificador_mas_alla_de_su_presupuesto(servicio, monkeypatch):
+    """Antes el motor esperaba al verificador hasta el final (4 s en la prueba con la cámara simulada)
+    para luego descartar su lectura por tardía. Ahora registra al vencer el presupuesto."""
+    import dataclasses
+
+    liberar = threading.Event()
+
+    class VerificadorLento(VerificadorFijo):
+        def read(self, recorte):
+            liberar.wait(5)
+            return super().read(recorte)
+
+    monkeypatch.setattr(servicio.motor, "_config", dataclasses.replace(servicio.motor._config, espera_verificador_s=0.05))
+    monkeypatch.setattr(servicio.motor._dep, "verificador", lambda: VerificadorLento("PBA1234"))
+    servicio.fijar(pipeline=Pipeline(conteo={"PBA1234": 2}), trabajador_ocr=types.SimpleNamespace(_agent=Agente()))
+    antes = _valor("anpr_ocr_errors_total", error_type="verificador_fuera_de_tiempo")
+    t0 = time.monotonic()
+    servicio.disparar_captura(candidato())
+    demora = time.monotonic() - t0
+    liberar.set()
+    assert demora < 2.0
+    ocr = servicio.http.envios[1][1]
+    assert ocr["lectura_verificador"] is None and ocr["evidencia_lectura"]["lectura_verificador"] is None
+    assert _valor("anpr_ocr_errors_total", error_type="verificador_fuera_de_tiempo") - antes == 1
+
+
+def test_el_tope_cuenta_desde_que_el_verificador_empieza_a_leer(servicio, monkeypatch):
+    """Si la etapa espera en cola (otro registro ocupa los hilos), esa espera no consume el
+    presupuesto: una lectura que el verificador hace a tiempo se usa, como antes del tope."""
+    import dataclasses
+
+    ocupado = threading.Event()
+
+    def bloquear():
+        ocupado.wait(5)
+        return None, 0.0
+
+    monkeypatch.setattr(servicio.motor, "_config", dataclasses.replace(servicio.motor._config, espera_verificador_s=0.2))
+    monkeypatch.setattr(servicio.motor._dep, "verificador", lambda: VerificadorFijo("PBA1234"))
+    servicio.fijar(pipeline=Pipeline(conteo={"PBA1234": 1}), trabajador_ocr=types.SimpleNamespace(_agent=Agente()))
+    # Los tres hilos de etapas quedan ocupados 0,5 s: el verificador espera en cola más que su tope
+    for _ in range(3):
+        servicio.motor._ejecutor_etapas.submit(bloquear)
+    threading.Timer(0.5, ocupado.set).start()
+    servicio.disparar_captura(candidato())
+    ocr = servicio.http.envios[1][1]
+    assert ocr["lectura_verificador"] == "PBA-1234" and ocr["evidencia_lectura"]["verificador_coincide"] is True
+
+
+# ─── Registro en menos de 1 s: lo que tarda llega como reevaluación ──────────
+
+class ReconocedorLento:
+    """Atributos del vehículo (CLIP) que tardan más que el registro."""
+
+    def __init__(self, liberar):
+        self.liberar = liberar
+
+    def analyze(self, frame, caja):
+        self.liberar.wait(5)
+        return types.SimpleNamespace(to_dict=lambda: {"tipo": "auto", "color": "blanco"})
+
+
+class VerificadorTardio(VerificadorFijo):
+    def __init__(self, placa, liberar, crudo=None):
+        super().__init__(placa, crudo=crudo)
+        self.liberar = liberar
+
+    def read(self, recorte):
+        self.liberar.wait(5)
+        return super().read(recorte)
+
+
+def _configurar(servicio, monkeypatch, **cambios):
+    import dataclasses
+
+    monkeypatch.setattr(servicio.motor, "_config", dataclasses.replace(servicio.motor._config, **cambios))
+
+
+def _liberar_al_registrar(servicio, monkeypatch, evento, demora=0.1):
+    """El trabajo lento termina `demora` segundos después de que el paso queda registrado."""
+    original = servicio.http.post
+    registros = []
+
+    def post(url, json=None, timeout=None):
+        if url.endswith("/detecciones/completar-ocr"):
+            registros.append(time.monotonic())
+            threading.Timer(demora, evento.set).start()
+        return original(url, json=json, timeout=timeout)
+
+    monkeypatch.setattr(servicio.http, "post", post)
+    return registros
+
+
+def test_el_paso_se_registra_sin_esperar_al_vehiculo_y_sus_atributos_llegan_despues(servicio, monkeypatch):
+    _con_fila_de_caracteres(monkeypatch)
+    liberar = threading.Event()
+    monkeypatch.setattr(servicio.motor._dep, "reconocedor_vehiculo", lambda: ReconocedorLento(liberar))
+    servicio.fijar(pipeline=Pipeline(conteo={"PBA1234": 2}), trabajador_ocr=types.SimpleNamespace(_agent=Agente()))
+    registros = _liberar_al_registrar(servicio, monkeypatch, liberar, demora=0.2)
+    t0 = time.monotonic()
+    servicio.disparar_captura(candidato())
+    assert registros and registros[0] - t0 < 1.0
+    assert servicio.http.rutas() == ["detecciones/ingreso", "detecciones/completar-ocr", "detecciones/reevaluar"]
+    assert servicio.http.envios[0][1]["metadatos"]["vehiculo"] is None
+    assert servicio.http.envios[2][1] == {"ingreso_id": 77, "vehiculo": {"tipo": "auto", "color": "blanco"}}
+
+
+def test_el_segundo_ocr_que_llega_tarde_confirma_la_lectura_en_la_reevaluacion(servicio, monkeypatch):
+    _con_fila_de_caracteres(monkeypatch)
+    _configurar(servicio, monkeypatch, presupuesto_registro_s=0.3)   # 0,3 s menos 0,25 s de reserva
+    liberar = threading.Event()
+    monkeypatch.setattr(servicio.motor._dep, "verificador", lambda: VerificadorTardio("PBA1234", liberar, crudo="PBA1234"))
+    servicio.fijar(pipeline=Pipeline(conteo={}), trabajador_ocr=types.SimpleNamespace(_agent=Agente(texto_crudo="PBA1234")))
+    _liberar_al_registrar(servicio, monkeypatch, liberar)
+    servicio.disparar_captura(candidato())
+    assert servicio.http.rutas() == ["detecciones/ingreso", "detecciones/completar-ocr", "detecciones/reevaluar"]
+    registro, reevaluacion = servicio.http.envios[1][1], servicio.http.envios[2][1]
+    # Sin el segundo OCR, una sola lectura no confirma la placa; al llegar, la confirma
+    assert registro["lectura_valida"] is False and registro["evidencia_lectura"]["segundo_ocr_pendiente"] is True
+    assert reevaluacion["lectura_valida"] is True and reevaluacion["lectura_verificador"] == "PBA-1234"
+    assert reevaluacion["evidencia_lectura"]["verificador_coincide"] is True
+    assert "segundo_ocr_pendiente" not in reevaluacion["evidencia_lectura"]
+
+
+def test_si_el_segundo_ocr_tardio_lee_otra_placa_la_reevaluacion_la_registra_como_antes(servicio, monkeypatch):
+    """Igual que si hubiera llegado a tiempo: prevalece la placa del verificador, sin validarla
+    porque ninguna lectura OCR la confirma (antes la rápida PBV1234 se registraba y se validaba)."""
+    _con_fila_de_caracteres(monkeypatch)
+    _configurar(servicio, monkeypatch, presupuesto_registro_s=0.3)
+    liberar = threading.Event()
+    monkeypatch.setattr(servicio.motor._dep, "verificador", lambda: VerificadorTardio("PBA1234", liberar))
+    servicio.fijar(pipeline=Pipeline(conteo={"PBV1234": 3}), trabajador_ocr=types.SimpleNamespace(_agent=Agente(placa="PBV1234")))
+    _liberar_al_registrar(servicio, monkeypatch, liberar)
+    servicio.disparar_captura(candidato())
+    registro, reevaluacion = servicio.http.envios[1][1], servicio.http.envios[2][1]
+    assert registro["placa_reconocida"].replace("-", "") == "PBV1234" and registro["lectura_valida"] is True
+    assert reevaluacion["placa_reconocida"] == "PBA-1234" and reevaluacion["lectura_valida"] is False
+    assert "PBA1234" in servicio.placas_registradas
+
+
+def test_una_foto_dudosa_espera_al_verificador_como_antes(servicio, monkeypatch):
+    """Sin fila de caracteres (E3) el verificador es quien confirma o descarta: no hay registro rápido."""
+    _configurar(servicio, monkeypatch, presupuesto_registro_s=0.3)
+    liberar = threading.Event()
+    monkeypatch.setattr(servicio.motor._dep, "verificador", lambda: VerificadorTardio("PBA1234", liberar))
+    servicio.fijar(pipeline=Pipeline(conteo={"PBA1234": 2}), trabajador_ocr=types.SimpleNamespace(_agent=Agente()))
+    threading.Timer(0.3, liberar.set).start()
+    servicio.disparar_captura(candidato())
+    assert servicio.http.rutas() == ["detecciones/ingreso", "detecciones/completar-ocr"]
+    assert servicio.http.envios[1][1]["lectura_verificador"] == "PBA-1234"
+
+
+def test_sin_presupuesto_el_registro_espera_al_vehiculo_como_antes(servicio, monkeypatch):
+    _con_fila_de_caracteres(monkeypatch)
+    _configurar(servicio, monkeypatch, presupuesto_registro_s=None)
+    liberar = threading.Event()
+    monkeypatch.setattr(servicio.motor._dep, "reconocedor_vehiculo", lambda: ReconocedorLento(liberar))
+    servicio.fijar(pipeline=Pipeline(conteo={"PBA1234": 2}), trabajador_ocr=types.SimpleNamespace(_agent=Agente()))
+    threading.Timer(0.2, liberar.set).start()
+    servicio.disparar_captura(candidato())
+    assert servicio.http.rutas() == ["detecciones/ingreso", "detecciones/completar-ocr"]
+    assert servicio.http.envios[0][1]["metadatos"]["vehiculo"] == {"tipo": "auto", "color": "blanco"}
+
+
 def test_anti_duplicados_por_track_y_por_placa(servicio):
     servicio.fijar(pipeline=Pipeline(conteo={"PBA1234": 2}), trabajador_ocr=types.SimpleNamespace(_agent=Agente()))
     servicio.disparar_captura(candidato(tid=5))
@@ -535,6 +874,7 @@ def test_foto_ilegible_se_reintenta_y_solo_se_audita_al_agotar_los_intentos(serv
     selector = SelectorDePrueba()
     servicio.fijar(pipeline=Pipeline(), selector=selector,
                    trabajador_ocr=types.SimpleNamespace(_agent=Agente(placa="", estado="no_legible", confianza=0.1)))
+    servicio.motor._pistas_activas = {5}   # el vehículo sigue a la vista
     for _ in range(MAX_INTENTOS_CAPTURA - 1):
         servicio.disparar_captura(candidato())
     assert servicio.http.rutas() == [] and selector.liberados == [5] * (MAX_INTENTOS_CAPTURA - 1)
@@ -550,11 +890,148 @@ def test_region_sin_caracteres_ni_confirmacion_se_reintenta_y_luego_se_descarta(
 
     selector = SelectorDePrueba()
     servicio.fijar(pipeline=Pipeline(conteo={}), selector=selector, trabajador_ocr=types.SimpleNamespace(_agent=Agente()))
+    servicio.motor._pistas_activas = {5}
     for _ in range(MAX_INTENTOS_CAPTURA):
         servicio.disparar_captura(candidato())
     assert servicio.http.rutas() == ["detecciones/descarte"]
     assert servicio.http.envios[0][1]["motivo"] == "region_sin_caracteres"
     assert selector.liberados == [5] * (MAX_INTENTOS_CAPTURA - 1)
+
+
+# ─── Deduplicación y robustez del registro (auditoría del motor) ─────────────
+
+def _vencer_antirebote(servicio, tid):
+    """Simula que pasaron más de 35 s desde el disparo de la pista y desde el registro de la placa."""
+    servicio.motor._capturas_por_track[tid] = 0.0
+    for placa in list(servicio.motor._placas_registradas):
+        servicio.motor._placas_registradas[placa] = 0.0
+
+
+def test_vehiculo_detenido_mas_de_35_s_no_se_registra_dos_veces(servicio):
+    """Un vehículo detenido frente a la garita (control de documentos) sigue a la vista con la misma
+    pista: vencidas las ventanas de 35 s, la pista ya resuelta no vuelve a registrarse."""
+    servicio.fijar(pipeline=Pipeline(conteo={"PBA1234": 2}), trabajador_ocr=types.SimpleNamespace(_agent=Agente()))
+    servicio.disparar_captura(candidato(tid=5))
+    assert servicio.http.rutas() == ["detecciones/ingreso", "detecciones/completar-ocr"]
+    _vencer_antirebote(servicio, 5)
+    servicio.motor._renovar_pasos({5})       # sigue a la vista: la ventana de su placa cuenta desde ahora
+    servicio.disparar_captura(candidato(tid=5))
+    # Si su pista se pierde (oclusión) y nace otra para el mismo vehículo, es el mismo paso
+    servicio.disparar_captura(candidato(tid=8))
+    assert servicio.http.rutas() == ["detecciones/ingreso", "detecciones/completar-ocr"]
+    # Cuando ya no se ve durante más de 35 s, un paso nuevo de esa placa sí se registra
+    servicio.motor._renovar_pasos(set())
+    _vencer_antirebote(servicio, 9)
+    servicio.disparar_captura(candidato(tid=9))
+    assert servicio.http.rutas().count("detecciones/ingreso") == 2
+
+
+def test_pista_descartada_no_se_audita_de_nuevo_cada_35_s(servicio):
+    from app.aplicacion.motor import MAX_INTENTOS_CAPTURA
+
+    servicio.fijar(pipeline=Pipeline(), selector=SelectorDePrueba(),
+                   trabajador_ocr=types.SimpleNamespace(_agent=Agente(placa="", estado="no_legible")))
+    servicio.motor._pistas_activas = {5}
+    for _ in range(MAX_INTENTOS_CAPTURA):
+        servicio.disparar_captura(candidato())
+    assert servicio.http.rutas() == ["detecciones/descarte"]
+    _vencer_antirebote(servicio, 5)
+    servicio.disparar_captura(candidato())     # el rótulo sigue ahí: no se vuelve a leer ni a auditar
+    assert servicio.http.rutas() == ["detecciones/descarte"]
+
+
+def test_si_el_vehiculo_ya_salio_la_foto_ilegible_se_audita_al_instante(servicio):
+    """Sin la pista a la vista nadie volverá a disparar: el paso no se pierde en silencio."""
+    selector = SelectorDePrueba()
+    servicio.fijar(pipeline=Pipeline(), selector=selector,
+                   trabajador_ocr=types.SimpleNamespace(_agent=Agente(placa="", estado="no_legible", confianza=0.1)))
+    servicio.motor._pistas_activas = set()
+    servicio.disparar_captura(candidato())
+    assert servicio.http.rutas() == ["detecciones/descarte"]
+
+
+def test_un_fallo_transitorio_del_backend_se_reintenta(servicio):
+    servicio.fijar(pipeline=Pipeline(conteo={"PBA1234": 2}), trabajador_ocr=types.SimpleNamespace(_agent=Agente()))
+    servicio.http.ingresos = [Respuesta(503, {"error": "reiniciando"}), ConnectionError("sin red")]
+    servicio.disparar_captura(candidato())
+    assert servicio.http.rutas() == ["detecciones/ingreso"] * 3 + ["detecciones/completar-ocr"]
+    assert "PBA1234" in servicio.placas_registradas
+
+
+def test_si_el_backend_no_acepta_el_ingreso_la_placa_no_queda_registrada(servicio):
+    """Con el backend caído no se pierde el paso en silencio ni se bloquea la placa 35 s: la reserva
+    se revierte, el fallo se cuenta y, si el vehículo ya salió, se audita (cuando el backend vuelva)."""
+    pipeline = Pipeline(conteo={"PBA1234": 2})
+    servicio.fijar(pipeline=pipeline, selector=SelectorDePrueba(), trabajador_ocr=types.SimpleNamespace(_agent=Agente()))
+    antes = _valor("anpr_detection_errors_total", error_type="backend")
+    servicio.http.ingresos = [Respuesta(503, {"error": "caído"})] * 3
+    servicio.disparar_captura(candidato())
+    assert "PBA1234" not in servicio.placas_registradas
+    assert ("rtsp", 5, "", "leida") in pipeline.votos        # el HUD deja de mostrarla como confirmada
+    assert servicio.http.rutas() == ["detecciones/ingreso"] * 3 + ["detecciones/descarte"]
+    assert servicio.http.envios[-1][1]["motivo"] == "backend_no_disponible"
+    assert _valor("anpr_detection_errors_total", error_type="backend") - antes == 1
+
+
+def test_el_paso_conserva_la_camara_con_que_se_disparo(servicio):
+    servicio.fijar(pipeline=Pipeline(conteo={"PBA1234": 2}), trabajador_ocr=types.SimpleNamespace(_agent=Agente()))
+    cand = candidato()
+    servicio.motor.camara_id = 2                 # el operador cambió de cámara durante el registro
+    servicio.motor._verificar_y_registrar(cand, 5, cand.frame.copy(), 0.0, camara=1)
+    assert servicio.http.envios[0][1]["camara_id"] == 1
+
+
+def test_el_cambio_de_camara_olvida_la_ventana_por_placa_de_la_anterior(servicio):
+    class FuenteFalsa:
+        def __init__(self, url=None):
+            self.url, self.is_connected, self._grab_running = url, False, False
+
+        def connect(self):
+            return True
+
+        def release(self):
+            pass
+
+    servicio.reemplazar_fuente_rtsp(lambda url: FuenteFalsa(url=url))
+    servicio.fijar(pipeline=Pipeline(), selector=types.SimpleNamespace(_active_candidates={}, _captured_history={}, _prev_area={}, _track_first_seen={}))
+    servicio.motor._placas_registradas["PBA1234"] = time.time()
+    servicio.client.post("/api/camera/switch", headers=SERVICIO, json={"camera_id": 2, "rtsp_url": "rtsp://anpr:x@mediamtx:8554/cam_2"})
+    assert servicio.placas_registradas == {}
+
+
+def test_el_antiduplicado_temprano_exige_consenso_del_ocr_rapido(servicio):
+    """Una sola lectura rápida que coincide con una placa recién registrada (confusión 8→3) no omite
+    al vehículo: lo deciden el OCR profundo y el verificador."""
+    class PipelineConLectura(Pipeline):
+        def get_track_info(self, tid):
+            return {"plate": "PBA1234", "confidence": 0.9}
+
+    class Verificador:
+        description = "verificador de prueba"
+
+        def read(self, recorte):
+            return types.SimpleNamespace(plate="PBA1284", confidence=0.96, within_budget=True, elapsed_ms=5.0)
+
+    # El consenso rápido quedó en PBA1234 con una sola lectura; el OCR profundo y el verificador leen PBA1284
+    servicio._mp.setattr(servicio.motor._dep, "verificador", lambda: Verificador())
+    pipeline = PipelineConLectura(conteo={"PBA1234": 1, "PBA1284": 2})
+    servicio.fijar(pipeline=pipeline, trabajador_ocr=types.SimpleNamespace(_agent=Agente(placa="PBA1284")))
+    servicio.motor._placas_registradas["PBA1234"] = time.time()
+    servicio.disparar_captura(candidato(tid=6))
+    assert servicio.http.envios[0][1]["placa"].replace("-", "") == "PBA1284"
+    # Con dos lecturas concordantes sí se omite antes de leer
+    servicio.http.envios.clear()
+    servicio.fijar(pipeline=PipelineConLectura(conteo={"PBA1234": 2}))
+    servicio.disparar_captura(candidato(tid=7))
+    assert servicio.http.envios == []
+
+
+def test_si_el_backend_deduplica_se_borran_las_fotos_del_intento(servicio, tmp_path):
+    servicio.fijar(pipeline=Pipeline(conteo={"PBA1234": 2}), trabajador_ocr=types.SimpleNamespace(_agent=Agente()))
+    servicio.http.ingresos = [Respuesta(200, {"ingreso_id": 41, "deduplicado": True})]
+    servicio.disparar_captura(candidato())
+    assert servicio.http.rutas() == ["detecciones/ingreso"]
+    assert list(tmp_path.glob("*.jpg")) == []
 
 
 def test_ocr_asincrono_con_enfriamiento_por_track(servicio):

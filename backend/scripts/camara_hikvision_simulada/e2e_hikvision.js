@@ -8,6 +8,7 @@
  *   node e2e_hikvision.js crear              registra la cámara, verifica cifrado, Digest y video; asigna el motor
  *   node e2e_hikvision.js estado <id>        estado del motor y de las rutas de video (JSON)
  *   node e2e_hikvision.js sonda              diagnóstico con la contraseña correcta e incorrecta
+ *   node e2e_hikvision.js zonas <id>         área de detección y zona de exclusión: se guardan y el motor las aplica
  *   node e2e_hikvision.js limpiar <id> <ant> borra las detecciones de la prueba y la cámara; devuelve el motor
  */
 const jwt = require('jsonwebtoken');
@@ -95,7 +96,7 @@ async function estado(id) {
   const r1 = (await api('GET', `/camaras/video/cam_${id}/estado`)).data;
   const r2 = (await api('GET', `/camaras/video/cam_${id}_vista/estado`)).data;
   console.log(JSON.stringify({ captura: e?.fps_captura, analisis: e?.fps_procesamiento, conectada: e?.camara_activa?.conectada, enlace: e?.enlace,
-    principal: r1, vista: r2 }));
+    latencia: e?.latencia, principal: r1, vista: r2 }));
 }
 
 async function sonda() {
@@ -107,10 +108,41 @@ async function sonda() {
   ok(mal.data?.rtsp?.diagnostico === 'credenciales_invalidas', `contraseña incorrecta → ${mal.data?.rtsp?.diagnostico} (${Date.now() - t1} ms)`);
 }
 
+/** Zonas de la cámara: el administrador guarda el área de detección y una exclusión; el motor las aplica al instante. */
+async function zonas(id) {
+  const roi = [[0, 0.17], [1, 0.17], [1, 0.95], [0, 0.95]];
+  const exclusiones = [[[0.68, 0], [1, 0], [1, 0.16], [0.68, 0.16]]];
+  const r = await api('PUT', `/camaras/${id}/roi`, { roi, exclusiones });
+  ok(r.status === 200 && JSON.stringify(r.data?.camera?.exclusiones) === JSON.stringify(exclusiones),
+    `zonas guardadas: HTTP ${r.status} ${r.data?.message ?? r.data?.error ?? ''}`);
+  const motor = (process.env.ANPR_SERVICE_URL || 'http://anpr:8000').replace(/\/$/, '');
+  let activa = null;
+  for (let i = 0; i < 20; i++) {
+    activa = await fetch(`${motor}/api/camera/active`).then(x => x.json()).catch(() => null);
+    if (JSON.stringify(activa?.exclusiones) === JSON.stringify(exclusiones)) break;
+    await espera(250);
+  }
+  ok(JSON.stringify(activa?.roi) === JSON.stringify(roi) && JSON.stringify(activa?.exclusiones) === JSON.stringify(exclusiones),
+    'el motor aplica el área de detección y la zona de exclusión');
+  const fuera = await api('PUT', `/camaras/${id}/roi`, { roi: [[0, 0], [1, 0]], exclusiones });
+  ok(fuera.status === 400, `zonas inválidas → HTTP ${fuera.status} ${fuera.data?.error ?? ''}`);
+  // El resto de la prueba sigue con el cuadro completo
+  const q = await api('PUT', `/camaras/${id}/roi`, { roi: null, exclusiones: [] });
+  ok(q.status === 200 && q.data?.camera?.exclusiones?.length === 0, `zonas quitadas: ${q.data?.message ?? q.data?.error ?? ''}`);
+}
+
 async function limpiar(pool, id, previa) {
   const det = (await pool.request().input('id', sql.Int, id).query(
-    'SELECT id, placa_reconocida, confianza_ocr FROM DeteccionVehiculo WHERE camara_id = @id ORDER BY id')).recordset;
+    'SELECT id, placa_reconocida, confianza_ocr, lectura_valida, evidencia_lectura FROM DeteccionVehiculo WHERE camara_id = @id ORDER BY id')).recordset;
   console.log(`detecciones registradas por la cámara simulada: ${det.length} → ${det.map(d => `${d.placa_reconocida ?? '—'}(${d.confianza_ocr?.toFixed?.(2) ?? '—'})`).join(', ')}`);
+  // Veredicto y salida cruda de cada lector, tal como quedaron guardados (antes de borrar la prueba)
+  for (const d of det) {
+    let ev = null;
+    try { ev = JSON.parse(d.evidencia_lectura); } catch { /* sin evidencia o JSON dañado */ }
+    console.log(`  #${d.id} ${d.placa_reconocida ?? '—'}: válida=${d.lectura_valida} | evidencia ${ev ? 'legible' : 'ausente o dañada'}`
+      + ` | crudo OCR ${ev?.lectura_ocr_cruda ?? '—'}, verificador ${ev?.lectura_verificador_cruda ?? '—'},`
+      + ` cuadros ${(ev?.lecturas_rapidas_crudas ?? []).join('/') || '—'} | inferidos ${JSON.stringify(ev?.caracteres_inferidos ?? null)}`);
+  }
   if (previa && Number(previa) !== id) {
     const r = await api('POST', '/monitoreo/camara-activa', { camara_id: Number(previa) });
     console.log(`motor devuelto a la cámara ${previa}: ${r.data?.message ?? r.data?.error}`);
@@ -138,6 +170,7 @@ async function limpiar(pool, id, previa) {
     if (accion === 'crear') await crear(pool);
     else if (accion === 'estado') await estado(Number(a));
     else if (accion === 'sonda') await sonda();
+    else if (accion === 'zonas') await zonas(Number(a));
     else if (accion === 'limpiar') await limpiar(pool, Number(a), b);
     else throw new Error(`acción desconocida: ${accion}`);
   } catch (err) {

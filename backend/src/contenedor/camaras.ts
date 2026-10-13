@@ -12,7 +12,7 @@ import {
   camaraDeRuta, crearRutaPrueba, eliminarRutaPrueba, emitirTicket, esMotor, estadoRuta, rutaCamara, rutaVista, sincronizarRutas,
   ticketValido, urlLecturaMotor, urlWebrtcPublica,
 } from '../infraestructura/servicios/medios';
-import { cambiarCamaraAnpr, estadoServicioAnpr, fijarRoiAnpr, urlPublicaAnpr } from '../infraestructura/servicios/servicioAnpr';
+import { cambiarCamaraAnpr, estadoServicioAnpr, fijarZonasAnpr, urlPublicaAnpr } from '../infraestructura/servicios/servicioAnpr';
 import { verificarRed } from '../infraestructura/servicios/redCamaras';
 
 /**
@@ -49,7 +49,7 @@ const motor: PuertoMotorAnpr = {
   procesa: motorProcesa,
   guardarCamara: guardarCamaraMotor,
   cambiarCamara: cambiarCamaraAnpr,
-  fijarRoi: fijarRoiAnpr,
+  fijarZonas: fijarZonasAnpr,
   sincronizar: () => sincronizarCamaraMotor(),
   urlPublica: urlPublicaAnpr,
 };

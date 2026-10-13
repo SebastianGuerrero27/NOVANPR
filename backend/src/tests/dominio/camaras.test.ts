@@ -1,6 +1,7 @@
 import {
-  cambiosCamara, enmascarar, enmascararEnTexto, fuenteParaMediamtx, leerAlcance, leerCamara, leerIdCamara, leerIp, leerRoi,
-  leerUrlRtsp, leerUrlVista, MASCARA, parsearRoi, presentarCamara, RE_RUTA_VIDEO, restaurarClave, tieneCredenciales,
+  cambiosCamara, describirExclusiones, enmascarar, enmascararEnTexto, fuenteParaMediamtx, leerAlcance, leerCamara, leerExclusiones,
+  leerIdCamara, leerIp, leerRoi, leerUrlRtsp, leerUrlVista, MASCARA, parsearExclusiones, parsearRoi, presentarCamara, RE_RUTA_VIDEO,
+  restaurarClave, tieneCredenciales,
 } from '../../dominio/camaras';
 
 describe('Cámaras · credenciales RTSP', () => {
@@ -219,6 +220,33 @@ describe('Cámaras · flujo de vista', () => {
   });
 });
 
+describe('Cámaras · zonas de exclusión', () => {
+  const bandera = [[0.7, 0], [1, 0], [1, 0.25], [0.7, 0.25]];
+
+  it('hasta 8 polígonos con las reglas de la región, redondeados; null o [] = ninguna', () => {
+    expect(leerExclusiones([bandera, [[0.123456, 0.5], [0.2, 0.5], [0.2, 0.6]]]))
+      .toEqual({ ok: true, valor: [bandera, [[0.1235, 0.5], [0.2, 0.5], [0.2, 0.6]]] });
+    expect(leerExclusiones(null)).toEqual({ ok: true, valor: [] });
+    expect(leerExclusiones([])).toEqual({ ok: true, valor: [] });
+    expect(leerExclusiones(Array.from({ length: 8 }, () => bandera)).ok).toBe(true);
+    expect(leerExclusiones(Array.from({ length: 9 }, () => bandera))).toEqual({ ok: false, error: 'Máximo 8 zonas de exclusión.' });
+    expect(leerExclusiones([[]])).toEqual({ ok: false, error: 'Zona de exclusión 1: debe tener entre 3 y 12 vértices.' });
+    expect(leerExclusiones({})).toEqual({ ok: false, error: 'Las zonas de exclusión deben ser una lista de polígonos.' });
+  });
+
+  it('guardadas como JSON: se interpretan; lo ilegible o inválido no rompe la cámara', () => {
+    expect(parsearExclusiones(JSON.stringify([bandera]))).toEqual([bandera]);
+    for (const malo of [null, '', '{no json', '[[[0,0],[2,2],[1,1]]]', 7]) expect(parsearExclusiones(malo)).toEqual([]);
+    expect(presentarCamara({
+      id: 1, nombre: 'Garita', ip: '10.0.0.5', rtsp_url: 'rtsp://10.0.0.5/101', ubicacion: 'Acceso', activa: 1, estado: null,
+      ultimo_ping: null, tiempo_respuesta_ms: null, mensaje_ping: null, created_at: new Date(), roi: null, exclusiones: JSON.stringify([bandera]),
+    }).exclusiones).toEqual([bandera]);
+    expect(describirExclusiones(0)).toBe('sin zonas de exclusión');
+    expect(describirExclusiones(1)).toBe('1 zona de exclusión');
+    expect(describirExclusiones(3)).toBe('3 zonas de exclusión');
+  });
+});
+
 describe('Cámaras · región de interés', () => {
   it('polígono de 3 a 12 vértices normalizados, redondeado a 4 decimales; null o [] = cuadro completo', () => {
     expect(leerRoi([[0, 0], [1, 0], [0.33333333, 1]])).toEqual({ ok: true, valor: [[0, 0], [1, 0], [0.3333, 1]] });
@@ -249,7 +277,7 @@ describe('Cámaras · presentación y alcance del ticket', () => {
     })).toEqual({
       id: 1, nombre: 'Garita', ip: '10.0.0.5', ubicacion: 'Acceso', rtsp_url: `rtsp://admin:${MASCARA}@10.0.0.5/101`,
       rtsp_url_vista: null, tiene_credenciales: true, activa: true, estado: 'SIN_VERIFICAR', ultimo_ping: null, tiempo_respuesta_ms: null,
-      mensaje_ping: null, created_at: creada, detecciones: 2, roi: [[0, 0], [1, 0], [1, 1]],
+      mensaje_ping: null, created_at: creada, detecciones: 2, roi: [[0, 0], [1, 0], [1, 1]], exclusiones: [],
     });
   });
 

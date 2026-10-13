@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { authMiddleware, requierePermiso } from '../middlewares/auth';
 import { camaras } from '../../../contenedor/camaras';
+import { describirExclusiones } from '../../../dominio/camaras';
 import { actorDe, controlador, idDe } from '../respuesta';
 import { controladorExterno } from '../servicioExterno';
 
@@ -12,7 +13,7 @@ import { controladorExterno } from '../servicioExterno';
  *   POST   /                 alta                                            camaras:gestionar
  *   PUT    /:id              edición                                         camaras:gestionar
  *   PATCH  /:id/toggle       habilitar / deshabilitar                        camaras:gestionar
- *   PUT    /:id/roi          región de interés                               camaras:operar
+ *   PUT    /:id/roi          región de interés y zonas de exclusión          camaras:operar
  *   DELETE /:id              eliminación sin historial                       camaras:gestionar
  *   POST   /probar           ping + diagnóstico RTSP de una URL antes de guardarla
  *   POST   /:id/ping         ping ICMP + diagnóstico RTSP (DESCRIBE con autenticación)
@@ -58,12 +59,20 @@ router.patch('/:id(\\d+)/toggle', ...gestionar, controlador('CAMARAS toggle', 'E
   res.json({ message: activa ? 'Cámara habilitada.' : 'Cámara deshabilitada.', camera: camara });
 }));
 
-/** { roi: [[x, y], ...] } con vértices normalizados (0–1), o { roi: null } para el cuadro completo. */
-router.put('/:id(\\d+)/roi', ...operar, controlador('CAMARAS región de interés', 'Error al guardar la región de interés.', async (req, res) => {
+/**
+ * { roi?: [[x, y], ...] | null, exclusiones?: [[[x, y], ...], ...] } con vértices normalizados (0–1).
+ * roi null = cuadro completo, exclusiones [] = ninguna; un campo ausente no cambia lo guardado.
+ */
+router.put('/:id(\\d+)/roi', ...operar, controlador('CAMARAS zonas', 'Error al guardar las zonas de la cámara.', async (req, res) => {
   const id = idDe(req, res);
   if (id === null) return;
-  const { camara, roi } = await camaras.fijarRoi(id, req.body?.roi, actorDe(req));
-  res.json({ message: roi ? 'Región de interés guardada.' : 'Región de interés eliminada: se analiza el cuadro completo.', camera: camara });
+  const { camara, roi, exclusiones } = await camaras.fijarZonas(id, req.body?.roi, req.body?.exclusiones, actorDe(req));
+  const message = exclusiones === undefined
+    ? (roi ? 'Región de interés guardada.' : 'Región de interés eliminada: se analiza el cuadro completo.')
+    : roi === undefined
+      ? `Zonas de exclusión guardadas: ${describirExclusiones(exclusiones.length)}.`
+      : `Zonas guardadas: ${roi ? 'región de interés' : 'cuadro completo'}, ${describirExclusiones(exclusiones.length)}.`;
+  res.json({ message, camera: camara });
 }));
 
 router.delete('/:id(\\d+)', ...gestionar, controlador('CAMARAS eliminar', 'Error al eliminar la cámara.', async (req, res) => {

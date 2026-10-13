@@ -3,7 +3,7 @@ import {
 } from './comun';
 import {
   type AlcanceTicket, type CamaraGuardada, type CamaraPublica, cambiosCamara, type DatosCamara, leerCamara, leerIdCamara,
-  LARGO_MAXIMO_IP, leerIp, leerRoi, leerUrlRtsp, MASCARA, presentarCamara, type Punto, RE_RUTA_PRUEBA, RE_RUTA_VIDEO,
+  describirExclusiones, LARGO_MAXIMO_IP, leerExclusiones, leerIp, leerRoi, leerUrlRtsp, MASCARA, presentarCamara, type Punto, RE_RUTA_PRUEBA, RE_RUTA_VIDEO,
 } from '../dominio/camaras';
 import type { Validado } from '../dominio/validacion';
 
@@ -32,6 +32,9 @@ export interface ConexionCamara {
   rtsp_url: string;
   rtsp_url_vista?: string | null;
   activa: boolean;
+  /** Zonas guardadas (JSON): región de interés y zonas de exclusión */
+  roi?: string | null;
+  exclusiones?: string | null;
 }
 
 /** Contraseñas RTSP en reposo: protegidas al guardar y reveladas solo para conectarse. */
@@ -54,8 +57,11 @@ export interface RepositorioCamaras {
   actualizar(id: number, c: DatosCamara): Promise<void>;
   /** Invierte la habilitación; null si la cámara no existe */
   alternarActiva(id: number): Promise<{ nombre: string; activa: boolean } | null>;
-  /** Guarda la región de interés; devuelve el nombre de la cámara o null si no existe */
-  fijarRoi(id: number, roi: Punto[] | null): Promise<string | null>;
+  /**
+   * Guarda las zonas indicadas (undefined = esa zona no cambia); devuelve el nombre de la cámara o
+   * null si no existe
+   */
+  fijarZonas(id: number, roi: Punto[] | null | undefined, exclusiones?: Punto[][]): Promise<string | null>;
   eliminar(id: number): Promise<void>;
 }
 
@@ -137,6 +143,13 @@ export interface EstadoMotor {
   en_linea: boolean;
   fps_captura?: number;
   fps_procesamiento?: number;
+  /** Latencia desde la captura de cada cuadro (motor ANPR) */
+  latencia?: {
+    edad_cuadro: { p50_ms: number; p95_ms: number; max_ms: number; muestras: number } | null;
+    lectura_en_vivo: { p50_ms: number; p95_ms: number; max_ms: number; muestras: number } | null;
+    registro: { p50_ms: number; p95_ms: number; max_ms: number; muestras: number } | null;
+    cuadros_descartados_pct: number | null;
+  } | null;
   detector?: string | null;
   ocr?: string | null;
   verificador?: string | null;
@@ -166,9 +179,11 @@ export interface PuertoMotorAnpr {
   procesa(camara: { id: number } | null): Promise<boolean>;
   /** Recuerda la cámara elegida (se reaplica si el motor se reinicia) */
   guardarCamara(camaraId: number, usuarioId: number | null): Promise<void>;
-  cambiarCamara(camara: { id: number; nombre: string; rtsp_url: string }, forzar: boolean): Promise<unknown>;
-  /** Aplica la región de interés si esa cámara es la que procesa */
-  fijarRoi(camaraId: number, roi: Punto[] | null): Promise<unknown>;
+  /** Cambia la cámara del motor con sus zonas (las de la cámara anterior nunca se conservan) */
+  cambiarCamara(camara: { id: number; nombre: string; rtsp_url: string; roi: Punto[] | null; exclusiones: Punto[][] },
+    forzar: boolean): Promise<unknown>;
+  /** Aplica la región de interés y las zonas de exclusión si esa cámara es la que procesa */
+  fijarZonas(camaraId: number, roi: Punto[] | null, exclusiones: Punto[][]): Promise<unknown>;
   /** Reaplica la cámara deseada si el motor está en otra fuente */
   sincronizar(): Promise<unknown>;
   /** URL del servicio vista desde el navegador (WebSocket de video) */
@@ -323,21 +338,35 @@ export function casosCamaras(d: DependenciasCamaras) {
     },
 
     /**
-     * Región de interés: el motor solo busca placas cuyo centro cae dentro del polígono
-     * (máscara de detección de OpenALPR). Sin región (null) se analiza el cuadro completo.
+     * Zonas de la cámara. Región de interés: el motor solo busca placas cuyo centro cae dentro del
+     * polígono (máscara de detección de OpenALPR); null = cuadro completo. Zonas de exclusión:
+     * dentro de ellas no cuenta el movimiento ni se buscan placas (evitan el movimiento falso de
+     * árboles, banderas o reflejos); [] = ninguna. Un campo ausente (undefined) no cambia lo
+     * guardado; sin ninguno de los dos, la solicitud no tiene nada que guardar.
      */
-    async fijarRoi(id: number, entrada: unknown, actor: Actor) {
-      const roi = leerRoi(entrada ?? null);
-      if (!roi.ok) throw errorValidacion(roi.error);
-      const nombre = await d.repositorio.fijarRoi(id, roi.valor);
+    async fijarZonas(id: number, entradaRoi: unknown, entradaExclusiones: unknown, actor: Actor) {
+      if (entradaRoi === undefined && entradaExclusiones === undefined) {
+        throw errorValidacion('Indique la región de interés (roi, null para el cuadro completo) o las zonas de exclusión.');
+      }
+      const roi = entradaRoi === undefined ? null : leerRoi(entradaRoi);
+      if (roi && !roi.ok) throw errorValidacion(roi.error);
+      const exclusiones = entradaExclusiones === undefined ? null : leerExclusiones(entradaExclusiones);
+      if (exclusiones && !exclusiones.ok) throw errorValidacion(exclusiones.error);
+      const nombre = await d.repositorio.fijarZonas(id, roi ? roi.valor : undefined, exclusiones ? exclusiones.valor : undefined);
       if (nombre === null) throw errorNoEncontrado('Cámara no encontrada.');
-      await d.auditoria.operacion(actor, 'CAMARA_ROI', 'camara', id,
-        `${nombre}: ${roi.valor ? `región de ${roi.valor.length} vértices` : 'cuadro completo'}`);
-      // Si el motor procesa esta cámara la aplica al instante; si no, al activarla
-      enSegundoPlano(() => d.motor.fijarRoi(id, roi.valor));
+      const partes = [
+        roi && (roi.valor ? `región de ${roi.valor.length} vértices` : 'cuadro completo'),
+        exclusiones && describirExclusiones(exclusiones.valor.length),
+      ].filter(Boolean);
+      await d.auditoria.operacion(actor, 'CAMARA_ROI', 'camara', id, `${nombre}: ${partes.join(', ')}`);
       const camara = await obtener(id);
+      // Si el motor procesa esta cámara las aplica al instante; si no, al activarla. Recibe siempre
+      // el conjunto completo: lo que no llegó en la solicitud, tal como estaba guardado
+      const roiVigente = roi ? roi.valor : camara.roi;
+      const exclusionesVigentes = exclusiones ? exclusiones.valor : camara.exclusiones;
+      enSegundoPlano(() => d.motor.fijarZonas(id, roiVigente, exclusionesVigentes));
       difundir(camara);
-      return { camara, roi: roi.valor };
+      return { camara, roi: roi ? roi.valor : undefined, exclusiones: exclusiones ? exclusiones.valor : undefined };
     },
 
     /** Solo se elimina una cámara sin detecciones; con historial se deshabilita. */

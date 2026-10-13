@@ -10,6 +10,7 @@ import { actorDe, controlador, idDe } from '../respuesta';
  *   POST /ingreso              fase 1: captura fotográfica, estado pendiente_ocr
  *   POST /completar-ocr        fase 2: lectura OCR y cruce con listas
  *   POST /descarte             auditoría de falsos positivos descartados
+ *   POST /reevaluar            fase 3: segundo OCR o atributos del vehículo llegados después del registro
  * Personal autenticado
  *   GET  /                     historial paginado con filtros
  *   GET  /recientes            últimos N pasos (monitoreo)
@@ -38,6 +39,10 @@ router.post('/ingreso', servicioMiddleware, controlador('DETECCIONES fase 1', 'E
 
 router.post('/completar-ocr', servicioMiddleware, controlador('DETECCIONES fase 2', 'Error interno al completar el OCR.', async (req, res) => {
   res.json(await detecciones.completarOcr(req.body));
+}));
+
+router.post('/reevaluar', servicioMiddleware, controlador('DETECCIONES reevaluación', 'Error interno al reevaluar el paso.', async (req, res) => {
+  res.json(await detecciones.reevaluar(req.body));
 }));
 
 router.post('/descarte', servicioMiddleware, controlador('DETECCIONES descarte', 'Error al registrar el descarte.', async (req, res) => {

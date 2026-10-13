@@ -7,7 +7,7 @@ import {
 import {
   csvDetecciones, ETIQUETA_ESTADO, type FilaExportacion, type FiltrosDetecciones, fechaHoraLocal, leerDatosValidacion, leerFiltros,
   leerLimite, leerPaginacion, leerPlacaConsulta, leerRegistroManual, lecturaUtilizable, normalizarFuente, REGLA_MOTIVO_ELIMINACION,
-  REGLA_MOTIVO_ELIMINACION_MASIVA, tieneFiltros, tipoPorFormato,
+  REGLA_MOTIVO_ELIMINACION_MASIVA, serializarEvidencia, tieneFiltros, tipoPorFormato,
 } from '../dominio/detecciones';
 import { describirHorario, evaluarVigencia, type Vigencia } from '../dominio/horario';
 import { type Rol, tienePermiso } from '../dominio/permisos';
@@ -80,11 +80,13 @@ export interface Descarte {
 
 export interface RepositorioDetecciones {
   obtener(id: number): Promise<Fila | null>;
-  /** Ingreso del mismo paso físico (mismo tracking o misma placa en la ventana de 35 s) */
-  mismoPaso(trackingId: number, pista: string): Promise<{ id: number; fecha_hora_ingreso: Date } | null>;
+  /** Ingreso del mismo paso físico (misma placa, o sin placa el mismo tracking, y misma cámara) dentro de la ventana */
+  mismoPaso(trackingId: number, pista: string, camaraId: number | null): Promise<{ id: number; fecha_hora_ingreso: Date } | null>;
   existeCamara(id: number): Promise<boolean>;
   crearIngreso(n: NuevoIngreso): Promise<{ id: number; fecha_hora_ingreso: Date }>;
   guardarMetadatos(id: number, metadatos: unknown): Promise<void>;
+  /** Atributos del vehículo (tipo, color, marca, modelo) que llegan después del registro */
+  guardarVehiculo(id: number, vehiculo: Record<string, unknown>): Promise<void>;
   registrarLecturaAutomatica(id: number, l: LecturaAutomatica): Promise<void>;
   marcarNoLegible(id: number, rutaPlaca: string | null): Promise<void>;
   /** Otro paso ya procesado con la misma placa en la ventana de 35 s */
@@ -169,6 +171,51 @@ export function casosDetecciones(d: DependenciasDetecciones) {
     return f.valor;
   };
 
+  /**
+   * Cruce con las listas, segundo factor y decisión de acceso de un paso con lectura utilizable.
+   * Lo comparten la lectura del motor (fase 2) y su reevaluación (fase 3): las mismas reglas.
+   */
+  async function decidirLectura(id: number, l: {
+    placa: string; confianza: number | null; rutaPlaca: string | null; validez: boolean | null; lecturaVerificador: unknown; latenciaMs: unknown;
+  }) {
+    const obs = await d.repositorio.observacion(id);
+    if (!obs) throw errorNoEncontrado('Ingreso no encontrado.');
+
+    // El acceso se juzga en el instante del paso (horario y vigencia del permiso)
+    let placa = l.placa;
+    const cruce = await cruzarListas(placa, new Date(obs.fecha_hora_ingreso));
+    let tipo: string | null = tipoPorFormato(placa);
+    if (cruce.permiso) {
+      placa = normalizarPlaca(cruce.permiso.placa) || placa;
+      tipo = cruce.permiso.tipo_vehiculo || tipo;
+    }
+
+    // Segundo factor: marca / color / tipo observados frente a los registrados (posible placa clonada)
+    const registrado = cruce.alerta ?? cruce.permiso;
+    let verificacion: ReturnType<DependenciasDetecciones['compararVehiculo']> | null = null;
+    if (registrado) {
+      verificacion = d.compararVehiculo(registrado, obs);
+      if (verificacion.resultado === 'no_coincide') console.warn(`[SEGUNDO FACTOR] Ingreso #${id} ${placa}: ${verificacion.detalle}`);
+      await d.repositorio.guardarVerificacion(id, verificacion.resultado, verificacion.detalle.substring(0, 255));
+    }
+
+    const decision = decidirAcceso({
+      origen: 'automatico',
+      ...entradaListas(cruce),
+      lectura: { lecturaValida: l.validez, confianzaOcr: l.confianza, confianzaDeteccion: obs.confianza_deteccion ?? null },
+      verificacionVehiculo: verificacion?.resultado ?? null,
+      politica: d.politica(),
+    });
+    console.log(`[DECISION] Ingreso #${id} ${placa}: ${decision.estado} (${decision.regla}: ${decision.motivos.join('; ')})`);
+
+    await d.repositorio.guardarDecisionAutomatica(id, { placa, confianza: l.confianza, rutaPlaca: l.rutaPlaca, tipo }, cruce, decision);
+    await d.repositorio.registrarLecturaAutomatica(id, {
+      placaOriginal: placa, confianza: l.confianza, decision: decision.estado, lecturaVerificador: l.lecturaVerificador, latenciaMs: l.latenciaMs,
+    });
+    const dto = await difundir(id, 'deteccion:actualizada');
+    return { dto, decision, permiso: cruce.permiso };
+  }
+
   const avisarSiCorresponde = (dto: DeteccionDTO | null, decision: Decision, permiso: Fila | null) => {
     if (dto && (decision.estado === 'alerta' || decision.estado === 'autorizado')) d.avisos.decision(dto, decision, permiso);
   };
@@ -177,8 +224,8 @@ export function casosDetecciones(d: DependenciasDetecciones) {
     // ─── Servicio ANPR ─────────────────────────────────────────────────────────
 
     /**
-     * Fase 1 · captura. Un paso físico = un registro: se reutiliza el ingreso del mismo tracking o
-     * de la misma placa dentro de la ventana de 35 s.
+     * Fase 1 · captura. Un paso físico = un registro: se reutiliza el ingreso de la misma placa (o,
+     * sin placa, del mismo tracking) en la misma cámara dentro de la ventana de 35 s.
      */
     async ingreso(entrada: unknown) {
       const b = cuerpo(entrada);
@@ -187,16 +234,16 @@ export function casosDetecciones(d: DependenciasDetecciones) {
       const trackingId = Number.isInteger(tracking_id) ? tracking_id : -1;
       const pista = typeof placa === 'string' ? normalizarPlaca(placa) : '';
 
-      const previo = await d.repositorio.mismoPaso(trackingId, pista);
+      let camaraId: number | null = null;
+      if (camara_id !== null && Number.isInteger(Number(camara_id)) && await d.repositorio.existeCamara(Number(camara_id))) camaraId = Number(camara_id);
+
+      const previo = await d.repositorio.mismoPaso(trackingId, pista, camaraId);
       if (previo) {
         return {
           nuevo: false,
           respuesta: { message: 'Registro existente reutilizado (mismo paso físico).', ingreso_id: previo.id, fecha_hora_ingreso: previo.fecha_hora_ingreso, deduplicado: true },
         };
       }
-
-      let camaraId: number | null = null;
-      if (camara_id !== null && Number.isInteger(Number(camara_id)) && await d.repositorio.existeCamara(Number(camara_id))) camaraId = Number(camara_id);
 
       const creado = await d.repositorio.crearIngreso({
         trackingId, pista: pista.length >= 4 ? pista : null, ruta: String(ruta_imagen_ingreso).substring(0, 255),
@@ -213,11 +260,11 @@ export function casosDetecciones(d: DependenciasDetecciones) {
         lectura_verificador = null, latencia_ms = null, lectura_valida = null, evidencia_lectura = null } = cuerpo(entrada);
       // Veredicto del motor sobre la lectura (null si el motor no lo informa)
       const validez: boolean | null = typeof lectura_valida === 'boolean' ? lectura_valida : null;
-      const evidencia = evidencia_lectura && typeof evidencia_lectura === 'object' ? JSON.stringify(evidencia_lectura).substring(0, 1500) : null;
+      const evidencia = serializarEvidencia(evidencia_lectura);
       if (!Number.isInteger(ingreso_id)) throw errorValidacion('El ID de ingreso es obligatorio.');
       const id = ingreso_id as number;
 
-      let placa = normalizarPlaca(placa_reconocida);
+      const placa = normalizarPlaca(placa_reconocida);
       const confianza = typeof confianza_ocr === 'number' ? confianza_ocr : null;
       const rutaPlaca = ruta_imagen_placa || null;
       const lecturaAutomatica = (decision: string) => d.repositorio.registrarLecturaAutomatica(id, {
@@ -240,40 +287,49 @@ export function casosDetecciones(d: DependenciasDetecciones) {
       }
 
       await d.repositorio.guardarVeredicto(id, validez, evidencia);
-      const obs = await d.repositorio.observacion(id);
-      if (!obs) throw errorNoEncontrado('Ingreso no encontrado.');
-
-      // El acceso se juzga en el instante del paso (horario y vigencia del permiso)
-      const cruce = await cruzarListas(placa, new Date(obs.fecha_hora_ingreso));
-      let tipo: string | null = tipoPorFormato(placa);
-      if (cruce.permiso) {
-        placa = normalizarPlaca(cruce.permiso.placa) || placa;
-        tipo = cruce.permiso.tipo_vehiculo || tipo;
-      }
-
-      // Segundo factor: marca / color / tipo observados frente a los registrados (posible placa clonada)
-      const registrado = cruce.alerta ?? cruce.permiso;
-      let verificacion: ReturnType<DependenciasDetecciones['compararVehiculo']> | null = null;
-      if (registrado) {
-        verificacion = d.compararVehiculo(registrado, obs);
-        if (verificacion.resultado === 'no_coincide') console.warn(`[SEGUNDO FACTOR] Ingreso #${id} ${placa}: ${verificacion.detalle}`);
-        await d.repositorio.guardarVerificacion(id, verificacion.resultado, verificacion.detalle.substring(0, 255));
-      }
-
-      const decision = decidirAcceso({
-        origen: 'automatico',
-        ...entradaListas(cruce),
-        lectura: { lecturaValida: validez, confianzaOcr: confianza, confianzaDeteccion: obs.confianza_deteccion ?? null },
-        verificacionVehiculo: verificacion?.resultado ?? null,
-        politica: d.politica(),
+      const { dto, decision, permiso } = await decidirLectura(id, {
+        placa, confianza, rutaPlaca, validez, lecturaVerificador: lectura_verificador, latenciaMs: latencia_ms,
       });
-      console.log(`[DECISION] Ingreso #${id} ${placa}: ${decision.estado} (${decision.regla}: ${decision.motivos.join('; ')})`);
-
-      await d.repositorio.guardarDecisionAutomatica(id, { placa, confianza, rutaPlaca, tipo }, cruce, decision);
-      await lecturaAutomatica(decision.estado);
-      const dto = await difundir(id, 'deteccion:actualizada');
-      if (dto) d.avisos.decision(dto, decision, cruce.permiso);
+      if (dto) d.avisos.decision(dto, decision, permiso);
       return { message: 'OCR completado.', deteccion: dto };
+    },
+
+    /**
+     * Fase 3 · reevaluación. El motor registra el paso en menos de 1 s con las evidencias que tiene;
+     * cuando llegan el segundo OCR o los atributos del vehículo reenvía su veredicto y el paso se
+     * decide de nuevo con las mismas reglas. Se conserva lo que decidió el personal, una alerta no
+     * se rebaja y solo se avisa si el estado cambia.
+     */
+    async reevaluar(entrada: unknown) {
+      const { ingreso_id, placa_reconocida = null, confianza_ocr = null, lectura_verificador = null, lectura_valida = null,
+        evidencia_lectura = null, vehiculo = null } = cuerpo(entrada);
+      if (!Number.isInteger(ingreso_id)) throw errorValidacion('El ID de ingreso es obligatorio.');
+      const id = ingreso_id as number;
+      const actual = await d.repositorio.obtener(id);
+      if (!actual) throw errorNoEncontrado('Ingreso no encontrado.');
+
+      if (vehiculo && typeof vehiculo === 'object' && !Array.isArray(vehiculo)) await d.repositorio.guardarVehiculo(id, vehiculo);
+      const placa = normalizarPlaca(placa_reconocida) || normalizarPlaca(actual.placa_reconocida);
+      if (actual.validado_manualmente || actual.estado_procesamiento !== 'procesado' || actual.estado_validacion === 'alerta' || !placa) {
+        return { message: 'Se conserva la decisión vigente del paso.', reevaluado: false, deteccion: await difundir(id, 'deteccion:actualizada') };
+      }
+
+      // Con un veredicto nuevo del motor (llegó el segundo OCR) se reemplaza el anterior
+      const anterior = actual.lectura_valida === null || actual.lectura_valida === undefined ? null : Boolean(actual.lectura_valida);
+      const validez = typeof lectura_valida === 'boolean' ? lectura_valida : anterior;
+      if (typeof lectura_valida === 'boolean') await d.repositorio.guardarVeredicto(id, validez, serializarEvidencia(evidencia_lectura));
+      const confianza = typeof confianza_ocr === 'number' ? confianza_ocr : typeof actual.confianza_ocr === 'number' ? actual.confianza_ocr : null;
+
+      const { dto, decision, permiso } = await decidirLectura(id, {
+        placa, confianza, rutaPlaca: null, validez, lecturaVerificador: lectura_verificador ?? actual.lectura_verificador ?? null,
+        latenciaMs: actual.latencia_ms ?? null,
+      });
+      const cambio = decision.estado !== actual.estado_validacion;
+      if (dto && cambio) d.avisos.decision(dto, decision, permiso);
+      return {
+        message: cambio ? `Paso reevaluado: ${actual.estado_validacion} → ${decision.estado}.` : 'Paso reevaluado sin cambios.',
+        reevaluado: true, cambio, deteccion: dto,
+      };
     },
 
     /** Auditoría de los falsos positivos que el motor descartó. */

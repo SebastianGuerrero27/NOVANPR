@@ -33,7 +33,7 @@ export const repositorioCamarasSql: RepositorioCamaras = {
 
   async conexion(id) {
     const c = (await db().request().input('id', sql.Int, id)
-      .query('SELECT id, nombre, ip, rtsp_url, rtsp_url_vista, activa FROM Camaras WHERE id = @id')).recordset[0];
+      .query('SELECT id, nombre, ip, rtsp_url, rtsp_url_vista, activa, roi, exclusiones FROM Camaras WHERE id = @id')).recordset[0];
     return c ? { ...c, activa: Boolean(c.activa) } : null;
   },
 
@@ -64,9 +64,20 @@ export const repositorioCamarasSql: RepositorioCamaras = {
     return c ? { nombre: c.nombre, activa: Boolean(c.activa) } : null;
   },
 
-  async fijarRoi(id, roi) {
-    const r = await db().request().input('id', sql.Int, id).input('roi', sql.NVarChar(1000), roi ? JSON.stringify(roi) : null)
-      .query('UPDATE Camaras SET roi = @roi, fecha_actualizacion = SYSDATETIME() OUTPUT INSERTED.nombre WHERE id = @id');
+  async fijarZonas(id, roi, exclusiones) {
+    // Solo se actualizan las zonas indicadas (undefined = la guardada no cambia)
+    const peticion = db().request().input('id', sql.Int, id);
+    const columnas: string[] = [];
+    if (roi !== undefined) {
+      peticion.input('roi', sql.NVarChar(1000), roi ? JSON.stringify(roi) : null);
+      columnas.push('roi = @roi');
+    }
+    if (exclusiones !== undefined) {
+      peticion.input('exclusiones', sql.NVarChar(sql.MAX), exclusiones.length ? JSON.stringify(exclusiones) : null);
+      columnas.push('exclusiones = @exclusiones');
+    }
+    const r = await peticion.query(`UPDATE Camaras SET ${[...columnas, 'fecha_actualizacion = SYSDATETIME()'].join(', ')}
+      OUTPUT INSERTED.nombre WHERE id = @id`);
     return r.recordset[0]?.nombre ?? null;
   },
 

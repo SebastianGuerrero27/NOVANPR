@@ -13,8 +13,10 @@ Cambios en la escena para dos decisiones del pipeline:
      mientras no haya evidencia de placa.
 
 El análisis se hace sobre una copia reducida del cuadro (≤ 320 px de ancho), así que su costo
-no depende de la resolución de la cámara. Con región de interés, solo cuenta lo que ocurre
-dentro de ella.
+no depende de la resolución de la cámara. Solo cuenta lo que ocurre dentro de la región de interés
+(si la hay) y fuera de las zonas de exclusión que dibuja el administrador (árboles, banderas,
+reflejos, la vereda, la hora sobreimpresa): sus cambios no disparan el detector, no forman zona de
+movimiento ni hacen "moverse" a una pista.
 """
 
 from __future__ import annotations
@@ -76,8 +78,8 @@ class DetectorMovimiento:
     def __init__(self) -> None:
         self._mog2 = self._nuevo_sustractor()
         self._kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
-        self._roi_clave: Optional[tuple] = None
-        self._roi_mascara: Optional[np.ndarray] = None
+        self._zona_clave: Optional[tuple] = None
+        self._zona_mascara: Optional[np.ndarray] = None
         self._gris: Optional[np.ndarray] = None        # último cuadro analizado (reducido y suavizado)
         self._referencia: Optional[np.ndarray] = None  # cuadro de la última inferencia
         self._fondo_iniciado = False
@@ -96,16 +98,26 @@ class DetectorMovimiento:
         """El último cuadro analizado pasa a ser la referencia: el detector acaba de ejecutarse sobre él."""
         self._referencia = self._gris
 
-    def _mascara_roi(self, roi: Optional[list[list[float]]], ancho: int, alto: int) -> Optional[np.ndarray]:
-        if not roi:
+    def _mascara_zona(self, roi: Optional[list[list[float]]], exclusiones: Optional[list[list[list[float]]]],
+                      ancho: int, alto: int) -> Optional[np.ndarray]:
+        """255 donde se analiza: dentro de la región de interés (o todo el cuadro) y fuera de las
+        zonas de exclusión. None si no hay ni región ni exclusiones (se analiza el cuadro completo)."""
+        if not roi and not exclusiones:
             return None
-        clave = (tuple(map(tuple, roi)), ancho, alto)
-        if clave != self._roi_clave:
-            mascara = np.zeros((alto, ancho), np.uint8)
-            puntos = np.array([[p[0] * ancho, p[1] * alto] for p in roi], np.int32)
-            cv2.fillPoly(mascara, [puntos], 255)
-            self._roi_clave, self._roi_mascara = clave, mascara
-        return self._roi_mascara
+        clave = (tuple(map(tuple, roi)) if roi else None, tuple(tuple(map(tuple, z)) for z in exclusiones or ()), ancho, alto)
+        if clave != self._zona_clave:
+            def poligono(puntos: list[list[float]]) -> np.ndarray:
+                return np.array([[p[0] * ancho, p[1] * alto] for p in puntos], np.int32)
+
+            if roi:
+                mascara = np.zeros((alto, ancho), np.uint8)
+                cv2.fillPoly(mascara, [poligono(roi)], 255)
+            else:
+                mascara = np.full((alto, ancho), 255, np.uint8)
+            for zona in exclusiones or ():
+                cv2.fillPoly(mascara, [poligono(zona)], 0)
+            self._zona_clave, self._zona_mascara = clave, mascara
+        return self._zona_mascara
 
     def _cambio(self, gris: np.ndarray, mascara_roi: Optional[np.ndarray], area: float) -> float:
         """Fracción del área que cambió respecto de la referencia (1.0 si no hay referencia)."""
@@ -117,7 +129,8 @@ class DetectorMovimiento:
             dif = cv2.bitwise_and(dif, mascara_roi)
         return cv2.countNonZero(dif) / area
 
-    def analizar(self, frame: np.ndarray, roi: Optional[list[list[float]]] = None) -> Movimiento:
+    def analizar(self, frame: np.ndarray, roi: Optional[list[list[float]]] = None,
+                 exclusiones: Optional[list[list[list[float]]]] = None) -> Movimiento:
         try:
             alto_o, ancho_o = frame.shape[:2]
             escala = min(1.0, _ANCHO_ANALISIS / float(ancho_o))
@@ -125,7 +138,7 @@ class DetectorMovimiento:
             gris = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
             if escala < 1.0:
                 gris = cv2.resize(gris, (ancho, alto), interpolation=cv2.INTER_AREA)
-            mascara_roi = self._mascara_roi(roi, ancho, alto)
+            mascara_roi = self._mascara_zona(roi, exclusiones, ancho, alto)
             area = max(1.0, float(cv2.countNonZero(mascara_roi))) if mascara_roi is not None else float(ancho * alto)
 
             # Cambio desde la última inferencia (compuerta)

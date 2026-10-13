@@ -18,6 +18,8 @@ import re
 from dataclasses import dataclass
 from typing import Optional, Tuple, Dict
 
+from app.dominio.interpretacion_placa import DIPLOMATICO, MOTO, PARTICULAR, Interpretacion, interpretar
+
 # =============================================================================
 # Codificación Oficial de Provincias (ANT Ecuador - Primera Letra)
 # =============================================================================
@@ -69,7 +71,9 @@ PREFIJOS_DIPLOMATICOS: Dict[str, str] = {
 }
 
 # =============================================================================
-# Matrices de Confusión Posicional Deterministas (OCR Vehicular)
+# Matrices de Confusión Posicional (OCR Vehicular)
+# Se aplican como hipótesis: se elige el formato que necesita menos sustituciones y cada una queda
+# registrada (ver app/dominio/interpretacion_placa.py).
 # =============================================================================
 
 # Si el carácter se encuentra en zona ALFABÉTICA (posiciones 0, 1, 2)
@@ -135,6 +139,7 @@ class EcuadorPlateValidationResult:
     tipo_vehiculo: str          # "Particular", "Comercial", "Estado", "Diplomático", "Moto"
     provincia: str              # Nombre de la provincia emisora (ej. "Pichincha")
     servicio: str               # Descripción del servicio vehicular
+    correcciones: tuple = ()    # Sustituciones aplicadas al texto leído: (posición, leído, interpretado)
 
 
 class EcuadorPlateValidator:
@@ -158,61 +163,22 @@ class EcuadorPlateValidator:
         return re.sub(r"[^A-Z0-9]", "", text)
 
     @classmethod
+    def interpretar(cls, text: str) -> Interpretacion:
+        """
+        Formato (diplomático, particular o moto, en ese orden ante empates) que explica el texto con
+        menos sustituciones de las matrices de confusión; la primera letra admite además las
+        confusiones de provincia. Nunca agrega ni quita caracteres.
+        """
+        return interpretar(
+            text, formatos=(DIPLOMATICO, PARTICULAR, MOTO), digito_a_letra=DIGIT_TO_LETTER,
+            letra_a_digito=LETTER_TO_DIGIT, primera_letra=CONFUSIONES_PRIMERA_LETRA, ruido=HEADER_NOISE_WORDS,
+        )
+
+    @classmethod
     def disambiguate(cls, text: str) -> str:
-        """
-        Aplica desambiguación posicional determinista:
-          - Zona 1 (Letras 0..2): Convierte dígitos a sus letras más probables y valida provincia ANT.
-          - Zona 2 (Dígitos 3..fin): Convierte letras a sus dígitos correspondientes.
-        """
-        clean = cls.sanitize(text)
-        n = len(clean)
-        if n < 4:
-            return clean
-
-        chars = list(clean)
-
-        # 1. Caso Especial Diplomático (CC, CD, OI, AT, PP + 4 dígitos)
-        prefix_2 = clean[:2]
-        if prefix_2 in PREFIJOS_DIPLOMATICOS and n >= 5:
-            prefix = prefix_2
-            suffix = ""
-            for i in range(2, min(n, 6)):
-                c = chars[i]
-                suffix += LETTER_TO_DIGIT.get(c, c) if not c.isdigit() else c
-            return f"{prefix}-{suffix}"
-
-        # 2. Caso Estándar Ecuatoriano (3 Letras + 3 o 4 Dígitos: Total 6 o 7 caracteres)
-        if n in (6, 7):
-            prefix = ""
-            for i in range(3):
-                c = chars[i]
-                # Primera letra: validación estricta de provincia ANT
-                if i == 0 and c in CONFUSIONES_PRIMERA_LETRA:
-                    prefix += CONFUSIONES_PRIMERA_LETRA[c]
-                elif not c.isalpha():
-                    prefix += DIGIT_TO_LETTER.get(c, c)
-                else:
-                    # Si vino una letra que no es provincia (ej. 'D'), mapear a 'P'
-                    if i == 0 and c not in CODIGOS_PROVINCIALES_ANT:
-                        prefix += CONFUSIONES_PRIMERA_LETRA.get(c, c)
-                    else:
-                        prefix += c
-
-            suffix = ""
-            for i in range(3, n):
-                c = chars[i]
-                suffix += LETTER_TO_DIGIT.get(c, c) if not c.isdigit() else c
-
-            if len(prefix) == 3 and prefix.isalpha() and suffix.isdigit():
-                return f"{prefix}-{suffix}"
-
-        # 3. Caso Motocicletas (2 Letras + 3-4 Dígitos + 1 Letra opcional: Total 5 o 6 caracteres estrictos)
-        if (5 <= n <= 6) and chars[0].isalpha() and chars[1].isalpha() and (n == 5 or chars[2].isdigit()):
-            prefix = chars[0] + chars[1]
-            suffix = "".join(LETTER_TO_DIGIT.get(c, c) if i < n - 1 else c for i, c in enumerate(chars[2:]))
-            return f"{prefix}-{suffix}"
-
-        return clean
+        """Placa interpretada ("PBA-1234") o, si ningún formato encaja, el texto leído tal cual."""
+        interpretacion = cls.interpretar(text)
+        return interpretacion.placa or interpretacion.crudo
 
     @classmethod
     def validate(cls, raw_text: str) -> EcuadorPlateValidationResult:
@@ -220,8 +186,10 @@ class EcuadorPlateValidator:
         Valida exhaustivamente una matrícula contra la normativa ANT Ecuador.
         Retorna la estructura validada con provincia, tipo de servicio y score de confianza.
         """
-        cleaned = cls.sanitize(raw_text)
-        disambiguated = cls.disambiguate(cleaned)
+        interpretacion = cls.interpretar(raw_text)
+        cleaned = interpretacion.crudo
+        disambiguated = interpretacion.placa or cleaned
+        correcciones = interpretacion.correcciones
         clean_no_hyphen = disambiguated.replace("-", "")
 
         # 1. Validación de Matrícula Estándar (Automóviles / Camionetas / Buses)
@@ -249,6 +217,7 @@ class EcuadorPlateValidator:
                 tipo_vehiculo=tipo_veh,
                 provincia=provincia,
                 servicio=servicio,
+                correcciones=correcciones,
             )
 
         # 2. Validación de Cuerpo Diplomático
@@ -263,6 +232,7 @@ class EcuadorPlateValidator:
                 tipo_vehiculo="Diplomático / Misión",
                 provincia="Pichincha (Sede Cancillería)",
                 servicio=PREFIJOS_DIPLOMATICOS.get(prefix, "Organismo Internacional"),
+                correcciones=correcciones,
             )
 
         # 3. Validación de Motocicletas
@@ -278,6 +248,7 @@ class EcuadorPlateValidator:
                 tipo_vehiculo="Motocicleta / Bicimoto",
                 provincia=provincia,
                 servicio="Particular / Comercial",
+                correcciones=correcciones,
             )
 
         # 4. Placa Parcial o No Conforme

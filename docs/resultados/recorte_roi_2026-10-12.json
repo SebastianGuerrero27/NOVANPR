@@ -1,0 +1,67 @@
+{
+  "modelo": "models/license_plate_detector.pt",
+  "conf": 0.22,
+  "imgsz": 512,
+  "fraccion_region": 0.5,
+  "imagenes": 2048,
+  "imagenes_con_recorte": 2043,
+  "todas": {
+    "placas": 2816,
+    "recall_A": 0.8359,
+    "recall_B": 0.8565,
+    "solo_A": 48,
+    "solo_B": 106,
+    "mcnemar_chi2": 21.1,
+    "p": 4e-06
+  },
+  "solo_imagenes_con_recorte": {
+    "placas": 2803,
+    "recall_A": 0.8366,
+    "recall_B": 0.8573,
+    "solo_A": 48,
+    "solo_B": 106,
+    "mcnemar_chi2": 21.1,
+    "p": 4e-06
+  },
+  "por_tamano": {
+    "pequeña (<3 % del ancho)": {
+      "placas": 560,
+      "recall_A": 0.3786,
+      "recall_B": 0.475,
+      "solo_A": 10,
+      "solo_B": 64,
+      "mcnemar_chi2": 37.96,
+      "p": 0.0
+    },
+    "mediana (3–8 %)": {
+      "placas": 681,
+      "recall_A": 0.906,
+      "recall_B": 0.9236,
+      "solo_A": 10,
+      "solo_B": 22,
+      "mcnemar_chi2": 3.78,
+      "p": 0.05183
+    },
+    "grande (>=8 %)": {
+      "placas": 1575,
+      "recall_A": 0.9683,
+      "recall_B": 0.9632,
+      "solo_A": 28,
+      "solo_B": 20,
+      "mcnemar_chi2": 1.02,
+      "p": 0.312321
+    }
+  },
+  "falsos_positivos_en_region": {
+    "A": 139,
+    "B": 153
+  },
+  "ms_inferencia_mediana": {
+    "A": 99.6,
+    "B": 98.6
+  },
+  "ms_inferencia_media": {
+    "A": 111.3,
+    "B": 111.3
+  }
+}

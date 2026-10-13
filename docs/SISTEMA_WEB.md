@@ -25,13 +25,13 @@ frontend arma el menú, las rutas y las acciones con `puede(...)` a partir de lo
 | `/` | Inicio: panel del operador (su turno, cola de validación, alertas), panel del **gestor de accesos** (solicitudes, permisos por vencer, denegados de hoy, reincidentes) o panel de gestión (indicadores, ingresos por hora, 7 días, distribución, listas, exactitud de lectura, cámaras; el administrador ve además cuentas, accesos fallidos, actividad y servicios) |
 | `/monitoreo` | Video en vivo de las cámaras registradas (sin cámaras habilitadas: estado vacío con acceso al registro), último paso destacado, feed en tiempo real, aviso de alerta con sonido, consulta de placa, ingreso manual |
 | `/detecciones` | Registro de ingresos paginado con filtros en la URL, exportación CSV |
-| `/detecciones/:id` | Detalle: evidencia, lectura automática vs. confirmada, validez de la lectura (evidencias del motor), condiciones de captura, pasos anteriores, trazabilidad, acciones |
+| `/detecciones/:id` | Detalle: evidencia, lectura automática vs. confirmada, validez de la lectura (evidencias del motor, incluida la lectura directa de cada carácter y el texto leído por cada lector sin interpretar), condiciones de captura, pasos anteriores, trazabilidad, acciones |
 | `/listas/autorizados`, `/listas/alertas` | Permisos de placa (categoría, vigencia desde/hasta, horario) y lista de alertas, con filtro de vigencia |
 | `/solicitudes` | Solicitudes de acceso: crear, aprobar con ajustes de vigencia/horario, rechazar, cancelar |
 | `/notificaciones` | Bandeja de alarmas (sin leer / pendientes de atención), activación de Web Push en el equipo y avisos que recibe el rol |
 | `/reportes` | Reporte por período y cámara, impresión y exportación |
 | `/evaluacion` | Métricas científicas del reconocimiento |
-| `/usuarios`, `/auditoria`, `/camaras`, `/configuracion` | Administración (en Cámaras, **Área** dibuja la región de interés sobre el video) |
+| `/usuarios`, `/auditoria`, `/camaras`, `/configuracion` | Administración (en Cámaras, **Zonas** dibuja sobre el video el área de detección y las zonas de exclusión) |
 | `/perfil` | Datos propios y cambio de contraseña |
 
 ## Reconocimiento: cuadro de la placa y autorización automática
@@ -41,7 +41,11 @@ Cada placa en movimiento se dibuja desde que aparece y sigue al vehículo: ámba
 el backend decide, con el cuadrilátero ajustado a sus bordes y la zona de movimiento (MOG2);
 un objeto quieto solo se enmarca si hay evidencia de placa. Con la escena quieta el detector
 descansa (compuerta de movimiento) y el OCR solo lee placas completas, no cortadas por el
-borde. El HUD se dibuja sobre el video WebRTC con las coordenadas normalizadas del motor, dentro
+borde. El administrador dibuja sobre el video de cada cámara el **área de detección** (el carril:
+fuera de ella no se buscan placas, y el detector analiza solo ese recorte, con más detalle para las
+placas lejanas) y las **zonas de exclusión** (árboles, banderas, reflejos, la vereda o la hora
+sobreimpresa: ahí no cuenta el movimiento ni se buscan placas), de modo que el motor solo se activa
+cuando entra un vehículo; el HUD las muestra. El HUD se dibuja sobre el video WebRTC con las coordenadas normalizadas del motor, dentro
 del área visible de la imagen, de modo que sigue alineado al cambiar el tamaño del reproductor o
 la proporción del flujo; en el modo compatibilidad las cajas llegan dibujadas en el JPEG. Cada lectura
 lleva un veredicto de validez (formato, placa completa, fila de caracteres, consenso) que

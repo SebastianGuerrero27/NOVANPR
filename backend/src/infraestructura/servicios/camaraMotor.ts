@@ -1,7 +1,7 @@
 import sql from 'mssql';
 import { getDB } from '../db';
-import { enmascarar, parsearRoi } from '../../dominio/camaras';
-import { cambiarCamaraAnpr, estadoServicioAnpr, fijarRoiAnpr, fuenteActivaAnpr, Punto, roiActivaAnpr } from './servicioAnpr';
+import { enmascarar, parsearExclusiones, parsearRoi } from '../../dominio/camaras';
+import { cambiarCamaraAnpr, estadoServicioAnpr, fijarZonasAnpr, fuenteActivaAnpr, Punto, zonasActivasAnpr } from './servicioAnpr';
 import { emitEvent } from './socket';
 import { rutaCamara, sincronizarRutas, urlLecturaMotor } from './medios';
 
@@ -15,8 +15,9 @@ import { rutaCamara, sincronizarRutas, urlLecturaMotor } from './medios';
  * Si no hay una elegida (o se deshabilitó/eliminó), se usa la primera cámara habilitada.
  * El motor no se conecta directo a la cámara sino a su ruta en MediaMTX (una sola conexión
  * con la cámara, compartida con el video WebRTC de los navegadores).
- * Junto con la cámara se aplica su región de interés (Camaras.roi). Las reglas de la región y
- * del enmascarado de credenciales están en dominio/camaras.ts.
+ * Junto con la cámara se aplican sus zonas: la región de interés (Camaras.roi) y las zonas de
+ * exclusión (Camaras.exclusiones). Las reglas de las zonas y del enmascarado de credenciales están
+ * en dominio/camaras.ts.
  */
 const CLAVE = 'camara_motor_id';
 
@@ -30,15 +31,15 @@ export async function guardarCamaraMotor(id: number, usuarioId: number | null): 
 }
 
 /** Cámara que debería estar procesando el motor (elegida y habilitada, o la primera habilitada). */
-export async function camaraDeseada(): Promise<{ id: number; nombre: string; rtsp_url: string; roi: Punto[] | null } | null> {
+export async function camaraDeseada(): Promise<{ id: number; nombre: string; rtsp_url: string; roi: Punto[] | null; exclusiones: Punto[][] } | null> {
   const r = await getDB().request().input('clave', sql.VarChar(60), CLAVE).query(`
-    SELECT TOP 1 c.id, c.nombre, c.rtsp_url, c.roi
+    SELECT TOP 1 c.id, c.nombre, c.rtsp_url, c.roi, c.exclusiones
     FROM Camaras c
     LEFT JOIN ConfiguracionSistema cfg ON cfg.clave = @clave
     WHERE c.activa = 1
     ORDER BY CASE WHEN CAST(c.id AS NVARCHAR(20)) = cfg.valor THEN 0 ELSE 1 END, c.id`);
   const c = r.recordset[0];
-  return c ? { ...c, roi: parsearRoi(c.roi) } : null;
+  return c ? { ...c, roi: parsearRoi(c.roi), exclusiones: parsearExclusiones(c.exclusiones) } : null;
 }
 
 /** true si el motor está procesando exactamente la URL de la cámara indicada. */
@@ -60,16 +61,19 @@ export async function sincronizarCamaraMotor(forzar = false): Promise<boolean> {
     const estado = await estadoServicioAnpr();
     if (!estado.en_linea) return false;
     if (!forzar && (await motorProcesa(deseada))) {
-      // Misma cámara: solo se corrige la región de interés si el motor tiene otra
-      // (por ejemplo, se guardó mientras el motor estaba detenido)
-      const actual = await roiActivaAnpr();
-      if (actual !== undefined && JSON.stringify(actual) !== JSON.stringify(deseada.roi)) {
-        await fijarRoiAnpr(deseada.id, deseada.roi);
+      // Misma cámara: solo se corrigen las zonas si el motor tiene otras (por ejemplo, se
+      // guardaron mientras el motor estaba detenido)
+      const actual = await zonasActivasAnpr();
+      const deseadas = { roi: deseada.roi, exclusiones: deseada.exclusiones };
+      if (actual !== undefined && JSON.stringify(actual) !== JSON.stringify(deseadas)) {
+        await fijarZonasAnpr(deseada.id, deseada.roi, deseada.exclusiones);
       }
       return false;
     }
     await sincronizarRutas();
-    await cambiarCamaraAnpr({ id: deseada.id, nombre: deseada.nombre, rtsp_url: urlLecturaMotor(rutaCamara(deseada.id)), roi: deseada.roi }, forzar);
+    await cambiarCamaraAnpr({
+      id: deseada.id, nombre: deseada.nombre, rtsp_url: urlLecturaMotor(rutaCamara(deseada.id)), roi: deseada.roi, exclusiones: deseada.exclusiones,
+    }, forzar);
     console.log(`[MONITOREO] Motor ANPR asignado a la cámara #${deseada.id} (${deseada.nombre})`);
     emitEvent('monitoreo:camara', { camara_id: deseada.id, nombre: deseada.nombre, por: 'Sistema' });
     return true;

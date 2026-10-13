@@ -25,6 +25,7 @@ function preparar(opciones: { alerta?: Fila | null; permiso?: Fila | null; exist
     existeCamara: jest.fn().mockResolvedValue(true),
     crearIngreso: jest.fn().mockResolvedValue({ id: 15, fecha_hora_ingreso: AHORA }),
     guardarMetadatos: jest.fn().mockResolvedValue(undefined),
+    guardarVehiculo: jest.fn().mockResolvedValue(undefined),
     registrarLecturaAutomatica: jest.fn().mockResolvedValue(undefined),
     marcarNoLegible: jest.fn().mockResolvedValue(undefined),
     pasoProcesadoConPlaca: jest.fn().mockResolvedValue(null),
@@ -82,10 +83,18 @@ describe('Detecciones · servicio ANPR', () => {
     const { casos, repositorio, eventos } = preparar();
     const r = await casos.ingreso({ tracking_id: 4, ruta_imagen_ingreso: 'x.jpg', placa: 'pba-12', camara_id: '2', confianza_deteccion: 0.91, metadatos: { luz: 1 } });
     expect(r).toEqual({ nuevo: true, respuesta: { message: 'Ingreso registrado (pendiente de OCR).', ingreso_id: 15, fecha_hora_ingreso: AHORA } });
-    expect(repositorio.mismoPaso).toHaveBeenCalledWith(4, 'PBA12');
+    expect(repositorio.mismoPaso).toHaveBeenCalledWith(4, 'PBA12', 2);
     expect(repositorio.crearIngreso).toHaveBeenCalledWith({ trackingId: 4, pista: 'PBA12', ruta: 'x.jpg', confianza: 0.91, fuente: 'rtsp', camaraId: 2 });
     expect(repositorio.guardarMetadatos).toHaveBeenCalledWith(15, { luz: 1 });
     expect(eventos.emitir).toHaveBeenCalledWith('deteccion:nueva', expect.objectContaining({ id: 15 }));
+  });
+
+  it('fase 1: el mismo paso se busca en la cámara que lo vio; una cámara inexistente no se usa', async () => {
+    const { casos, repositorio } = preparar();
+    repositorio.existeCamara.mockResolvedValue(false);
+    await casos.ingreso({ tracking_id: 7, ruta_imagen_ingreso: 'x.jpg', placa: 'PBA1234', camara_id: 99 });
+    expect(repositorio.mismoPaso).toHaveBeenCalledWith(7, 'PBA1234', null);
+    expect(repositorio.crearIngreso).toHaveBeenCalledWith(expect.objectContaining({ camaraId: null }));
   });
 
   it('fase 2 sin lectura utilizable: queda para el personal y no se elimina la evidencia', async () => {
@@ -135,6 +144,62 @@ describe('Detecciones · servicio ANPR', () => {
     // La URL de lectura del motor (con su token) nunca llega a la base
     await casos.descarte({ tracking_id: 3, fuente: 'rtsp://anpr:token-de-servicio@mediamtx:8554/cam_1' });
     expect(repositorio.registrarDescarte).toHaveBeenLastCalledWith(expect.objectContaining({ fuente: 'rtsp' }));
+  });
+});
+
+describe('Detecciones · reevaluación tras el registro rápido', () => {
+  it('el segundo OCR que llega después confirma la lectura: de por confirmar pasa a autorizado y se avisa', async () => {
+    const { casos, repositorio, avisos } = preparar({
+      permiso: PERMISO_VIGENTE, existente: fila({ estado_validacion: 'pendiente_revision', lectura_valida: false, confianza_ocr: 0.95 }),
+    });
+    const r = await casos.reevaluar({
+      ingreso_id: 15, placa_reconocida: 'PBA-1234', confianza_ocr: 0.97, lectura_verificador: 'PBA-1234', lectura_valida: true, evidencia_lectura: { valido: true },
+    });
+    expect(r).toMatchObject({ reevaluado: true, cambio: true });
+    expect(repositorio.guardarVeredicto).toHaveBeenCalledWith(15, true, '{"valido":true}');
+    expect(repositorio.guardarDecisionAutomatica).toHaveBeenCalledWith(15, expect.objectContaining({ placa: 'PBA1234', rutaPlaca: null }),
+      expect.anything(), expect.objectContaining({ estado: 'autorizado', regla: 'R5' }));
+    expect(avisos.decision).toHaveBeenCalledTimes(1);
+  });
+
+  it('los atributos del vehículo que llegan después aplican el segundo factor: un vehículo distinto deja de estar autorizado', async () => {
+    const { casos, repositorio, avisos, compararVehiculo } = preparar({
+      permiso: PERMISO_VIGENTE, existente: fila({ estado_validacion: 'autorizado', lectura_valida: true, confianza_ocr: 0.95 }),
+    });
+    compararVehiculo.mockReturnValue({ resultado: 'no_coincide', detalle: 'color: observado rojo, registrado blanco' });
+    await casos.reevaluar({ ingreso_id: 15, vehiculo: { tipo: 'auto', color: 'rojo' } });
+    expect(repositorio.guardarVehiculo).toHaveBeenCalledWith(15, { tipo: 'auto', color: 'rojo' });
+    expect(repositorio.guardarVeredicto).not.toHaveBeenCalled();   // sin veredicto nuevo se conserva el del registro
+    expect(repositorio.guardarDecisionAutomatica).toHaveBeenCalledWith(15, expect.anything(), expect.anything(),
+      expect.objectContaining({ estado: 'pendiente_revision', regla: 'R4' }));
+    expect(avisos.decision).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ estado: 'pendiente_revision' }), PERMISO_VIGENTE);
+  });
+
+  it('sin cambio de estado no se repite el aviso; lo validado por el personal y las alertas se conservan', async () => {
+    const igual = preparar({ permiso: PERMISO_VIGENTE, existente: fila({ estado_validacion: 'autorizado', lectura_valida: true, confianza_ocr: 0.95 }) });
+    expect(await igual.casos.reevaluar({ ingreso_id: 15, vehiculo: { color: 'blanco' } })).toMatchObject({ reevaluado: true, cambio: false });
+    expect(igual.avisos.decision).not.toHaveBeenCalled();
+
+    const validado = preparar({ existente: fila({ estado_validacion: 'autorizado', validado_manualmente: true }) });
+    expect(await validado.casos.reevaluar({ ingreso_id: 15, lectura_valida: false, vehiculo: { color: 'rojo' } })).toMatchObject({ reevaluado: false });
+    expect(validado.repositorio.guardarVehiculo).toHaveBeenCalled();   // la evidencia del vehículo sí se guarda
+    expect(validado.repositorio.guardarDecisionAutomatica).not.toHaveBeenCalled();
+
+    const alerta = preparar({ existente: fila({ estado_validacion: 'alerta' }) });
+    expect(await alerta.casos.reevaluar({ ingreso_id: 15, placa_reconocida: 'XYZ999', lectura_valida: true })).toMatchObject({ reevaluado: false });
+    expect(alerta.repositorio.guardarDecisionAutomatica).not.toHaveBeenCalled();
+
+    expect((await fallo(preparar().casos.reevaluar({ ingreso_id: 'x' }))).tipo).toBe('validacion');
+  });
+
+  it('si el segundo OCR lee otra placa, esa se cruza con las listas: en la lista de alertas, el paso pasa a alerta', async () => {
+    const { casos, repositorio, avisos } = preparar({
+      alerta: { id: 5, placa: 'PBA1284' }, existente: fila({ estado_validacion: 'no_reconocido', placa_reconocida: 'PBA1234' }),
+    });
+    await casos.reevaluar({ ingreso_id: 15, placa_reconocida: 'PBA1284', lectura_valida: false });
+    expect(repositorio.guardarDecisionAutomatica).toHaveBeenCalledWith(15, expect.objectContaining({ placa: 'PBA1284' }), expect.anything(),
+      expect.objectContaining({ estado: 'alerta', regla: 'R1' }));
+    expect(avisos.decision).toHaveBeenCalledTimes(1);
   });
 });
 

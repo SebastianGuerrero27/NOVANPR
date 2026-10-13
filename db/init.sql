@@ -161,6 +161,7 @@ BEGIN
         tiempo_respuesta_ms  INT           NULL,
         mensaje_ping         VARCHAR(255)  NULL,
         roi                  NVARCHAR(1000) NULL,  -- región de interés: JSON [[x,y],...] normalizado 0–1
+        exclusiones          NVARCHAR(MAX) NULL,   -- zonas de exclusión: JSON [[[x,y],...],...] normalizado 0–1
         registrado_por       INT           NULL REFERENCES Usuarios(id),
         created_at           DATETIME      NOT NULL DEFAULT GETDATE(),
         fecha_actualizacion  DATETIME2     NULL

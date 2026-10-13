@@ -154,6 +154,8 @@ class BackendRegistrador:
             return Respuesta(201, {"ingreso_id": self._id})
         if url.endswith("/detecciones/completar-ocr"):
             return Respuesta(200, {"deteccion": {"estado_validacion": "autorizado"}})
+        if url.endswith("/detecciones/reevaluar"):
+            return Respuesta(200, {"reevaluado": True, "deteccion": {"estado_validacion": "autorizado"}})
         return Respuesta(201, {"success": True})
 
     def get(self, *a, **k):

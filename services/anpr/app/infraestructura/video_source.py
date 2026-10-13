@@ -240,6 +240,8 @@ class RTSPSource(VideoSource):
         with self._lock:
             if self._latest_frame is None or time.time() - self._last_frame_time > 3.0:
                 return False, None
+            # Hora en que el lector recibió este cuadro (base de la latencia de punta a punta)
+            self.hora_entregada = self._last_frame_time
             return True, self._latest_frame.copy()
 
     def release(self) -> None:

@@ -359,10 +359,14 @@ export const RUTAS: RutaDoc[] = [
   },
   {
     metodo: 'put', ruta: '/api/camaras/:id(\\d+)/roi', etiqueta: 'Cámaras', acceso: 'camaras:operar',
-    resumen: 'Define la región de interés de la cámara',
-    descripcion: 'Polígono de 3 a 12 vértices con coordenadas numéricas normalizadas (0–1); el motor solo busca placas cuyo centro cae dentro. `null` o `[]` usa el cuadro completo.',
-    cuerpo: { roi: { tipo: 'array', descripcion: 'Vértices [[x, y], …] normalizados, o null', ejemplo: [[0.1, 0.3], [0.9, 0.3], [0.9, 0.95], [0.1, 0.95]] } },
-    respuestas: { 400: 'Región o identificador inválidos', 404: 'Cámara no encontrada' },
+    resumen: 'Define la región de interés y las zonas de exclusión de la cámara',
+    descripcion: 'Región de interés: polígono de 3 a 12 vértices con coordenadas numéricas normalizadas (0–1); el motor solo busca placas cuyo centro cae dentro. `null` o `[]` usa el cuadro completo. '
+      + 'Zonas de exclusión: hasta 8 polígonos con las mismas reglas donde no cuenta el movimiento ni se buscan placas (árboles, banderas, reflejos, la hora sobreimpresa). Un campo ausente no cambia lo guardado (`roi: null` usa el cuadro completo, `exclusiones: []` las quita); debe llegar al menos uno.',
+    cuerpo: {
+      roi: { tipo: 'array', descripcion: 'Vértices [[x, y], …] normalizados, o null', ejemplo: [[0.1, 0.3], [0.9, 0.3], [0.9, 0.95], [0.1, 0.95]] },
+      exclusiones: { tipo: 'array', descripcion: 'Polígonos [[[x, y], …], …] normalizados (opcional)', ejemplo: [[[0.7, 0.0], [1.0, 0.0], [1.0, 0.25], [0.7, 0.25]]] },
+    },
+    respuestas: { 400: 'Zonas o identificador inválidos', 404: 'Cámara no encontrada' },
   },
   {
     metodo: 'delete', ruta: '/api/camaras/:id(\\d+)', etiqueta: 'Cámaras', acceso: 'camaras:gestionar',
@@ -448,6 +452,20 @@ export const RUTAS: RutaDoc[] = [
       evidencia_lectura: { tipo: 'object', descripcion: 'Evidencias que respaldan el veredicto' },
     },
     respuestas: { 400: 'Falta el ID de ingreso', 404: 'Ingreso no encontrado' },
+  },
+  {
+    metodo: 'post', ruta: '/api/detecciones/reevaluar', etiqueta: 'Detecciones', acceso: 'servicio',
+    resumen: 'Fase 3: segundo OCR o atributos del vehículo llegados después del registro; se decide de nuevo con las mismas reglas',
+    cuerpo: {
+      ingreso_id: { tipo: 'integer', requerido: true, ejemplo: 1532 },
+      placa_reconocida: { tipo: 'string', descripcion: 'Si el segundo OCR leyó otra placa', ejemplo: 'PBA1234' },
+      confianza_ocr: { tipo: 'number', ejemplo: 0.98 },
+      lectura_verificador: { tipo: 'string', ejemplo: 'PBA1234' },
+      lectura_valida: { tipo: 'boolean', descripcion: 'Veredicto nuevo del motor (si llegó el segundo OCR)' },
+      evidencia_lectura: { tipo: 'object' },
+      vehiculo: { tipo: 'object', descripcion: 'Atributos observados: tipo, color, marca, modelo (segundo factor)' },
+    },
+    respuestas: { 200: 'Reevaluado (o decisión vigente conservada: validado por el personal o alerta)', 400: 'Falta el ID de ingreso', 404: 'Ingreso no encontrado' },
   },
   {
     metodo: 'post', ruta: '/api/detecciones/descarte', etiqueta: 'Detecciones', acceso: 'servicio',

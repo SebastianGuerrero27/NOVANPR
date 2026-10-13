@@ -11,8 +11,8 @@
 #    25 fps (GOP 25, sin B-frames, ~4 Mb/s) y secundario H.264 640×360 (~0,5 Mb/s).
 # 2. Levanta camara-hik (MediaMTX 1.21 con FFmpeg): RTSP en el 554, Digest, admin con contraseña
 #    con símbolos y las rutas /Streaming/Channels/101 y 102.
-# 3. Registra la cámara, verifica cifrado, diagnóstico Digest, edición, video y motor; mide 40 s de
-#    análisis y un corte de red de 15 s (docker network disconnect) con su recuperación.
+# 3. Registra la cámara, verifica cifrado, diagnóstico Digest, edición, zonas, video y motor; mide 40 s
+#    de análisis y un corte de red de 15 s (docker network disconnect) con su recuperación.
 # 4. Limpia: borra las detecciones y la cámara de prueba, restaura la cámara del motor y elimina
 #    camara-hik. El resultado queda en .trabajo/resultado_e2e.txt.
 set -u
@@ -55,6 +55,9 @@ if [ -z "$ID" ]; then log "sin cámara creada: fin"; docker rm -f camara-hik >/d
 
 log "== 2. Diagnóstico con la contraseña correcta e incorrecta"
 nodo sonda | tee -a "$R"
+
+log "== 2b. Zonas: área de detección y zona de exclusión (las aplica el motor)"
+nodo zonas "$ID" | tee -a "$R"
 
 log "== 3. Flujos a través de MediaMTX (lectura RTSP con las credenciales del motor)"
 for ruta in "cam_${ID}_vista" "cam_${ID}"; do

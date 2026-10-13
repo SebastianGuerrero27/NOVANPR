@@ -13,6 +13,8 @@ import dis
 import re
 from typing import Optional, Tuple, List, Union
 
+from app.dominio.interpretacion_placa import DIPLOMATICO, MOTO, PARTICULAR, Formato, interpretar
+
 
 class PlateString(str):
     """
@@ -186,82 +188,29 @@ def sanitize_raw_text(raw_text: str) -> str:
     return re.sub(r"[^A-Z0-9]", "", text)
 
 
+# Estatal corto (1 letra + 4 o 5 dígitos, ej: E-12345); la letra leída es E o un dígito confundido
+ESTATAL_CORTO = Formato("estatal", ("LDDDD", "LDDDDD"), separador=1, primeras=frozenset({"E", *DIGIT_TO_LETTER}))
+FORMATOS = (DIPLOMATICO, PARTICULAR, MOTO, ESTATAL_CORTO)
+
+
+def interpretar_lectura(text: str):
+    """
+    Formato que explica el texto con menos sustituciones (diplomático, particular, moto o estatal,
+    en ese orden ante empates). La 'D' inicial se lee como 'P' (no hay provincia D) y queda
+    registrada como corrección igual que las demás.
+    """
+    return interpretar(text, formatos=FORMATOS, digito_a_letra=DIGIT_TO_LETTER, letra_a_digito=LETTER_TO_DIGIT,
+                       primera_letra={"D": "P"}, ruido=HEADER_NOISE_WORDS)
+
+
 def disambiguate_plate(text: str) -> str:
     """
-    Aplica desambiguación de caracteres dependiente de la posición para matrículas ecuatorianas.
-    Ejemplo: '0BA123A' -> 'OBA-1234' | 'PBA-I234' -> 'PBA-1234' | 'TCA9O12' -> 'TCA-9012'
+    Placa interpretada según el formato que necesita menos sustituciones o, si ninguno encaja, el
+    texto leído tal cual. Ejemplo: 'PBA-I234' -> 'PBA-1234' | 'TCA9O12' -> 'TCA-9012' |
+    'AB123A' -> 'AB-123A' (moto leída bien: no se convierte en la placa de auto 'ABI-234').
     """
-    clean = sanitize_raw_text(text)
-    if len(clean) < 4:
-        return clean
-
-    chars = list(clean)
-    n = len(chars)
-
-    # 1. Caso Especial Diplomático/Oficial (2 Letras + 4 Dígitos, ej: CC-1234, PP-5678, CD-0123)
-    if n == 6 and clean[:2] in ("CC", "CD", "OI", "AT", "PP"):
-        prefix = clean[:2]
-        suffix = ""
-        for i in range(2, 6):
-            c = chars[i]
-            suffix += LETTER_TO_DIGIT.get(c, c) if not c.isdigit() else c
-        if suffix.isdigit():
-            return f"{prefix}-{suffix}"
-
-    # 2. Caso Estándar Ecuatoriano (6 o 7 caracteres: 3 Letras + 3 o 4 Dígitos)
-    if n in (6, 7):
-        prefix = ""
-        for i in range(3):
-            c = chars[i]
-            prefix += DIGIT_TO_LETTER.get(c, c) if not c.isalpha() else c
-
-        # Corrección de confusión OCR común en inicial de provincia ('D' -> 'P')
-        if prefix and prefix[0] == "D":
-            prefix = "P" + prefix[1:]
-
-        suffix = ""
-        for i in range(3, n):
-            c = chars[i]
-            suffix += LETTER_TO_DIGIT.get(c, c) if not c.isdigit() else c
-
-        # Validar si el prefijo tiene 3 letras y el sufijo 3-4 dígitos
-        if len(prefix) == 3 and prefix.isalpha() and suffix.isdigit():
-            return f"{prefix}-{suffix}"
-
-    # 3. Caso Motocicleta (2 Letras + 3 o 4 Dígitos + opcional 1 Letra, ej: PB-123A o PB-1234)
-    if n in (5, 6):
-        prefix = ""
-        for i in range(2):
-            c = chars[i]
-            prefix += DIGIT_TO_LETTER.get(c, c) if not c.isalpha() else c
-
-        mid_digits = ""
-        for i in range(2, n):
-            c = chars[i]
-            if i == n - 1 and chars[i].isalpha() and n == 6:
-                # Último carácter puede ser letra en algunas motos
-                mid_digits += DIGIT_TO_LETTER.get(c, c)
-            else:
-                mid_digits += LETTER_TO_DIGIT.get(c, c) if not c.isdigit() else c
-
-        # Debe tener al menos 3 dígitos válidos para ser una matrícula legítima de motocicleta
-        num_digits = sum(1 for ch in mid_digits if ch.isdigit())
-        if len(prefix) == 2 and prefix.isalpha() and num_digits >= 3:
-            return f"{prefix}-{mid_digits}"
-
-    # 4. Caso Estatal Corto (1 Letra + 4 o 5 Dígitos, ej: E-12345)
-    if n in (5, 6) and (chars[0] == "E" or chars[0] in DIGIT_TO_LETTER):
-        first_letter = DIGIT_TO_LETTER.get(chars[0], chars[0]) if not chars[0].isalpha() else chars[0]
-        suffix = ""
-        for i in range(1, n):
-            c = chars[i]
-            suffix += LETTER_TO_DIGIT.get(c, c) if not c.isdigit() else c
-        if first_letter.isalpha() and suffix.isdigit():
-            return f"{first_letter}-{suffix}"
-
-    return clean
-
-
+    interpretacion = interpretar_lectura(text)
+    return interpretacion.placa or interpretacion.crudo
 def clean_ocr_mistakes(text: str) -> str:
     """
     Corrige confusiones de homoglifos OCR posicionales según la normativa ecuatoriana ANT.
@@ -318,8 +267,14 @@ def extract_plate_from_tokens(tokens: List[str]) -> Tuple[str, float]:
     Ensambla tokens OCR individuales (ej: ['ECUADOR', 'PBA', '1234'])
     buscando combinaciones horizontales y verticales que formen una matrícula válida.
     """
+    placa, score, _ = extraer_placa(tokens)
+    return placa, score
+
+
+def extraer_placa(tokens: List[str]) -> Tuple[str, float, str]:
+    """Como extract_plate_from_tokens, y además el texto leído (antes de interpretarlo) del que sale la placa."""
     if not tokens:
-        return "", 0.0
+        return "", 0.0, ""
 
     filtered_tokens = []
     for t in tokens:
@@ -328,13 +283,13 @@ def extract_plate_from_tokens(tokens: List[str]) -> Tuple[str, float]:
             filtered_tokens.append(clean)
 
     if not filtered_tokens:
-        return "", 0.0
+        return "", 0.0, ""
 
     # 1. Probar tokens individuales directos
     for t in filtered_tokens:
         is_valid, plate, score = validate_ecuadorian_plate(t)
         if is_valid:
-            return plate, score
+            return plate, score, t
 
     # 2. Probar combinaciones de pares consecutivos (ej: 'PBA' + '1234' -> 'PBA1234')
     for i in range(len(filtered_tokens)):
@@ -342,19 +297,19 @@ def extract_plate_from_tokens(tokens: List[str]) -> Tuple[str, float]:
             combined = filtered_tokens[i] + filtered_tokens[j]
             is_valid, plate, score = validate_ecuadorian_plate(combined)
             if is_valid:
-                return plate, score
+                return plate, score, combined
 
             # Probar orden inverso
             combined_rev = filtered_tokens[j] + filtered_tokens[i]
             is_valid, plate, score = validate_ecuadorian_plate(combined_rev)
             if is_valid:
-                return plate, score
+                return plate, score, combined_rev
 
     # 3. Probar concatenación total
     all_combined = "".join(filtered_tokens)
     is_valid, plate, score = validate_ecuadorian_plate(all_combined)
     if is_valid:
-        return plate, score
+        return plate, score, all_combined
 
     # 4. Búsqueda de subcadena con Regex dentro del texto concatenado
     match = re.search(r"([A-Z0-9]{3})[-_\s]?([A-Z0-9]{3,4})", all_combined)
@@ -362,9 +317,9 @@ def extract_plate_from_tokens(tokens: List[str]) -> Tuple[str, float]:
         extracted = match.group(1) + match.group(2)
         is_valid, plate, score = validate_ecuadorian_plate(extracted)
         if is_valid:
-            return plate, score
+            return plate, score, extracted
 
     # Retornar el token más prometedor con formato
     best_raw = max(filtered_tokens, key=len)
     disambiguated = disambiguate_plate(best_raw)
-    return disambiguated, 0.40
+    return disambiguated, 0.40, best_raw

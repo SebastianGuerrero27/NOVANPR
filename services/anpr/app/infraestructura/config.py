@@ -65,6 +65,9 @@ OCR_VERIFIER_ENABLED: bool = os.getenv("OCR_VERIFIER_ENABLED", "true").lower() i
 OCR_VERIFIER_MODEL: str = os.getenv("OCR_VERIFIER_MODEL", "medium").lower()  # tiny | small | medium
 OCR_VERIFIER_ENGINE: str = os.getenv("OCR_VERIFIER_ENGINE", "openvino").lower()  # openvino | onnxruntime
 OCR_VERIFIER_MAX_MS: float = float(os.getenv("OCR_VERIFIER_MAX_MS", "2000"))
+# Tiempo máximo desde la captura de la foto del paso hasta su registro (0: esperar a todas las
+# etapas). Lo que llegue después (segundo OCR, atributos del vehículo) se envía como reevaluación.
+REGISTRO_MAX_MS: float = float(os.getenv("REGISTRO_MAX_MS", "1000"))
 # Peso del voto del verificador en el consenso temporal (una lectura normal pesa su confianza ≤ 1)
 OCR_VERIFIER_VOTE_WEIGHT: float = float(os.getenv("OCR_VERIFIER_VOTE_WEIGHT", "2.0"))
 
@@ -107,6 +110,10 @@ PLATE_DETECTOR_ARCH: str = os.getenv("PLATE_DETECTOR_ARCH", "yolo26").lower()
 MOTION_GATE_ENABLED: bool = os.getenv("MOTION_GATE_ENABLED", "true").lower() in ("true", "1", "yes")
 MOTION_GATE_MIN_FRACTION: float = float(os.getenv("MOTION_GATE_MIN_FRACTION", "0.002"))
 MOTION_GATE_MAX_SKIP: int = int(os.getenv("MOTION_GATE_MAX_SKIP", "5"))
+
+# Con región de interés, el detector analiza solo su recorte (más píxeles por placa a la misma
+# resolución de inferencia). "false" vuelve al cuadro completo, p. ej. para medir su efecto.
+ROI_CROP_INFERENCE: bool = os.getenv("ROI_CROP_INFERENCE", "true").lower() in ("true", "1", "yes")
 
 # =============================================================================
 # Modo de Depuración Visual

@@ -1,0 +1,32 @@
+{
+  "A_sin_zonas": {
+    "cuadros": 460,
+    "inferencias": 356,
+    "inferencias_pct": 77.4,
+    "segundos": 32.1,
+    "ms_por_cuadro": 69.8,
+    "cuadros_con_placa_en_el_carril": 320,
+    "cuadros_con_placa_falsa_en_los_arboles": 427,
+    "cuadros_con_movimiento_sin_placa_en_el_carril": 58
+  },
+  "B_exclusion_arboles": {
+    "cuadros": 460,
+    "inferencias": 259,
+    "inferencias_pct": 56.3,
+    "segundos": 24.5,
+    "ms_por_cuadro": 53.3,
+    "cuadros_con_placa_en_el_carril": 319,
+    "cuadros_con_placa_falsa_en_los_arboles": 0,
+    "cuadros_con_movimiento_sin_placa_en_el_carril": 58
+  },
+  "C_carril_y_exclusion": {
+    "cuadros": 460,
+    "inferencias": 259,
+    "inferencias_pct": 56.3,
+    "segundos": 22.9,
+    "ms_por_cuadro": 49.7,
+    "cuadros_con_placa_en_el_carril": 319,
+    "cuadros_con_placa_falsa_en_los_arboles": 0,
+    "cuadros_con_movimiento_sin_placa_en_el_carril": 58
+  }
+}

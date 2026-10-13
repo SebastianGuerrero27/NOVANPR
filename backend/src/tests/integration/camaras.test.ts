@@ -45,7 +45,7 @@ jest.mock('../../infraestructura/db', () => {
         }
         if (/FROM Camaras c WHERE c\.id = @id/.test(texto)) return resultado(c ? [c] : []);
         if (/FROM Camaras c ORDER BY c\.nombre/.test(texto)) return resultado([...mockBase.camaras.values()]);
-        if (/SELECT id, nombre, ip, rtsp_url, rtsp_url_vista, activa FROM Camaras WHERE id = @id/.test(texto)) return resultado(c ? [c] : []);
+        if (/SELECT id, nombre, ip, rtsp_url, rtsp_url_vista, activa, roi, exclusiones FROM Camaras WHERE id = @id/.test(texto)) return resultado(c ? [c] : []);
         if (/SELECT id, nombre, rtsp_url, ip FROM Camaras WHERE activa = 1/.test(texto)) {
           return resultado([...mockBase.camaras.values()].filter(x => x.activa));
         }
@@ -71,9 +71,10 @@ jest.mock('../../infraestructura/db', () => {
           c.activa = !c.activa;
           return resultado([{ nombre: c.nombre, activa: c.activa }]);
         }
-        if (/UPDATE Camaras SET roi = @roi/.test(texto)) {
+        if (/UPDATE Camaras SET (roi = @roi|exclusiones = @exclusiones)/.test(texto)) {
           if (!c) return resultado();
-          c.roi = entradas.roi;
+          if (/roi = @roi/.test(texto)) c.roi = entradas.roi;
+          if (/exclusiones = @exclusiones/.test(texto)) c.exclusiones = entradas.exclusiones;
           return resultado([{ nombre: c.nombre }]);
         }
         if (/DELETE FROM Camaras WHERE id = @id/.test(texto)) {
@@ -109,8 +110,8 @@ jest.mock('../../infraestructura/servicios/servicioAnpr', () => ({
   ...jest.requireActual('../../infraestructura/servicios/servicioAnpr'),
   estadoServicioAnpr: jest.fn().mockResolvedValue({ en_linea: false, error: 'Servicio no disponible' }),
   cambiarCamaraAnpr: jest.fn().mockResolvedValue({}),
-  fijarRoiAnpr: jest.fn().mockResolvedValue({}),
-  roiActivaAnpr: jest.fn().mockResolvedValue(undefined),
+  fijarZonasAnpr: jest.fn().mockResolvedValue({}),
+  zonasActivasAnpr: jest.fn().mockResolvedValue(undefined),
   fuenteActivaAnpr: jest.fn().mockResolvedValue(null),
 }));
 
@@ -238,6 +239,26 @@ describe('API · cámaras, monitoreo y medios', () => {
       const sinRoi = await request(app).put('/api/camaras/3/roi').set(como('Admin')).send({ roi: null }).expect(200);
       expect(sinRoi.body).toMatchObject({ message: 'Región de interés eliminada: se analiza el cuadro completo.', camera: { roi: null } });
       await request(app).put('/api/camaras/3/roi').set(como('Guardia')).send({ roi: null }).expect(403);
+
+      // Zonas de exclusión (solo el administrador las dibuja): se guardan, se validan y sin el campo no cambian
+      const bandera = [[0.7, 0], [1, 0], [1, 0.25], [0.7, 0.25]];
+      const zonas = await request(app).put('/api/camaras/3/roi').set(como('Admin'))
+        .send({ roi: [[0.1, 0.3], [0.9, 0.3], [0.5, 0.95]], exclusiones: [bandera] }).expect(200);
+      expect(zonas.body).toMatchObject({ message: 'Zonas guardadas: región de interés, 1 zona de exclusión.', camera: { exclusiones: [bandera] } });
+      const soloRoi = await request(app).put('/api/camaras/3/roi').set(como('Admin')).send({ roi: null }).expect(200);
+      expect(soloRoi.body.camera.exclusiones).toEqual([bandera]);
+      // Solo exclusiones: la región guardada no cambia
+      await request(app).put('/api/camaras/3/roi').set(como('Admin')).send({ roi: [[0.1, 0.3], [0.9, 0.3], [0.5, 0.95]] }).expect(200);
+      const soloExclusiones = await request(app).put('/api/camaras/3/roi').set(como('Admin')).send({ exclusiones: [bandera] }).expect(200);
+      expect(soloExclusiones.body).toMatchObject({
+        message: 'Zonas de exclusión guardadas: 1 zona de exclusión.', camera: { roi: [[0.1, 0.3], [0.9, 0.3], [0.5, 0.95]], exclusiones: [bandera] },
+      });
+      await request(app).put('/api/camaras/3/roi').set(como('Admin')).send({}).expect(400);
+      await request(app).put('/api/camaras/3/roi').set(como('Admin')).send({ roi: null, exclusiones: [[[0, 0], [1, 1]]] })
+        .expect(400, { error: 'Zona de exclusión 1: debe tener entre 3 y 12 vértices.' });
+      await request(app).put('/api/camaras/3/roi').set(como('Guardia')).send({ roi: null, exclusiones: [] }).expect(403);
+      const sinZonas = await request(app).put('/api/camaras/3/roi').set(como('Admin')).send({ roi: null, exclusiones: [] }).expect(200);
+      expect(sinZonas.body).toMatchObject({ message: 'Zonas guardadas: cuadro completo, sin zonas de exclusión.', camera: { exclusiones: [] } });
 
       const conHistorial = await request(app).delete('/api/camaras/5').set(como('Admin')).expect(409);
       expect(conHistorial.body.error).toBe('La cámara tiene 12 detecciones registradas: deshabilítela en lugar de eliminarla para conservar el historial.');

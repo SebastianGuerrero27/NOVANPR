@@ -1,0 +1,15 @@
+{
+  "secuencia": "escena_hikvision_simulada",
+  "video": "../../../../backend/scripts/camara_hikvision_simulada/.trabajo/principal_h265.mp4",
+  "camara": "Hikvision simulada: H.265 Main, 1920x1080, 25 fps, GOP 25, sin B-frames (backend/scripts/camara_hikvision_simulada)",
+  "particion": "prueba",
+  "condiciones": ["sintetica", "interior", "placa_cercana"],
+  "zonas": { "roi": null, "exclusiones": [] },
+  "pasos": [
+    { "placa": "PSY589", "legible": true, "inicio_s": 0.8, "fin_s": 4.52 },
+    { "placa": "PSY589", "legible": true, "inicio_s": 5.4, "fin_s": 9.12 },
+    { "placa": "PSY589", "legible": true, "inicio_s": 10.0, "fin_s": 13.72 },
+    { "placa": "PSY589", "legible": true, "inicio_s": 14.6, "fin_s": 18.32 }
+  ],
+  "notas": "Escena compuesta (escena.py) con cuatro capturas reales del piloto que entran por la izquierda, se detienen 1,6 s y salen por la derecha. Intervalos de cada paso medidos por diferencia con el fondo; placas etiquetadas por inspección visual de los cuadros centrales: las cuatro son PSY589 (el piloto tenía pocas placas). No representa una garita real: sirve para validar el evaluador y como condición controlada."
+}

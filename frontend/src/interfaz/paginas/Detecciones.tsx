@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useMemo, useRef, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { Download, Filter, RefreshCw, Search, Trash2, X } from 'lucide-react';
 import api, { mensajeError } from '../../infraestructura/api';
@@ -68,10 +68,17 @@ const Detecciones: React.FC = () => {
   const { datos: camaras } = useConsulta<Camara[]>(() => api.get('/camaras').then(r => r.data), []);
 
   // En vivo: las filas visibles se actualizan; los ingresos nuevos se anuncian sin mover la tabla
-  useEvento<Deteccion>('deteccion:nueva', () => setNuevos(n => n + 1));
+  const anunciados = useRef(new Set<number>());
+  const olvidarAnunciados = () => { anunciados.current.clear(); setNuevos(0); };
+  useEvento<Deteccion>('deteccion:nueva', d => { anunciados.current.add(d.id); setNuevos(anunciados.current.size); });
   useEvento<Deteccion>('deteccion:actualizada', d => setDatos(p => p && { ...p, items: p.items.map(x => (x.id === d.id ? d : x)) }));
-  useEvento<{ id: number }>('deteccion:eliminada', ({ id }) => setDatos(p => p && { ...p, items: p.items.filter(x => x.id !== id), total: p.total - 1 }));
-  useEvento('deteccion:eliminadas', () => { setNuevos(0); recargar(true); });
+  // Un ingreso eliminado (o consolidado con su paso previo) sale de la tabla y del total solo si se
+  // estaba mostrando, y del aviso si se había anunciado: los demás nunca se contaron aquí
+  useEvento<{ id: number }>('deteccion:eliminada', ({ id }) => {
+    if (anunciados.current.delete(id)) setNuevos(anunciados.current.size);
+    setDatos(p => p && (p.items.some(x => x.id === id) ? { ...p, items: p.items.filter(x => x.id !== id), total: p.total - 1 } : p));
+  });
+  useEvento('deteccion:eliminadas', () => { olvidarAnunciados(); recargar(true); });
   useReconexion(() => recargar(true));
 
   const hayFiltros = Boolean(params.get('placa') || filtros.estado || filtros.camara || filtros.desde || filtros.hasta || filtros.validado);
@@ -139,7 +146,7 @@ const Detecciones: React.FC = () => {
           <Aviso tipo="info">
             <span className="fila" style={{ justifyContent: 'space-between', width: '100%' }}>
               {nuevos === 1 ? 'Se registró 1 ingreso nuevo.' : `Se registraron ${nuevos} ingresos nuevos.`}
-              <button className="btn btn-sm btn-secondary" onClick={() => { setNuevos(0); cambiar('pagina', ''); recargar(); }}><RefreshCw size={13} /> Mostrar</button>
+              <button className="btn btn-sm btn-secondary" onClick={() => { olvidarAnunciados(); cambiar('pagina', ''); recargar(); }}><RefreshCw size={13} /> Mostrar</button>
             </span>
           </Aviso>
         )}

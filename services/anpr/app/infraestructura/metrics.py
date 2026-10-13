@@ -116,6 +116,27 @@ recognition_latency = Histogram(
     registry=registry
 )
 
+frame_age = Histogram(
+    'anpr_frame_age_seconds',
+    'Edad del cuadro al empezar su análisis (captura → inferencia)',
+    buckets=(0.02, 0.05, 0.1, 0.2, 0.3, 0.5, 1.0, 2.0),
+    registry=registry
+)
+
+capture_to_reading = Histogram(
+    'anpr_capture_to_reading_seconds',
+    'Desde la captura del cuadro leído hasta la publicación de la lectura (vivo: HUD; registro: backend)',
+    ['etapa'],
+    buckets=(0.1, 0.25, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0, 5.0),
+    registry=registry
+)
+
+frames_dropped = Counter(
+    'anpr_frames_dropped_total',
+    'Cuadros de la cámara que no se analizaron porque llegó uno más nuevo',
+    registry=registry
+)
+
 inferences_total = Counter(
     'anpr_inferences_total',
     'Cuadros analizados por fuente: el detector se ejecutó o la compuerta de movimiento lo omitió',
@@ -233,6 +254,19 @@ def update_tracking_active(count: int):
 def record_recognition_latency(seconds: float):
     """Registra la latencia de reconocimiento de punta a punta de un paso"""
     recognition_latency.observe(seconds)
+
+def record_frame_age(seconds: float):
+    """Edad del cuadro (desde su captura) al empezar su análisis"""
+    frame_age.observe(seconds)
+
+def record_capture_to_reading(etapa: str, seconds: float):
+    """Captura del cuadro leído → lectura publicada ('vivo' o 'registro')"""
+    capture_to_reading.labels(etapa=etapa).observe(seconds)
+
+def record_frames_dropped(n: int):
+    """Cuadros descartados entre dos análisis"""
+    if n > 0:
+        frames_dropped.inc(n)
 
 def record_inference(source: str, skipped: bool):
     """Registra un cuadro analizado: detector ejecutado u omitido por la compuerta de movimiento"""

@@ -69,6 +69,12 @@ export interface EvidenciaLectura {
   bordes_hallados?: number;
   lectura_ocr?: string | null;
   lectura_verificador?: string | null;
+  /** Caracteres de la placa que ningún lector leyó tal cual (salieron de una sustitución): [posición, carácter] */
+  caracteres_inferidos?: [number, string][];
+  /** Salida cruda de cada lector, antes de interpretar confusiones (0↔O, 5↔S…) */
+  lectura_ocr_cruda?: string | null;
+  lectura_verificador_cruda?: string | null;
+  lecturas_rapidas_crudas?: string[] | null;
 }
 
 export interface Pagina<T> {
@@ -96,6 +102,8 @@ export interface Camara {
   detecciones?: number;
   /** Región de interés: vértices normalizados (0–1) o null para el cuadro completo */
   roi: [number, number][] | null;
+  /** Zonas de exclusión (polígonos normalizados): ahí no cuenta el movimiento ni se buscan placas */
+  exclusiones?: [number, number][][];
 }
 
 export interface Conteos {
@@ -129,10 +137,26 @@ export interface EnlaceVideo {
   ultimo_cuadro_hace_s: number | null;
 }
 
+/** Percentiles de una latencia del motor (ms), sobre sus últimas mediciones */
+export interface PercentilesLatencia { p50_ms: number; p95_ms: number; max_ms: number; muestras: number }
+
+/** Latencia de tiempo real desde la captura de cada cuadro (motor ANPR) */
+export interface LatenciaMotor {
+  /** Captura → inicio del análisis */
+  edad_cuadro: PercentilesLatencia | null;
+  /** Captura del cuadro leído → lectura en el HUD */
+  lectura_en_vivo: PercentilesLatencia | null;
+  /** Captura del mejor cuadro → lectura confirmada por el backend */
+  registro: PercentilesLatencia | null;
+  /** Cuadros de la cámara descartados porque llegó uno más nuevo (%) */
+  cuadros_descartados_pct: number | null;
+}
+
 export interface EstadoAnpr {
   en_linea: boolean;
   fps_captura?: number;
   fps_procesamiento?: number;
+  latencia?: LatenciaMotor | null;
   detector?: string | null;
   ocr?: string | null;
   verificador?: string | null;

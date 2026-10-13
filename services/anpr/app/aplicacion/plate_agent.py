@@ -32,7 +32,7 @@ from app.infraestructura.ocr_engine import OcrEngine, OcrResult, create_ocr_engi
 from app.infraestructura.plate_rectifier import get_rectifier
 from app.infraestructura.logger import get_logger
 from app.dominio.plate_parser import (
-    extract_plate_from_tokens,
+    extraer_placa,
     validate_ecuadorian_plate,
     disambiguate_plate,
     HEADER_NOISE_WORDS,
@@ -49,6 +49,8 @@ class PlateAnalysisResult:
     plate_crop: np.ndarray
     preprocessed_crop: np.ndarray
     estado: str  # "procesado", "no_legible", "error"
+    #: Texto leído del que sale la placa, antes de interpretar confusiones (evidencia)
+    texto_crudo: str = ""
 
 
 class PlateEnhancementAgent:
@@ -119,6 +121,7 @@ class PlateEnhancementAgent:
             rectified_crop = self._rectify_quadrilateral(plate_crop)
 
         best_plate = ""
+        best_raw = ""
         best_conf = 0.0
         found_valid_format = False
 
@@ -126,15 +129,15 @@ class PlateEnhancementAgent:
         direct_results = self._ocr.read_text(rectified_crop)
         if direct_results:
             tokens = [r.text for r in direct_results]
-            parsed_plate, score = extract_plate_from_tokens(tokens)
+            parsed_plate, score, crudo = extraer_placa(tokens)
             if parsed_plate:
                 is_valid, formatted_plate, format_score = validate_ecuadorian_plate(parsed_plate)
                 if is_valid:
-                    best_plate = formatted_plate
+                    best_plate, best_raw = formatted_plate, crudo
                     best_conf = max(score, format_score)
                     found_valid_format = True
                 elif len(parsed_plate.replace("-", "")) >= 4:
-                    best_plate = parsed_plate
+                    best_plate, best_raw = parsed_plate, crudo
                     best_conf = score
 
         # 6. FASE 2: Preprocesamiento Científico Robusto (Inspirado en Laroca et al.)
@@ -145,11 +148,11 @@ class PlateEnhancementAgent:
             enhanced_results = self._ocr.read_text(enhanced_img)
             if enhanced_results:
                 tokens = [r.text for r in enhanced_results]
-                parsed_plate, score = extract_plate_from_tokens(tokens)
+                parsed_plate, score, crudo = extraer_placa(tokens)
                 if parsed_plate:
                     is_valid, formatted_plate, format_score = validate_ecuadorian_plate(parsed_plate)
                     if is_valid or score > best_conf:
-                        best_plate = formatted_plate if is_valid else parsed_plate
+                        best_plate, best_raw = (formatted_plate if is_valid else parsed_plate), crudo
                         best_conf = max(score, format_score)
                         found_valid_format = is_valid
 
@@ -160,11 +163,11 @@ class PlateEnhancementAgent:
             bin_results = self._ocr.read_text(bin_img)
             if bin_results:
                 tokens = [r.text for r in bin_results]
-                parsed_plate, score = extract_plate_from_tokens(tokens)
+                parsed_plate, score, crudo = extraer_placa(tokens)
                 if parsed_plate:
                     is_valid, formatted_plate, format_score = validate_ecuadorian_plate(parsed_plate)
                     if is_valid or score > best_conf:
-                        best_plate = formatted_plate if is_valid else parsed_plate
+                        best_plate, best_raw = (formatted_plate if is_valid else parsed_plate), crudo
                         best_conf = max(score, format_score)
                         found_valid_format = is_valid
 
@@ -177,11 +180,11 @@ class PlateEnhancementAgent:
                 rot_results = self._ocr.read_text(rotated)
                 if rot_results:
                     tokens = [r.text for r in rot_results]
-                    parsed_plate, score = extract_plate_from_tokens(tokens)
+                    parsed_plate, score, crudo = extraer_placa(tokens)
                     if parsed_plate:
                         is_valid, formatted_plate, format_score = validate_ecuadorian_plate(parsed_plate)
                         if is_valid or (len(parsed_plate.replace("-", "")) >= 4 and score > best_conf):
-                            best_plate = formatted_plate if is_valid else parsed_plate
+                            best_plate, best_raw = (formatted_plate if is_valid else parsed_plate), crudo
                             best_conf = max(score, format_score)
                             found_valid_format = is_valid
                             if is_valid:
@@ -206,6 +209,7 @@ class PlateEnhancementAgent:
             plate_crop=rectified_crop,
             preprocessed_crop=enhanced_img,
             estado=estado,
+            texto_crudo=best_raw if (best_plate and len(clean_chars) >= 2) else "",
         )
 
     def _rectify_quadrilateral(self, image: np.ndarray) -> np.ndarray:

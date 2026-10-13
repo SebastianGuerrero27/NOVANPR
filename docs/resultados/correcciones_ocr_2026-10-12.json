@@ -1,0 +1,112 @@
+{
+ "descripcion": "A = reglas posicionales anteriores (git HEAD); B = interpretación con mínimo de sustituciones y lectura directa",
+ "lectores": {
+  "ocr": "cct-s-v2-global-model",
+  "verificador": "PP-OCRv6 medium (openvino)"
+ },
+ "recortes": 77,
+ "placas_distintas": 2,
+ "A": {
+  "placa_correcta": {
+   "exitos": 74,
+   "valor": 0.961,
+   "ic95": [
+    0.8916,
+    0.9867
+   ]
+  },
+  "confirmada_y_correcta": {
+   "exitos": 69,
+   "valor": 0.8961,
+   "ic95": [
+    0.8082,
+    0.9464
+   ]
+  },
+  "confirmada_y_erronea": {
+   "exitos": 1,
+   "valor": 0.013,
+   "ic95": [
+    0.0023,
+    0.07
+   ]
+  },
+  "a_revision_del_personal": 7
+ },
+ "B": {
+  "placa_correcta": {
+   "exitos": 74,
+   "valor": 0.961,
+   "ic95": [
+    0.8916,
+    0.9867
+   ]
+  },
+  "confirmada_y_correcta": {
+   "exitos": 69,
+   "valor": 0.8961,
+   "ic95": [
+    0.8082,
+    0.9464
+   ]
+  },
+  "confirmada_y_erronea": {
+   "exitos": 1,
+   "valor": 0.013,
+   "ic95": [
+    0.0023,
+    0.07
+   ]
+  },
+  "a_revision_del_personal": 7
+ },
+ "pareado": {
+  "placa_correcta": {
+   "solo_A": 0,
+   "solo_B": 0,
+   "p_mcnemar": 1.0
+  },
+  "confirmada_y_correcta": {
+   "solo_A": 0,
+   "solo_B": 0,
+   "p_mcnemar": 1.0
+  }
+ },
+ "con_caracteres_inferidos": [
+  {
+   "archivo": "placa_20260910_014659_23.jpg",
+   "etiqueta": "PSY589",
+   "B": {
+    "placa": "PCV589",
+    "confirmada": false,
+    "inferidos": [
+     [
+      0,
+      "P"
+     ]
+    ]
+   },
+   "crudo_ocr": "DCV560",
+   "crudo_verificador": "DCV589"
+  }
+ ],
+ "confirmadas_erroneas": [
+  {
+   "archivo": "placa_20260915_001444_18.jpg",
+   "etiqueta": "PSY589",
+   "A": {
+    "placa": "PSY585",
+    "confirmada": true,
+    "inferidos": []
+   },
+   "B": {
+    "placa": "PSY585",
+    "confirmada": true,
+    "inferidos": []
+   },
+   "crudo_ocr": "PSY585",
+   "crudo_verificador": "PSY585"
+  }
+ ],
+ "discordantes": []
+}

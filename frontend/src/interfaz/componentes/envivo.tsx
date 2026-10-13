@@ -183,7 +183,8 @@ export const ReproductorWebRTC: React.FC<{
             try {
               const m = JSON.parse(ev.data);
               if (typeof m.aspecto === 'number' && m.aspecto !== aspectoMotor) { aspectoMotor = m.aspecto; revisarAspecto(); }
-              hud.actualizar(pistasDelMotor(m.pistas), (m.movimiento as MovimientoHud | null) ?? null, (m.roi as Punto[] | null) ?? null);
+              hud.actualizar(pistasDelMotor(m.pistas), (m.movimiento as MovimientoHud | null) ?? null, (m.roi as Punto[] | null) ?? null,
+                Array.isArray(m.exclusiones) ? (m.exclusiones as Punto[][]) : []);
             } catch { /* mensaje inválido */ }
           };
           ws.onclose = () => hud.limpiar();

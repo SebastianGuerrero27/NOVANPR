@@ -104,8 +104,8 @@ describe('migraciones de esquema', () => {
   describe('migración v10 · fuente por omisión rtsp (sin webcam)', () => {
     const v10 = fs.readFileSync(path.join(DIR_DB, 'migration_v10_fuente_rtsp.sql'), 'utf8');
 
-    it('es la última migración registrada', () => {
-      expect(MIGRACIONES[MIGRACIONES.length - 1]).toBe('migration_v10_fuente_rtsp.sql');
+    it('se aplica antes de la v11', () => {
+      expect(MIGRACIONES.indexOf('migration_v10_fuente_rtsp.sql')).toBe(MIGRACIONES.indexOf('migration_v11_zonas_exclusion.sql') - 1);
     });
 
     it('solo reemplaza el DEFAULT de la columna (busca su nombre en el catálogo) y no toca registros', () => {
@@ -117,6 +117,24 @@ describe('migraciones de esquema', () => {
 
     it('init.sql crea la columna con el mismo valor por omisión', () => {
       expect(fs.readFileSync(path.join(DIR_DB, 'init.sql'), 'utf8')).toMatch(/fuente\s+VARCHAR\(255\)\s+NULL DEFAULT 'rtsp'/);
+    });
+  });
+
+  describe('migración v11 · zonas de exclusión de las cámaras', () => {
+    const v11 = fs.readFileSync(path.join(DIR_DB, 'migration_v11_zonas_exclusion.sql'), 'utf8');
+
+    it('es la última migración registrada', () => {
+      expect(MIGRACIONES[MIGRACIONES.length - 1]).toBe('migration_v11_zonas_exclusion.sql');
+    });
+
+    it('agrega la columna de forma idempotente y no toca registros', () => {
+      expect(v11).toContain("IF COL_LENGTH('dbo.Camaras', 'exclusiones') IS NULL");
+      expect(v11).toMatch(/ALTER TABLE Camaras ADD exclusiones NVARCHAR\(MAX\) NULL;/);
+      expect(v11).not.toMatch(/\b(UPDATE|DELETE)\b/i);
+    });
+
+    it('init.sql crea la columna', () => {
+      expect(fs.readFileSync(path.join(DIR_DB, 'init.sql'), 'utf8')).toMatch(/exclusiones\s+NVARCHAR\(MAX\)\s+NULL/);
     });
   });
 });

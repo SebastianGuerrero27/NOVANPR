@@ -68,6 +68,24 @@ export async function guardarMetadatosCaptura(db: sql.ConnectionPool, id: number
   }
 }
 
+/** Atributos del vehículo que llegan después del registro del paso (reevaluación). */
+export async function guardarAtributosVehiculo(db: sql.ConnectionPool, id: number, vehiculo: MetadatosCaptura['vehiculo']): Promise<void> {
+  if (!vehiculo || typeof vehiculo !== 'object') return;
+  await db.request()
+    .input('id', sql.Int, id)
+    .input('vtipo', sql.VarChar(30), str(vehiculo.tipo, 30))
+    .input('vcolor', sql.VarChar(30), str(vehiculo.color, 30))
+    .input('vmarca', sql.VarChar(50), str(vehiculo.marca, 50))
+    .input('vmodelo', sql.VarChar(50), str(vehiculo.modelo, 50))
+    .input('vjson', sql.NVarChar(500), JSON.stringify(vehiculo).substring(0, 500))
+    .query(`
+      UPDATE DeteccionVehiculo SET
+        vehiculo_tipo = @vtipo, vehiculo_color = @vcolor, vehiculo_marca = @vmarca,
+        vehiculo_modelo = @vmodelo, vehiculo_atributos_json = @vjson
+      WHERE id = @id
+    `);
+}
+
 export interface LecturaAutomatica {
   placaOriginal: string;
   confianza: number | null;

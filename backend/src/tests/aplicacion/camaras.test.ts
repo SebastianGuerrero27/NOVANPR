@@ -55,7 +55,7 @@ function preparar(camara: CamaraGuardada | null = guardada(), custodia = custodi
     crear: jest.fn().mockResolvedValue(7),
     actualizar: jest.fn().mockResolvedValue(undefined),
     alternarActiva: jest.fn().mockResolvedValue(camara ? { nombre: camara.nombre, activa: false } : null),
-    fijarRoi: jest.fn().mockResolvedValue(camara ? camara.nombre : null),
+    fijarZonas: jest.fn().mockResolvedValue(camara ? camara.nombre : null),
     eliminar: jest.fn().mockResolvedValue(undefined),
   };
   const conectividad: jest.Mocked<PuertoConectividad> = {
@@ -87,7 +87,7 @@ function preparar(camara: CamaraGuardada | null = guardada(), custodia = custodi
     procesa: jest.fn().mockResolvedValue(false),
     guardarCamara: jest.fn().mockResolvedValue(undefined),
     cambiarCamara: jest.fn().mockResolvedValue({}),
-    fijarRoi: jest.fn().mockResolvedValue({}),
+    fijarZonas: jest.fn().mockResolvedValue({}),
     sincronizar: jest.fn().mockResolvedValue(false),
     urlPublica: jest.fn(() => 'https://anpr.ecu911.local'),
   };
@@ -265,26 +265,79 @@ describe('Casos de uso · cámaras', () => {
       ['una coordenada negativa', [[0.1, 0.1], [0.9, 0.1], [-0.1, 0.5]], 'Cada vértice debe ser [x, y] con valores entre 0 y 1.'],
       ['coordenadas como texto', [[0.1, 0.1], [0.9, 0.1], ['0.5', '0.9']], 'Cada vértice debe ser [x, y] con valores entre 0 y 1.'],
       ['un vértice incompleto', [[0.1, 0.1], [0.9, 0.1], [0.5]], 'Cada vértice debe ser [x, y] con valores entre 0 y 1.'],
-    ])('fijarRoi: rechaza %s sin tocar la base', async (_caso, roi, mensaje) => {
+    ])('fijarZonas: rechaza la región con %s sin tocar la base', async (_caso, roi, mensaje) => {
       const { casos, repositorio, motor } = preparar();
-      expect(await fallo(casos.fijarRoi(3, roi, ADMIN))).toEqual({ tipo: 'validacion', mensaje });
-      expect(repositorio.fijarRoi).not.toHaveBeenCalled();
-      expect(motor.fijarRoi).not.toHaveBeenCalled();
+      expect(await fallo(casos.fijarZonas(3, roi, undefined, ADMIN))).toEqual({ tipo: 'validacion', mensaje });
+      expect(repositorio.fijarZonas).not.toHaveBeenCalled();
+      expect(motor.fijarZonas).not.toHaveBeenCalled();
     });
 
-    it('fijarRoi: guarda la región redondeada, audita y la aplica en el motor; null vuelve al cuadro completo', async () => {
+    it('fijarZonas: guarda la región redondeada, audita y la aplica en el motor; null vuelve al cuadro completo', async () => {
       const { casos, repositorio, auditoria, motor } = preparar();
-      const r = await casos.fijarRoi(3, [[0.123456, 0.2], [0.9, 0.2], [0.5, 0.95]], ADMIN);
+      const r = await casos.fijarZonas(3, [[0.123456, 0.2], [0.9, 0.2], [0.5, 0.95]], undefined, ADMIN);
       expect(r.roi).toEqual([[0.1235, 0.2], [0.9, 0.2], [0.5, 0.95]]);
-      expect(repositorio.fijarRoi).toHaveBeenCalledWith(3, r.roi);
+      // Sin zonas de exclusión en la solicitud, las guardadas no cambian
+      expect(repositorio.fijarZonas).toHaveBeenCalledWith(3, r.roi, undefined);
       expect(auditoria.operacion).toHaveBeenCalledWith(ADMIN, 'CAMARA_ROI', 'camara', 3, 'Garita norte: región de 3 vértices');
       await enCola();
-      expect(motor.fijarRoi).toHaveBeenCalledWith(3, r.roi);
+      expect(motor.fijarZonas).toHaveBeenCalledWith(3, r.roi, []);
 
-      expect((await casos.fijarRoi(3, null, ADMIN)).roi).toBeNull();
-      expect((await casos.fijarRoi(3, [], ADMIN)).roi).toBeNull();
+      expect((await casos.fijarZonas(3, null, undefined, ADMIN)).roi).toBeNull();
+      expect((await casos.fijarZonas(3, [], undefined, ADMIN)).roi).toBeNull();
       expect(auditoria.operacion).toHaveBeenLastCalledWith(ADMIN, 'CAMARA_ROI', 'camara', 3, 'Garita norte: cuadro completo');
-      expect(await fallo(preparar(null).casos.fijarRoi(99, null, ADMIN))).toEqual(NO_ENCONTRADA);
+      expect(await fallo(preparar(null).casos.fijarZonas(99, null, undefined, ADMIN))).toEqual(NO_ENCONTRADA);
+    });
+
+    it('fijarZonas: guarda las zonas de exclusión, las audita y el motor recibe el conjunto completo', async () => {
+      const { casos, repositorio, auditoria, motor } = preparar();
+      const bandera = [[0.7, 0], [1, 0], [1, 0.25], [0.7, 0.25]];
+      const vereda = [[0, 0.8], [0.3, 0.8], [0.3, 1], [0, 1]];
+      const r = await casos.fijarZonas(3, null, [bandera, vereda], ADMIN);
+      expect(r.exclusiones).toEqual([bandera, vereda]);
+      expect(repositorio.fijarZonas).toHaveBeenCalledWith(3, null, [bandera, vereda]);
+      expect(auditoria.operacion).toHaveBeenCalledWith(ADMIN, 'CAMARA_ROI', 'camara', 3, 'Garita norte: cuadro completo, 2 zonas de exclusión');
+      await enCola();
+      expect(motor.fijarZonas).toHaveBeenCalledWith(3, null, [bandera, vereda]);
+      // [] o null las quita
+      await casos.fijarZonas(3, null, [], ADMIN);
+      expect(repositorio.fijarZonas).toHaveBeenLastCalledWith(3, null, []);
+      expect(auditoria.operacion).toHaveBeenLastCalledWith(ADMIN, 'CAMARA_ROI', 'camara', 3, 'Garita norte: cuadro completo, sin zonas de exclusión');
+    });
+
+    it('fijarZonas: solo exclusiones no borra la región guardada; sin ningún campo → 400', async () => {
+      const roiGuardada = [[0, 0.2], [1, 0.2], [1, 1]];
+      const { casos, repositorio, motor, auditoria } = preparar(guardada({ roi: JSON.stringify(roiGuardada) }));
+      const bandera = [[0.7, 0], [1, 0], [1, 0.25]];
+      const r = await casos.fijarZonas(3, undefined, [bandera], ADMIN);
+      expect(r.roi).toBeUndefined();
+      expect(repositorio.fijarZonas).toHaveBeenCalledWith(3, undefined, [bandera]);
+      expect(auditoria.operacion).toHaveBeenCalledWith(ADMIN, 'CAMARA_ROI', 'camara', 3, 'Garita norte: 1 zona de exclusión');
+      await enCola();
+      expect(motor.fijarZonas).toHaveBeenCalledWith(3, roiGuardada, [bandera]);
+      expect(await fallo(casos.fijarZonas(3, undefined, undefined, ADMIN))).toEqual({
+        tipo: 'validacion', mensaje: 'Indique la región de interés (roi, null para el cuadro completo) o las zonas de exclusión.',
+      });
+    });
+
+    it('fijarZonas: sin exclusiones en la solicitud, el motor recibe las que ya estaban guardadas', async () => {
+      const guardadas = [[[0.7, 0], [1, 0], [1, 0.25]]];
+      const { casos, motor } = preparar(guardada({ exclusiones: JSON.stringify(guardadas) }));
+      await casos.fijarZonas(3, [[0.1, 0.2], [0.9, 0.2], [0.5, 0.95]], undefined, ADMIN);
+      await enCola();
+      expect(motor.fijarZonas).toHaveBeenCalledWith(3, [[0.1, 0.2], [0.9, 0.2], [0.5, 0.95]], guardadas);
+    });
+
+    it.each([
+      ['un polígono suelto (no una lista)', [[0.1, 0.1], [0.9, 0.1], [0.5, 0.9]], 'Zona de exclusión 1: debe tener entre 3 y 12 vértices.'],
+      ['texto', 'zona', 'Las zonas de exclusión deben ser una lista de polígonos.'],
+      ['más de 8 zonas', Array.from({ length: 9 }, () => [[0, 0], [0.1, 0], [0.1, 0.1]]), 'Máximo 8 zonas de exclusión.'],
+      ['una zona de 2 vértices', [[[0, 0], [0.1, 0], [0.1, 0.1]], [[0, 0], [1, 1]]], 'Zona de exclusión 2: debe tener entre 3 y 12 vértices.'],
+      ['una coordenada fuera de 0–1', [[[0, 0], [1.2, 0], [0.1, 0.1]]], 'Zona de exclusión 1: cada vértice debe ser [x, y] con valores entre 0 y 1.'],
+    ])('fijarZonas: rechaza zonas de exclusión con %s sin tocar la base', async (_caso, exclusiones, mensaje) => {
+      const { casos, repositorio, motor } = preparar();
+      expect(await fallo(casos.fijarZonas(3, null, exclusiones, ADMIN))).toEqual({ tipo: 'validacion', mensaje });
+      expect(repositorio.fijarZonas).not.toHaveBeenCalled();
+      expect(motor.fijarZonas).not.toHaveBeenCalled();
     });
 
     it('eliminar: solo sin historial (409 con detecciones); audita y difunde la baja', async () => {

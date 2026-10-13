@@ -26,13 +26,14 @@ Fundamentos Científicos:
 
 from __future__ import annotations
 
+import math
 import os
 import re
 import time
 import threading
 from collections import Counter
 from dataclasses import dataclass, field
-from typing import Optional, List, Tuple
+from typing import Any, Optional, List, Tuple
 
 import cv2
 import numpy as np
@@ -49,12 +50,13 @@ from app.dominio.models import Detection
 from app.infraestructura.detectors import BaseDetector, create_detector
 from app.infraestructura.ocr_engine import create_ocr_engine
 from app.aplicacion.movimiento import CompuertaInferencia, DetectorMovimiento, Movimiento
+from app.dominio.latencia import Cronometros
 from app.aplicacion.verificacion_placa import (
     MIN_CARACTERES,
     AnalisisCaracteres,
     analizar_caracteres,
     cuadrilatero_placa,
-    punto_en_roi,
+    punto_permitido,
     recorte_con_margen,
 )
 from app.infraestructura.logger import get_logger
@@ -481,6 +483,45 @@ class VisualOverlayBox:
 # =============================================================================
 
 
+# Recorte de la región de interés para la inferencia: margen alrededor de su rectángulo envolvente
+# (fracción del ancho y del alto del cuadro; una placa con el centro dentro del polígono puede
+# sobresalir de él) y fracción máxima del cuadro por encima de la cual no conviene recortar.
+_MARGEN_RECORTE = (0.08, 0.06)
+_RECORTE_MAX_FRACCION = 0.80
+# Zonas de exclusión que acepta el motor (el backend valida lo mismo)
+MAX_EXCLUSIONES = 8
+
+
+def _poligono_normalizado(puntos: Any) -> Optional[list[list[float]]]:
+    """Polígono de ≥ 3 vértices normalizados (0–1, recortados al cuadro) o None si no es válido."""
+    try:
+        poligono = [[max(0.0, min(1.0, float(p[0]))), max(0.0, min(1.0, float(p[1])))] for p in puntos]
+    except (TypeError, ValueError, IndexError):
+        return None
+    return poligono if len(poligono) >= 3 else None
+
+
+def ventana_inferencia(roi: Optional[list[list[float]]], ancho: int, alto: int) -> Optional[tuple[int, int, int, int]]:
+    """
+    Recorte del cuadro (x1, y1, x2, y2 en px) sobre el que se ejecuta el detector cuando hay región
+    de interés: su rectángulo envolvente con margen. El detector lleva la imagen a su resolución de
+    inferencia (512 px en el lado mayor), así que con una región más pequeña que el cuadro cada placa
+    llega con más píxeles: las lejanas, que a cuadro completo quedan de pocos píxeles, se detectan
+    mejor, y se procesan menos píxeles. None = cuadro completo (sin región, o si el recorte no
+    ahorra al menos un 20 % del área).
+    """
+    if not roi or ancho <= 0 or alto <= 0:
+        return None
+    xs = [p[0] * ancho for p in roi]
+    ys = [p[1] * alto for p in roi]
+    mx, my = _MARGEN_RECORTE[0] * ancho, _MARGEN_RECORTE[1] * alto
+    x1, y1 = max(0, int(min(xs) - mx)), max(0, int(min(ys) - my))
+    x2, y2 = min(ancho, int(math.ceil(max(xs) + mx))), min(alto, int(math.ceil(max(ys) + my)))
+    if x2 - x1 < 32 or y2 - y1 < 32 or (x2 - x1) * (y2 - y1) > _RECORTE_MAX_FRACCION * ancho * alto:
+        return None
+    return x1, y1, x2, y2
+
+
 class DetectionPipeline:
     """
     Pipeline Científico de Detección Liviana y Tracking ByteTrack + Kalman.
@@ -492,10 +533,15 @@ class DetectionPipeline:
         self,
         detector: BaseDetector,
         compuerta: Optional[CompuertaInferencia] = None,
+        recorte_roi: bool = False,
     ) -> None:
         self.detector = detector
         # Sin compuerta explícita el detector se ejecuta en cada cuadro (comportamiento base)
         self._compuerta = compuerta or CompuertaInferencia(activa=False)
+        # Con región de interés, inferencia sobre su recorte (ver ventana_inferencia)
+        self._recorte_roi = recorte_roi
+        #: Duración de cada etapa del análisis de un cuadro (movimiento, detector, seguimiento, pistas)
+        self.tiempos = Cronometros()
 
         logger.info("Inicializando DetectionPipeline con detectores inyectados (DI).")
 
@@ -528,8 +574,10 @@ class DetectionPipeline:
         #    id -> {"t", "mejor": AnalisisCaracteres, "quad_rel", "es_placa"}
         self._analisis: dict[int, dict] = {}
         # 6. Región de interés de la cámara (polígono normalizado 0–1). Equivale a la
-        #    "detection mask" de OpenALPR: fuera de ella no se buscan placas.
+        #    "detection mask" de OpenALPR: fuera de ella no se buscan placas. Las zonas de
+        #    exclusión son lo contrario: dentro de ellas no cuenta el movimiento ni se buscan placas.
         self._roi_norm: Optional[list[list[float]]] = None
+        self._exclusiones_norm: list[list[list[float]]] = []
         # Evidencias de tracks recién terminados: id -> (hora, consenso, análisis)
         self._retirados: dict[int, tuple[float, Optional[dict], Optional[dict]]] = {}
 
@@ -551,27 +599,35 @@ class DetectionPipeline:
 
     def set_roi(self, puntos: Optional[list]) -> Optional[list[list[float]]]:
         """Fija la región de interés (≥ 3 vértices normalizados 0–1) o la quita con None/[]."""
-        roi = None
-        if puntos:
-            try:
-                roi = [[max(0.0, min(1.0, float(p[0]))), max(0.0, min(1.0, float(p[1])))] for p in puntos]
-            except (TypeError, ValueError, IndexError):
-                roi = None
-            if roi is not None and len(roi) < 3:
-                roi = None
+        roi = _poligono_normalizado(puntos) if puntos else None
         self._roi_norm = roi
         logger.info("Región de interés: %s", f"{len(roi)} vértices" if roi else "cuadro completo")
         return roi
 
+    def set_exclusiones(self, zonas: Optional[list]) -> list[list[list[float]]]:
+        """Fija las zonas de exclusión (polígonos normalizados; se ignoran los inválidos y las que
+        excedan MAX_EXCLUSIONES) o las quita con None/[]."""
+        validas = [p for p in (_poligono_normalizado(z) for z in (zonas or [])[:MAX_EXCLUSIONES]) if p]
+        self._exclusiones_norm = validas
+        logger.info("Zonas de exclusión: %d", len(validas))
+        return self.exclusiones
+
     @property
     def roi(self) -> Optional[list[list[float]]]:
         return [list(p) for p in self._roi_norm] if self._roi_norm else None
+
+    @property
+    def exclusiones(self) -> list[list[list[float]]]:
+        return [[list(p) for p in z] for z in self._exclusiones_norm]
 
     def _roi_px(self, w: int, h: int) -> Optional[np.ndarray]:
         roi = self._roi_norm
         if not roi:
             return None
         return np.array([[p[0] * w, p[1] * h] for p in roi], dtype=np.float32)
+
+    def _exclusiones_px(self, w: int, h: int) -> list[np.ndarray]:
+        return [np.array([[p[0] * w, p[1] * h] for p in z], dtype=np.float32) for z in self._exclusiones_norm]
 
     def mejor_analisis(self, tracking_id: int) -> Optional[AnalisisCaracteres]:
         """Mejor análisis de caracteres observado en la vida del track (para la validez de la lectura)."""
@@ -825,18 +881,23 @@ class DetectionPipeline:
         #    tracks quedan congelados (sin predecir ni envejecer) hasta el próximo cambio o la
         #    inferencia de control. Las pistas y su dibujo se reconstruyen en cada cuadro, de
         #    modo que una lectura OCR o una decisión del backend se ven al instante.
-        mov = self._movimiento["rtsp"].analizar(frame, self._roi_norm)
+        mov = self._movimiento["rtsp"].analizar(frame, self._roi_norm, self._exclusiones_norm)
+        self.tiempos.registrar("movimiento", time.perf_counter() - t0)
         if self._pasar_compuerta("rtsp", mov, self._trackers):
             self._actualizar_pistas(frame, mov)
         else:
             self._zona_movimiento["rtsp"] = (None, mov.porcentaje, False)
+        t_pistas = time.perf_counter()
         tracked_rois = self._construir_pistas(frame, mov)
+        self.tiempos.registrar("pistas", time.perf_counter() - t_pistas)
         self._medir_fps(t0)
         return tracked_rois
 
     def _actualizar_pistas(self, frame: np.ndarray, mov: Movimiento) -> None:
         """Pasos 1–6 (ByteTrack): predicción de Kalman, detección YOLO, asociación en dos fases y altas/bajas de tracks."""
         orig_h, orig_w = frame.shape[:2]
+        t_inicio = time.perf_counter()
+        dur_detector = 0.0
 
         # 1. Paso de Predicción del Filtro de Kalman para todos los tracks activos
         predicted_boxes: list[list[float]] = []
@@ -862,16 +923,27 @@ class DetectionPipeline:
 
         conf_thresh, raw_pred_thresh = byte_track_thresholds()
         roi_px = self._roi_px(orig_w, orig_h)
+        exclusiones_px = self._exclusiones_px(orig_w, orig_h)
+        # Con región de interés el detector analiza solo su recorte (más píxeles por placa)
+        ventana = ventana_inferencia(self._roi_norm, orig_w, orig_h) if self._recorte_roi else None
         try:
-            raw_detections = self.detector.predict(frame)
+            t_det = time.perf_counter()
+            if ventana:
+                ox, oy, x2v, y2v = ventana
+                raw_detections = self.detector.predict(np.ascontiguousarray(frame[oy:y2v, ox:x2v]))
+            else:
+                ox = oy = 0
+                raw_detections = self.detector.predict(frame)
+            dur_detector = time.perf_counter() - t_det
+            self.tiempos.registrar("detector", dur_detector)
             for d in raw_detections:
-                box = d.bbox
+                box = [d.bbox[0] + ox, d.bbox[1] + oy, d.bbox[2] + ox, d.bbox[3] + oy]
                 conf = d.confidence
                 bw = box[2] - box[0]
                 bh = box[3] - box[1]
                 ar = bw / max(1.0, float(bh))
-                # Región de interés: se descartan las placas cuyo centro queda fuera
-                if not punto_en_roi((box[0] + box[2]) / 2, (box[1] + box[3]) / 2, roi_px):
+                # Se descartan las placas con el centro fuera de la región o dentro de una exclusión
+                if not punto_permitido((box[0] + box[2]) / 2, (box[1] + box[3]) / 2, roi_px, exclusiones_px):
                     continue
                 if (0.55 <= ar <= 6.5) and bw >= 10 and bh >= 5:
                     all_raw_boxes.append([float(box[0]), float(box[1]), float(box[2]), float(box[3])])
@@ -968,6 +1040,8 @@ class DetectionPipeline:
                 for k in [k for k, v in self._retirados.items() if time.time() - v[0] > 20.0]:
                     del self._retirados[k]
             self._pistas_movidas["rtsp"].discard(t_id)
+        # Seguimiento: todo el paso salvo la inferencia (NMS, asociación en dos fases, Kalman, altas y bajas)
+        self.tiempos.registrar("seguimiento", time.perf_counter() - t_inicio - dur_detector)
 
     def _construir_pistas(self, frame: np.ndarray, mov: Movimiento) -> list[TrackedPlateROI]:
         """Paso 7: regiones rastreadas del cuadro y recuadros del HUD a partir del estado de los tracks."""
@@ -1157,17 +1231,23 @@ class DetectionPipeline:
                 cv2.LINE_AA,
             )
 
-        # Región de interés: contorno discontinuo (fuera de ella no se buscan placas)
-        roi_px = self._roi_px(w, h)
-        if roi_px is not None:
-            pts = roi_px.astype(np.int32)
+        # Región de interés (contorno discontinuo celeste) y zonas de exclusión (rojo): fuera de la
+        # región y dentro de las exclusiones no se buscan placas
+        def contorno_discontinuo(poligono: np.ndarray, color: tuple[int, int, int]) -> None:
+            pts = poligono.astype(np.int32)
             for i in range(len(pts)):
                 a, b = pts[i], pts[(i + 1) % len(pts)]
                 largo = max(1, int(np.hypot(*(b - a))))
                 for t in range(0, largo, 18):
                     p1 = a + (b - a) * (t / largo)
                     p2 = a + (b - a) * (min(largo, t + 10) / largo)
-                    cv2.line(out_frame, tuple(int(v) for v in p1), tuple(int(v) for v in p2), (235, 206, 135), 2, cv2.LINE_AA)
+                    cv2.line(out_frame, tuple(int(v) for v in p1), tuple(int(v) for v in p2), color, 2, cv2.LINE_AA)
+
+        roi_px = self._roi_px(w, h)
+        if roi_px is not None:
+            contorno_discontinuo(roi_px, (235, 206, 135))
+        for zona in self._exclusiones_px(w, h):
+            contorno_discontinuo(zona, (60, 60, 235))
 
         with self._overlays_lock:
             overlays = list(self._current_overlays)
@@ -1255,6 +1335,7 @@ def create_detection_pipeline(detector: Optional[BaseDetector] = None) -> Detect
         MOTION_GATE_MAX_SKIP,
         MOTION_GATE_MIN_FRACTION,
         PLATE_DETECTOR_ARCH,
+        ROI_CROP_INFERENCE,
         PLATE_MODEL_PATH,
         PLATE_CONFIDENCE_THRESHOLD,
     )
@@ -1306,4 +1387,5 @@ def create_detection_pipeline(detector: Optional[BaseDetector] = None) -> Detect
     compuerta = CompuertaInferencia(activa=MOTION_GATE_ENABLED, umbral=MOTION_GATE_MIN_FRACTION, max_omitidos=MOTION_GATE_MAX_SKIP)
     logger.info("Compuerta de movimiento: %s (umbral %.3f, control cada %d cuadros)",
                 "activa" if compuerta.activa else "desactivada", compuerta.umbral, compuerta.max_omitidos)
-    return DetectionPipeline(detector=rtsp_det, compuerta=compuerta)
+    logger.info("Inferencia sobre el recorte de la región de interés: %s", "sí" if ROI_CROP_INFERENCE else "no")
+    return DetectionPipeline(detector=rtsp_det, compuerta=compuerta, recorte_roi=ROI_CROP_INFERENCE)

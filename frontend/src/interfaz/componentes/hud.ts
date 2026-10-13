@@ -3,6 +3,8 @@ import { formatearPlacaParcial } from '../../dominio/validacion';
 /**
  * HUD de detección sobre el video, al estilo Rekor Scout / OpenALPR:
  *  - zona de movimiento MOG2 (verde translúcido) cuando el motor confirma un vehículo en ella;
+ *  - región de interés (fuera de ella, oscurecido) y zonas de exclusión (rojo translúcido): ahí el
+ *    motor no cuenta el movimiento ni busca placas;
  *  - caja de cada placa en seguimiento desde el primer cuadro, con el cuadrilátero de 4 vértices
  *    ajustado a la inclinación de la placa;
  *  - insignia con la lectura: "◌ ESCANEANDO OCR" o el texto parcial mientras el OCR lee, la placa
@@ -105,6 +107,27 @@ function dibujarRoi(ctx: CanvasRenderingContext2D, a: AreaDibujo, roi: Punto[]) 
   ctx.lineWidth = 1.5;
   ctx.stroke();
   ctx.setLineDash([]);
+}
+
+/** Zonas de exclusión: rojo translúcido con borde discontinuo. */
+export function dibujarExclusiones(ctx: CanvasRenderingContext2D, a: AreaDibujo, zonas: Punto[][]) {
+  for (const z of zonas) {
+    if (z.length < 3) continue;
+    ctx.beginPath();
+    z.forEach(([x, y], i) => {
+      const [px, py] = aPantalla(a, x, y);
+      if (i) ctx.lineTo(px, py);
+      else ctx.moveTo(px, py);
+    });
+    ctx.closePath();
+    ctx.fillStyle = 'rgba(239,68,68,0.16)';
+    ctx.fill();
+    ctx.setLineDash([6, 5]);
+    ctx.strokeStyle = 'rgba(248,113,113,0.85)';
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+    ctx.setLineDash([]);
+  }
 }
 
 function dibujarMovimiento(ctx: CanvasRenderingContext2D, a: AreaDibujo, m: MovimientoHud, edadMs: number) {
@@ -210,8 +233,8 @@ function dibujarPista(ctx: CanvasRenderingContext2D, a: AreaDibujo, p: PistaHud,
 }
 
 export interface Hud {
-  /** Pistas y zona de movimiento del último envío del motor (y la región de interés, si se conoce). */
-  actualizar: (pistas: PistaHud[], movimiento: MovimientoHud | null, roi?: Punto[] | null) => void;
+  /** Pistas y zona de movimiento del último envío del motor (y la región de interés y las zonas de exclusión, si se conocen). */
+  actualizar: (pistas: PistaHud[], movimiento: MovimientoHud | null, roi?: Punto[] | null, exclusiones?: Punto[][]) => void;
   limpiar: () => void;
   detener: () => void;
 }
@@ -220,6 +243,7 @@ export function crearHud(lienzo: HTMLCanvasElement, area: () => AreaDibujo | nul
   const pistas = new Map<number, { p: PistaHud; recibida: number; opacidad: number }>();
   let movimiento: { m: MovimientoHud; recibido: number } | null = null;
   let roi: Punto[] | null = null;
+  let exclusiones: Punto[][] = [];
   let pendiente = true;
   let ultimaArea = '';
   let previo = performance.now();
@@ -248,6 +272,7 @@ export function crearHud(lienzo: HTMLCanvasElement, area: () => AreaDibujo | nul
     ctx.clearRect(0, 0, a.ancho, a.alto);
 
     if (roi && roi.length >= 3) dibujarRoi(ctx, a, roi);
+    if (exclusiones.length) dibujarExclusiones(ctx, a, exclusiones);
     if (movimiento) {
       const edad = ahora - movimiento.recibido;
       if (edad >= VIDA_MOVIMIENTO_MS) movimiento = null;
@@ -266,17 +291,19 @@ export function crearHud(lienzo: HTMLCanvasElement, area: () => AreaDibujo | nul
   raf = requestAnimationFrame(cuadro);
 
   return {
-    actualizar(nuevas, mov, nuevoRoi) {
+    actualizar(nuevas, mov, nuevoRoi, nuevasExclusiones) {
       const ahora = performance.now();
       for (const p of nuevas) pistas.set(p.id, { p, recibida: ahora, opacidad: 1 });
       if (mov) movimiento = { m: mov, recibido: ahora };
       if (nuevoRoi !== undefined) roi = nuevoRoi;
+      if (nuevasExclusiones !== undefined) exclusiones = nuevasExclusiones;
       pendiente = true;
     },
     limpiar() {
       pistas.clear();
       movimiento = null;
       roi = null;
+      exclusiones = [];
       pendiente = true;
     },
     detener() { cancelAnimationFrame(raf); },

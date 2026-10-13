@@ -1,0 +1,144 @@
+{
+ "fecha": "2026-10-13",
+ "escena": "camara Hikvision simulada (H.265 1080p 25 fps, 4 pasos de PSY589), portatil de desarrollo, CPU, sin otra carga",
+ "nota": "ventana anti-duplicados reducida a 0,5 s solo para registrar cada paso; la primera corrida (A_1) fue la primera tras reiniciar Docker (arranque en frio de 25 min, cifras de la escena normales)",
+ "brazos": {
+  "A": "REGISTRO_MAX_MS=0 (el registro espera al verificador y al vehiculo)",
+  "B": "REGISTRO_MAX_MS=1000 (registro en 1 s y reevaluacion)"
+ },
+ "resumen": {
+  "experimento": "registro",
+  "A": {
+   "corridas": 3,
+   "configuracion": [
+    {
+     "espera_verificador_s": 2.0,
+     "torch_threads": 4,
+     "presupuesto_registro_s": null,
+     "ventana_antiduplicados_s": 0.5
+    }
+   ],
+   "latencia_registro_s": {
+    "p50": 0.73,
+    "p95": 1.433,
+    "max": 1.433,
+    "n": 12
+   },
+   "registros_en_menos_de_1_s": {
+    "valor": 0.583,
+    "ic95": [
+     0.32,
+     0.807
+    ],
+    "n": 12
+   },
+   "latencia_decision_final_s": {
+    "p50": 0.73,
+    "p95": 1.433,
+    "max": 1.433,
+    "n": 12
+   },
+   "pasos_reevaluados": 0,
+   "lecturas_validas": {
+    "valor": 1.0,
+    "ic95": [
+     0.772,
+     1.0
+    ],
+    "n": 13
+   },
+   "pasos_correctos": "12/12",
+   "fps_analizados_por_corrida": [
+    9.3,
+    8.4,
+    9.1
+   ],
+   "lectura_en_vivo_p50_ms_por_corrida": [
+    347,
+    321,
+    245
+   ],
+   "detector_p50_ms_por_corrida": [
+    153,
+    171,
+    152
+   ],
+   "detector_p95_ms_por_corrida": [
+    305,
+    257,
+    241
+   ]
+  },
+  "B": {
+   "corridas": 3,
+   "configuracion": [
+    {
+     "espera_verificador_s": 2.0,
+     "torch_threads": 4,
+     "presupuesto_registro_s": 1.0,
+     "ventana_antiduplicados_s": 0.5
+    }
+   ],
+   "latencia_registro_s": {
+    "p50": 0.77,
+    "p95": 0.892,
+    "max": 0.892,
+    "n": 12
+   },
+   "registros_en_menos_de_1_s": {
+    "valor": 1.0,
+    "ic95": [
+     0.757,
+     1.0
+    ],
+    "n": 12
+   },
+   "latencia_decision_final_s": {
+    "p50": 0.774,
+    "p95": 1.576,
+    "max": 1.576,
+    "n": 12
+   },
+   "pasos_reevaluados": 7,
+   "lecturas_validas": {
+    "valor": 1.0,
+    "ic95": [
+     0.757,
+     1.0
+    ],
+    "n": 12
+   },
+   "pasos_correctos": "12/12",
+   "fps_analizados_por_corrida": [
+    8.4,
+    7.9,
+    8.4
+   ],
+   "lectura_en_vivo_p50_ms_por_corrida": [
+    303,
+    335,
+    354
+   ],
+   "detector_p50_ms_por_corrida": [
+    169,
+    175,
+    172
+   ],
+   "detector_p95_ms_por_corrida": [
+    254,
+    289,
+    270
+   ]
+  },
+  "pareado": {
+   "latencia_registro_dif_mediana_s (B - A)": -0.134,
+   "pares": 12,
+   "p_signos": 0.3876953125,
+   "fps_analizados_dif_por_replica (B - A)": [
+    -0.9,
+    -0.5,
+    -0.7
+   ]
+  }
+ }
+}

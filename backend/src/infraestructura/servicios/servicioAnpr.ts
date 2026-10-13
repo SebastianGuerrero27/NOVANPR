@@ -22,10 +22,26 @@ async function llamar(ruta: string, init: RequestInit = {}, timeoutMs = 3000): P
   return cuerpo;
 }
 
+/** Percentiles de una latencia del motor (ms), sobre sus últimas mediciones */
+export interface PercentilesLatencia { p50_ms: number; p95_ms: number; max_ms: number; muestras: number }
+
+/** Latencia de tiempo real desde la captura de cada cuadro (motor ANPR) */
+export interface LatenciaMotor {
+  /** Captura → inicio del análisis */
+  edad_cuadro: PercentilesLatencia | null;
+  /** Captura del cuadro leído → lectura en el HUD */
+  lectura_en_vivo: PercentilesLatencia | null;
+  /** Captura del mejor cuadro → lectura confirmada por el backend */
+  registro: PercentilesLatencia | null;
+  /** Cuadros de la cámara descartados porque llegó uno más nuevo (%) */
+  cuadros_descartados_pct: number | null;
+}
+
 export interface EstadoAnpr {
   en_linea: boolean;
   fps_captura?: number;
   fps_procesamiento?: number;
+  latencia?: LatenciaMotor | null;
   detector?: string | null;
   ocr?: string | null;
   verificador?: string | null;
@@ -39,7 +55,7 @@ export async function estadoServicioAnpr(): Promise<EstadoAnpr> {
     const [s, c] = await Promise.all([llamar('/status', {}, 2500), llamar('/api/camera/active', {}, 2500).catch(() => null)]);
     return {
       en_linea: true,
-      fps_captura: s.capture_fps, fps_procesamiento: s.tracker_fps,
+      fps_captura: s.capture_fps, fps_procesamiento: s.tracker_fps, latencia: s.latencia ?? null,
       detector: s.detector, ocr: s.ocr_engine, verificador: s.ocr_verifier,
       camara_activa: c ? { id: c.camera_id, conectada: Boolean(c.is_connected) } : null,
       enlace: s.enlace_video ?? null,
@@ -51,25 +67,27 @@ export async function estadoServicioAnpr(): Promise<EstadoAnpr> {
 
 export type Punto = [number, number];
 
-export function cambiarCamaraAnpr(camara: { id: number; nombre: string; rtsp_url: string; roi?: Punto[] | null }, forzar = false) {
+export function cambiarCamaraAnpr(camara: { id: number; nombre: string; rtsp_url: string; roi?: Punto[] | null; exclusiones?: Punto[][] },
+  forzar = false) {
   return llamar('/api/camera/switch', {
     method: 'POST',
     body: JSON.stringify({
       camera_id: camara.id, source_type: 'rtsp', rtsp_url: camara.rtsp_url, nombre: camara.nombre, force: forzar,
-      roi: camara.roi ?? null,
+      roi: camara.roi ?? null, exclusiones: camara.exclusiones ?? [],
     }),
   }, 8000);
 }
 
-/** Aplica la región de interés en el motor (solo si esa cámara es la que está procesando). */
-export function fijarRoiAnpr(camaraId: number, roi: Punto[] | null) {
-  return llamar('/api/camera/roi', { method: 'POST', body: JSON.stringify({ camara_id: camaraId, roi }) }, 4000);
+/** Aplica la región de interés y las zonas de exclusión en el motor (solo si esa cámara es la que está procesando). */
+export function fijarZonasAnpr(camaraId: number, roi: Punto[] | null, exclusiones: Punto[][]) {
+  return llamar('/api/camera/roi', { method: 'POST', body: JSON.stringify({ camara_id: camaraId, roi, exclusiones }) }, 4000);
 }
 
-/** Región de interés vigente en el motor; undefined si no responde. */
-export async function roiActivaAnpr(): Promise<Punto[] | null | undefined> {
+/** Zonas vigentes en el motor (región de interés y exclusiones); undefined si no responde. */
+export async function zonasActivasAnpr(): Promise<{ roi: Punto[] | null; exclusiones: Punto[][] } | undefined> {
   try {
-    return (await llamar('/api/camera/active', {}, 2500)).roi ?? null;
+    const c = await llamar('/api/camera/active', {}, 2500);
+    return { roi: c.roi ?? null, exclusiones: Array.isArray(c.exclusiones) ? c.exclusiones : [] };
   } catch {
     return undefined;
   }

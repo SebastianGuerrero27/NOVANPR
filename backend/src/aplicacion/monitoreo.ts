@@ -2,7 +2,7 @@ import {
   type Actor, errorConflicto, errorNoEncontrado, errorValidacion, type PuertoAuditoria, type PuertoEventos,
 } from './comun';
 import type { PuertoMotorAnpr, PuertoServidorVideo, PuertoTickets, RepositorioCamaras } from './camaras';
-import { leerAlcance, leerIdCamara } from '../dominio/camaras';
+import { leerAlcance, leerIdCamara, parsearExclusiones, parsearRoi } from '../dominio/camaras';
 
 /**
  * Casos de uso del monitoreo en vivo:
@@ -60,7 +60,11 @@ export function casosMonitoreo(d: DependenciasMonitoreo) {
       if (!c.activa) throw errorConflicto('La cámara está deshabilitada.');
       await d.motor.guardarCamara(c.id, actor.id);
       await d.video.sincronizarRutas();
-      await d.motor.cambiarCamara({ id: c.id, nombre: c.nombre, rtsp_url: d.video.urlLecturaMotor(d.video.rutaCamara(c.id)) }, true);
+      // Con sus zonas: si no, el motor analizaría el cuadro completo hasta la próxima sincronización
+      await d.motor.cambiarCamara({
+        id: c.id, nombre: c.nombre, rtsp_url: d.video.urlLecturaMotor(d.video.rutaCamara(c.id)),
+        roi: parsearRoi(c.roi), exclusiones: parsearExclusiones(c.exclusiones),
+      }, true);
       await d.auditoria.operacion(actor, 'MONITOREO_CAMARA', 'camara', c.id, `Motor ANPR procesando ${c.nombre}`);
       d.eventos.emitir('monitoreo:camara', { camara_id: c.id, nombre: c.nombre, por: actor.nombre });
       return { id: c.id, nombre: c.nombre };

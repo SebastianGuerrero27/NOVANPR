@@ -20,7 +20,7 @@ function preparar(camara: ConexionCamara | null = CAMARA) {
     procesa: jest.fn().mockResolvedValue(false),
     guardarCamara: jest.fn().mockResolvedValue(undefined),
     cambiarCamara: jest.fn().mockResolvedValue({}),
-    fijarRoi: jest.fn().mockResolvedValue({}),
+    fijarZonas: jest.fn().mockResolvedValue({}),
     sincronizar: jest.fn().mockResolvedValue(false),
     urlPublica: jest.fn(() => 'https://anpr.ecu911.local'),
   };
@@ -105,13 +105,22 @@ describe('Casos de uso · monitoreo', () => {
       expect(repositorio.conexion).toHaveBeenCalledWith(3);
       expect(motor.guardarCamara).toHaveBeenCalledWith(3, 1);
       // El motor nunca recibe la URL de la cámara (con su contraseña), sino su ruta en MediaMTX
-      expect(motor.cambiarCamara).toHaveBeenCalledWith({ id: 3, nombre: 'Garita norte', rtsp_url: 'rtsp://anpr:token@mediamtx:8554/cam_3' }, true);
+      expect(motor.cambiarCamara).toHaveBeenCalledWith(
+        { id: 3, nombre: 'Garita norte', rtsp_url: 'rtsp://anpr:token@mediamtx:8554/cam_3', roi: null, exclusiones: [] }, true);
       expect(auditoria.operacion).toHaveBeenCalledWith(ADMIN, 'MONITOREO_CAMARA', 'camara', 3, 'Motor ANPR procesando Garita norte');
       expect(eventos.emitir).toHaveBeenCalledWith('monitoreo:camara', { camara_id: 3, nombre: 'Garita norte', por: 'Administrador' });
       // La ruta se publica en MediaMTX antes de pedir al motor que la lea
       const orden = [motor.guardarCamara, video.sincronizarRutas, motor.cambiarCamara, auditoria.operacion]
         .map(f => f.mock.invocationCallOrder[0]);
       expect([...orden].sort((a, b) => a - b)).toEqual(orden);
+    });
+
+    it('el motor recibe las zonas guardadas de la cámara elegida (no analiza el cuadro completo mientras tanto)', async () => {
+      const roi = [[0, 0.2], [1, 0.2], [1, 1], [0, 1]];
+      const exclusiones = [[[0.7, 0], [1, 0], [1, 0.2]]];
+      const { casos, motor } = preparar({ ...CAMARA, roi: JSON.stringify(roi), exclusiones: JSON.stringify(exclusiones) });
+      await casos.cambiarCamara(3, ADMIN);
+      expect(motor.cambiarCamara).toHaveBeenCalledWith(expect.objectContaining({ id: 3, roi, exclusiones }), true);
     });
 
     it('si el motor no responde, el error se propaga (502 en la API) y no se audita un cambio que no ocurrió', async () => {

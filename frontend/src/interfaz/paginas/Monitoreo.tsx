@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Bell, BellOff, Camera, ClipboardPlus, Cpu, Film, Pause, Play, Plus, Search, ShieldAlert, ShieldCheck, Trash2 } from 'lucide-react';
+import { Bell, BellOff, Camera, ClipboardPlus, Cpu, Film, Gauge, Pause, Play, Plus, Search, ShieldAlert, ShieldCheck, Trash2 } from 'lucide-react';
 import api, { mensajeError } from '../../infraestructura/api';
 import { useAuth } from '../../aplicacion/AuthContext';
 import { useEvento, useReconexion } from '../../aplicacion/tiempoReal';
@@ -24,6 +24,8 @@ const CLAVE_MODO = 'anpr_modo_video';
 
 const leer = (k: string, d: string) => { try { return localStorage.getItem(k) ?? d; } catch { return d; } };
 const guardar = (k: string, v: string) => { try { localStorage.setItem(k, v); } catch { /* sin almacenamiento */ } };
+/** Milisegundos → segundos con un decimal (latencia del motor) */
+const segundos = (ms: number) => (ms / 1000).toLocaleString('es-EC', { minimumFractionDigits: 1, maximumFractionDigits: 1 });
 
 /** Respuesta de /detecciones/buscar-placa/:placa. */
 type ResultadoBusqueda = { placa: string; ultimos_ingresos: Deteccion[] } & (
@@ -240,6 +242,15 @@ const Monitoreo: React.FC = () => {
                     title="Flujo principal que analiza el motor: códec, resolución, cuadros recibidos por segundo y reconexiones automáticas con la cámara">
                     <Film size={13} /> {codecVideo(motor.enlace.codec)}{motor.enlace.ancho ? ` ${motor.enlace.ancho}×${motor.enlace.alto}` : ''}
                     {' · '}{numero(motor.enlace.fps_recibidos ?? 0)} fps recibidos{motor.enlace.reconexiones ? ` · ${motor.enlace.reconexiones} reconexiones` : ''}
+                  </span>
+                )}
+                {motor.latencia?.lectura_en_vivo && (
+                  <span className="fila" style={{ gap: 6 }}
+                    title={`Desde que la cámara captura el cuadro hasta que la lectura aparece (mediana y percentil 95 de las últimas ${motor.latencia.lectura_en_vivo.muestras}).`
+                      + (motor.latencia.edad_cuadro ? ` Edad del cuadro al analizarlo: ${motor.latencia.edad_cuadro.p50_ms} ms.` : '')
+                      + (motor.latencia.registro ? ` Registro confirmado: ${segundos(motor.latencia.registro.p50_ms)} s.` : '')
+                      + (motor.latencia.cuadros_descartados_pct !== null ? ` Cuadros descartados por llegar uno más nuevo: ${motor.latencia.cuadros_descartados_pct} %.` : '')}>
+                    <Gauge size={13} /> Lectura {segundos(motor.latencia.lectura_en_vivo.p50_ms)} s (p95 {segundos(motor.latencia.lectura_en_vivo.p95_ms)} s)
                   </span>
                 )}
                 <span className="ocultar-movil truncar" title={`${motor.detector} · ${motor.ocr}`}>Detector {motor.detector} · OCR {motor.ocr}</span>

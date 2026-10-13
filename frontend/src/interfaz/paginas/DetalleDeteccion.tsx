@@ -53,7 +53,7 @@ const ConsultaPropietario: React.FC<{ d: DeteccionDetalle; onCerrar: () => void 
  * Evidencias independientes con que el motor decide si una lectura es válida (y por tanto
  * si una placa del padrón puede autorizarse sola). Ver services/anpr/app/aplicacion/verificacion_placa.py.
  */
-const ChecklistValidez: React.FC<{ valida: boolean | null; ev: EvidenciaLectura | null }> = ({ valida, ev }) => {
+export const ChecklistValidez: React.FC<{ valida: boolean | null; ev: EvidenciaLectura | null }> = ({ valida, ev }) => {
   if (!ev) {
     return <p className="texto-secundario">El motor no informó evidencias para esta lectura (registro anterior a la verificación por evidencias o paso manual).</p>;
   }
@@ -68,7 +68,19 @@ const ChecklistValidez: React.FC<{ valida: boolean | null; ev: EvidenciaLectura 
       detalle: `${ev.lecturas} ${ev.lecturas === 1 ? 'lectura' : 'lecturas'} idénticas en cuadros distintos del mismo vehículo.` },
     { ok: ev.verificador_coincide ? true : ev.lecturas >= 2 ? null : false, titulo: 'Segundo OCR independiente (PP-OCRv6)',
       detalle: ev.lectura_verificador ? (ev.verificador_coincide ? `Coincide: ${ev.lectura_verificador}.` : `Leyó ${ev.lectura_verificador}.`) : 'Sin lectura del verificador.' },
+    // Registros anteriores a esta evidencia no la traen: no se muestra
+    ...(ev.caracteres_inferidos ? [{
+      ok: ev.caracteres_inferidos.length === 0, titulo: 'Lectura directa de cada carácter',
+      detalle: ev.caracteres_inferidos.length === 0
+        ? 'Algún lector leyó tal cual cada carácter de la placa.'
+        : `Inferidos por el formato, sin que ningún lector los leyera: ${ev.caracteres_inferidos.map(([i, c]) => `${c} (posición ${i + 1})`).join(', ')}.`,
+    }] : []),
   ];
+  const crudas = [
+    ev.lectura_ocr_cruda && `OCR ${ev.lectura_ocr_cruda}`,
+    ev.lectura_verificador_cruda && `verificador ${ev.lectura_verificador_cruda}`,
+    ev.lecturas_rapidas_crudas?.length && `otros cuadros ${ev.lecturas_rapidas_crudas.join(', ')}`,
+  ].filter(Boolean);
   return (
     <div className="pila" style={{ gap: 10 }}>
       <Aviso tipo={valida ? 'exito' : 'advertencia'}>
@@ -87,6 +99,7 @@ const ChecklistValidez: React.FC<{ valida: boolean | null; ev: EvidenciaLectura 
           </li>
         ))}
       </ul>
+      {crudas.length > 0 && <p className="texto-secundario" style={{ fontSize: 12 }}>Texto leído, sin interpretar: {crudas.join(' · ')}.</p>}
       <p className="texto-secundario" style={{ fontSize: 12 }}>
         La confirmación exige consenso de varios cuadros <i>o</i> coincidencia del segundo OCR{consenso ? ' (cumplida)' : ''}; el ícono gris indica que esa evidencia no fue necesaria.
       </p>

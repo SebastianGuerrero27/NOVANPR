@@ -27,6 +27,7 @@ from app.infraestructura.config import (
     OCR_VERIFIER_MODEL,
     OCR_VERIFIER_THREADS,
 )
+from app.dominio.interpretacion_placa import MOTO, PARTICULAR, interpretar
 from app.infraestructura.logger import get_logger
 
 logger = get_logger("ocr_verifier")
@@ -42,10 +43,9 @@ def _norm(t: str) -> str:
     return re.sub(r"[^A-Z0-9]", "", (t or "").upper())
 
 
-def _fix_positions(t: str) -> str:
-    if len(t) in (6, 7):
-        return "".join(_TO_LETTER.get(c, c) for c in t[:3]) + "".join(_TO_DIGIT.get(c, c) for c in t[3:])
-    return t
+def _interpretar(t: str) -> str:
+    """Placa (sin guion) del formato de auto o de moto que explica el texto con menos sustituciones."""
+    return interpretar(t, formatos=(PARTICULAR, MOTO), digito_a_letra=_TO_LETTER, letra_a_digito=_TO_DIGIT).placa.replace("-", "")
 
 
 @dataclass
@@ -54,6 +54,8 @@ class VerifierResult:
     confidence: float
     elapsed_ms: float
     within_budget: bool
+    #: Texto leído del que sale la placa, antes de interpretar confusiones (evidencia)
+    raw: str = ""
 
 
 class PlateOcrVerifier:
@@ -97,8 +99,8 @@ class PlateOcrVerifier:
         txts, scores = list(res.txts or []), list(res.scores or [])
         if res.boxes is not None and len(txts) > 1:
             txts, scores = merge_row_fragments(res.boxes, txts, scores)
-        plate, conf = parse_plate_lines(txts, scores)
-        return VerifierResult(plate, conf, elapsed, elapsed <= self.max_ms)
+        plate, conf, raw = leer_lineas_placa(txts, scores)
+        return VerifierResult(plate, conf, elapsed, elapsed <= self.max_ms, raw)
 
 
 def merge_row_fragments(boxes, txts: list[str], scores: list[float]) -> tuple[list[str], list[float]]:
@@ -132,14 +134,27 @@ def merge_row_fragments(boxes, txts: list[str], scores: list[float]) -> tuple[li
 
 def parse_plate_lines(txts: list[str], scores: list[float]) -> tuple[str, float]:
     """Descarta la cabecera "ECUADOR" y devuelve la línea con formato ANT de mayor confianza."""
+    plate, conf, _ = leer_lineas_placa(txts, scores)
+    return plate, conf
+
+
+def leer_lineas_placa(txts: list[str], scores: list[float]) -> tuple[str, float, str]:
+    """
+    Como parse_plate_lines, y además el texto leído del que sale la placa. Una línea de la longitud
+    de una placa se interpreta con el formato que necesita menos sustituciones; en una más larga
+    se busca una placa leída tal cual (sin sustituciones).
+    """
     for txt, score in sorted(zip(txts, scores), key=lambda x: -x[1]):
         clean = _HEADER_RE.sub("", _norm(txt))
         if len(clean) < 5:
             continue
-        m = _PLATE_RE.search(_fix_positions(clean)) or _PLATE_RE.search(clean)
+        plate = _interpretar(clean)
+        if plate:
+            return plate, float(score), clean
+        m = _PLATE_RE.search(clean)
         if m:
-            return _fix_positions(m.group(0)), float(score)
-    return "", 0.0
+            return m.group(0), float(score), m.group(0)
+    return "", 0.0, ""
 
 
 _instance: Optional[PlateOcrVerifier] = None

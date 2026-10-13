@@ -37,7 +37,7 @@ proveedor privativo, y con una **bandeja persistente** que garantiza la entrega 
 ```mermaid
 flowchart LR
   subgraph Motor[Motor ANPR]
-    OCR[completar-ocr]
+    OCR[completar-ocr\nreevaluar]
   end
   subgraph Backend
     D[dominio/decisionAcceso\npolítica pura R1–R7] --> AV[avisosAcceso\ndecisión → notificación]
@@ -53,6 +53,9 @@ flowchart LR
   WP --> SW[service worker sw.js\nnotificación del SO]
 ```
 
+- **Reevaluación:** el motor registra el paso en menos de 1 s; si después llegan el segundo OCR o
+  los atributos del vehículo y la decisión cambia (p. ej. POR CONFIRMAR → AUTORIZADO, o AUTORIZADO →
+  POR CONFIRMAR porque el vehículo no coincide), se avisa de nuevo; si no cambia, no se repite el aviso.
 - **Guardar antes de emitir:** cada notificación se escribe en la base antes de difundirse; el cliente
   recarga su bandeja al reconectar el socket y fusiona por id (entrega al menos una vez, sin
   duplicados visibles).
