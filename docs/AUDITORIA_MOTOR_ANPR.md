@@ -76,6 +76,7 @@ revertida, con estos resultados (antes → después):
 | O3 | Dos lectores que coinciden gracias a la misma sustitución contaban como confirmación (los dos leen "S" y el formato pone "5") | E5 · lectura directa: cada carácter debe haberlo leído tal cual algún lector; si no, la lectura queda para el personal con los caracteres inferidos señalados |
 | O4 | Sustituciones forzadas sin rastro (D → P en la provincia, U → 0, P → 9…) | Se mantienen como hipótesis registradas (posición, leído, interpretado); no confirman la lectura por sí solas |
 | O5 | Texto sin formato devuelto alterado (TRANS1 → TR-4N51); diplomática de 7 caracteres truncada (CC12345 → CC-1234) | Nunca se agregan ni quitan caracteres; sin formato posible se devuelve el texto leído |
+| O7 | Texto que no es una placa (teclado y pantalla del portátil, 2026-10-13) se registraba como paso: el recorte del área de detección agranda el texto pequeño y el formato de moto (2 letras + dígitos) admite casi cualquier texto | Solo placas: una lectura con formato de moto en un recuadro de placa de auto no se registra (otro cuadro, el verificador o descarte auditado). En los 10 pasos de esa prueba elimina los 4 falsos y las 4 lecturas incompletas de una placa real; en los 77 recortes etiquetados no rechaza ninguna lectura correcta |
 | O6 | La evidencia se cortaba a 1 500 caracteres: si se excedía quedaba un JSON inválido y el detalle perdía las evidencias | Se omiten campos prescindibles (tiempos por etapa primero); nunca se guarda un JSON cortado |
 
 Medición: en 77 recortes reales, las reglas posicionales aportan 0 puntos de exactitud
@@ -95,6 +96,13 @@ motos se demuestra con pruebas unitarias, porque el conjunto real no tiene motos
 | Ilegible | Auditoría de descartes / pendiente de validación | Sin placa legible tras los reintentos |
 
 ## 3. Riesgos que permanecen
+
+- **Umbral de confianza para registrar (no adoptado).** En Open Images, exigir más confianza del
+  detector reduce las detecciones sin placa pero pierde placas reales (por foto): 0,30 → 82,3 % de
+  las placas (−1,3 puntos) y −31 % de falsas; 0,40 → 80,5 % y −55 %; 0,50 → 77,0 % y −71 %. Exigir
+  que la placa esté sobre un vehículo detectado cuesta 1 punto y solo quita el 6 % de las falsas
+  (allí casi todas están sobre vehículos), e impediría las pruebas con placas en la mano. Queda como
+  decisión de operación (`docs/resultados/evidencia_placa_openimages.json`).
 
 - **Errores correlacionados de los dos lectores.** En 1 de 77 recortes ambos modelos leyeron
   "PSY585" por "PSY589" sin ninguna sustitución; E4 y E5 no lo detectan. Lo mitigan el consenso de

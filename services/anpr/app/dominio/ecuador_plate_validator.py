@@ -263,6 +263,21 @@ class EcuadorPlateValidator:
         )
 
 
+def formato_placa(plate_text: str) -> str:
+    """Formato ANT con que se interpreta la lectura: 'particular', 'moto', 'diplomatico' o '' (ninguno)."""
+    return EcuadorPlateValidator.interpretar(plate_text).formato
+
+
+def formato_coherente_con_la_placa(plate_text: str, es_moto: bool) -> bool:
+    """
+    Una placa de auto (recuadro alargado, una fila) se lee con formato de auto (3 letras + 3 o 4
+    dígitos) o diplomático; las de moto son casi cuadradas, de dos filas. Una lectura con formato de
+    moto dentro de un recuadro de auto es texto que no es una placa (teclado, pantalla, rótulo) o una
+    placa de auto mal leída a la que le falta un carácter (PJF001 → PJ001).
+    """
+    return es_moto or formato_placa(plate_text) != "moto"
+
+
 def validate_ecuadorian_plate(plate_text: str) -> Tuple[bool, str, float]:
     """
     Función de conveniencia para validar y normalizar matrículas ecuatorianas.

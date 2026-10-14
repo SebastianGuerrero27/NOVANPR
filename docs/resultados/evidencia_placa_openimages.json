@@ -1,0 +1,76 @@
+{
+ "imagenes": 2048,
+ "placas_reales": 2816,
+ "filas": [
+  {
+   "umbral": 0.22,
+   "exige_vehiculo": false,
+   "placas_conservadas": 2355,
+   "recall": 0.8363,
+   "detecciones_sin_placa": 244
+  },
+  {
+   "umbral": 0.22,
+   "exige_vehiculo": true,
+   "placas_conservadas": 2324,
+   "recall": 0.8253,
+   "detecciones_sin_placa": 229
+  },
+  {
+   "umbral": 0.3,
+   "exige_vehiculo": false,
+   "placas_conservadas": 2319,
+   "recall": 0.8235,
+   "detecciones_sin_placa": 168
+  },
+  {
+   "umbral": 0.3,
+   "exige_vehiculo": true,
+   "placas_conservadas": 2289,
+   "recall": 0.8129,
+   "detecciones_sin_placa": 158
+  },
+  {
+   "umbral": 0.4,
+   "exige_vehiculo": false,
+   "placas_conservadas": 2267,
+   "recall": 0.805,
+   "detecciones_sin_placa": 110
+  },
+  {
+   "umbral": 0.4,
+   "exige_vehiculo": true,
+   "placas_conservadas": 2238,
+   "recall": 0.7947,
+   "detecciones_sin_placa": 107
+  },
+  {
+   "umbral": 0.5,
+   "exige_vehiculo": false,
+   "placas_conservadas": 2167,
+   "recall": 0.7695,
+   "detecciones_sin_placa": 71
+  },
+  {
+   "umbral": 0.5,
+   "exige_vehiculo": true,
+   "placas_conservadas": 2139,
+   "recall": 0.7596,
+   "detecciones_sin_placa": 68
+  },
+  {
+   "umbral": 0.6,
+   "exige_vehiculo": false,
+   "placas_conservadas": 1943,
+   "recall": 0.69,
+   "detecciones_sin_placa": 31
+  },
+  {
+   "umbral": 0.6,
+   "exige_vehiculo": true,
+   "placas_conservadas": 1920,
+   "recall": 0.6818,
+   "detecciones_sin_placa": 30
+  }
+ ]
+}

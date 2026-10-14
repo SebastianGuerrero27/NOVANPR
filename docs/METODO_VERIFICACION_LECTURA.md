@@ -78,6 +78,14 @@ qué lectura se guarda y si se autoriza sola lo decide la validez de la lectura 
 - **E4 · Confirmación:** hay ≥ 2 lecturas OCR idénticas en cuadros distintos (lecturas rápidas del track y la lectura profunda de la foto), o el segundo OCR (PP-OCRv6) coincide exactamente con alguna de esas lecturas. El verificador nunca se confirma a sí mismo: si el OCR no leyó la placa que lee el verificador, la lectura queda sin confirmar.
 - **E5 · Lectura directa:** cada carácter de la placa lo leyó tal cual algún lector (OCR profundo, verificador u OCR rápido en otro cuadro del track). Un carácter que solo existe porque el formato lo sustituyó (S→5, D→P…) es una hipótesis: la lectura se registra con la salida cruda de cada lector, pero queda para el personal (`caracteres_inferidos` en la evidencia). E4 sola no basta: dos lectores que leen "PSYS89" coinciden en "PSY589" gracias a la misma sustitución, sin que ninguno haya visto el "5".
 
+**Solo placas: formato coherente con la forma.** Las placas de auto son alargadas y de una fila
+(3 letras + 3 o 4 dígitos, o diplomáticas); las de moto, casi cuadradas y de dos filas. Una lectura
+con formato de moto dentro de un recuadro de auto no se registra: es texto que no es una placa
+(teclado, pantalla, rótulo) o una placa de auto mal leída a la que le falta un carácter. Se trata
+como foto ilegible (otro cuadro del paso o, sin más intentos, descarte auditado con motivo
+`formato_no_corresponde_a_la_placa`) y, si el OCR rápido leyó así, el registro espera al
+verificador, cuya lectura puede ser la correcta.
+
 **Interpretación de la lectura** (`app/dominio/interpretacion_placa.py`). El texto del OCR se
 interpreta como el formato ANT (particular, moto, diplomático) que lo explica con **menos**
 sustituciones de la tabla de confusiones; cada sustitución queda registrada y nunca se agregan ni

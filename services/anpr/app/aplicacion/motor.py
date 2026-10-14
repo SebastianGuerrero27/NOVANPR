@@ -40,7 +40,7 @@ from app.aplicacion.verificacion_placa import (
     toca_borde_lateral,
 )
 from app.dominio.credenciales import sin_credenciales
-from app.dominio.ecuador_plate_validator import validate_ecuadorian_plate
+from app.dominio.ecuador_plate_validator import formato_coherente_con_la_placa, validate_ecuadorian_plate
 from app.dominio.interpretacion_placa import caracteres_sin_lectura_directa
 from app.dominio.memoria import purgar_expirados
 from app.dominio.tasa_cuadros import TasaCuadros
@@ -1079,10 +1079,13 @@ class MotorAnpr:
             # registra dentro del presupuesto contado desde la captura de la foto, sin esperar al
             # verificador; su lectura llega después como reevaluación. Sin placa o con una foto dudosa
             # se espera al verificador como antes (es quien puede leerla o descartarla).
+            # Una lectura con formato incoherente con la forma de la placa también espera al
+            # verificador: su lectura puede ser la correcta (PJF001 donde el OCR leyó PJ001).
             presupuesto = self._config.presupuesto_registro_s
             candidata = placa or (placa_previa if placa_previa and validate_ecuadorian_plate(placa_previa)[0] else "")
             limite_registro: Optional[float] = None
-            if presupuesto is not None and candidata and analisis.caracteres >= 3:
+            if (presupuesto is not None and candidata and analisis.caracteres >= 3
+                    and formato_coherente_con_la_placa(candidata, es_moto)):
                 hora_foto = self._horas_cuadro.get(getattr(candidato, "frame_idx", -1)) or ahora
                 limite_registro = hora_foto + presupuesto - _RESERVA_REGISTRO_S
 
@@ -1164,6 +1167,19 @@ class MotorAnpr:
                 self._log.info("[SEGUNDA VERIFICACIÓN OCR] Falso positivo prevenido | Track #%d descartado (texto: '%s')", tracking_id, texto)
                 self._descartar(tracking_id, "segunda_verificacion_ocr_no_valido", texto or None,
                                 profundo.confianza if profundo else conf_previa, camara)
+                return
+
+            # 3.0a Solo placas: la lectura debe corresponder a la forma de la placa (ver
+            #      formato_coherente_con_la_placa). Si no, se trata como foto ilegible: otro cuadro del
+            #      paso o, sin más intentos, se audita el descarte; no se registra un paso.
+            if not formato_coherente_con_la_placa(placa, es_moto):
+                if self._liberar_para_reintento(tracking_id) and not self._sin_reintento_posible(tracking_id):
+                    self._log.info("[SOLO PLACAS] Track #%d: '%s' tiene formato de moto en una placa de auto; se intentará con otro cuadro",
+                                   tracking_id, placa)
+                    return
+                self._log.info("[SOLO PLACAS] Track #%d descartado: '%s' tiene formato de moto en una placa de auto (no es una placa o falta un carácter)",
+                               tracking_id, placa)
+                self._descartar(tracking_id, "formato_no_corresponde_a_la_placa", placa, conf, camara)
                 return
 
             # 3.0 Validez de la lectura (evidencias independientes, ver verificacion_placa.py y

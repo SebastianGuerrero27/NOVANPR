@@ -849,6 +849,43 @@ def test_sin_presupuesto_el_registro_espera_al_vehiculo_como_antes(servicio, mon
     assert servicio.http.envios[0][1]["metadatos"]["vehiculo"] == {"tipo": "auto", "color": "blanco"}
 
 
+# ─── Solo placas: la lectura debe corresponder a la forma de la placa ────────
+
+def test_texto_con_formato_de_moto_en_un_recuadro_de_auto_no_se_registra(servicio):
+    """Teclado o pantalla: 'AH7441' (2 letras + 4 dígitos) dentro de un recuadro alargado de placa de
+    auto. No es una placa: no se registra el paso; se audita el descarte."""
+    servicio.fijar(pipeline=Pipeline(conteo={"AH7441": 2}), trabajador_ocr=types.SimpleNamespace(_agent=Agente(placa="AH7441")))
+    servicio.disparar_captura(candidato())                     # 160×40: placa de auto
+    assert servicio.http.rutas() == ["detecciones/descarte"]
+    assert servicio.http.envios[0][1]["motivo"] == "formato_no_corresponde_a_la_placa"
+
+
+def test_la_misma_lectura_en_un_recuadro_de_moto_si_se_registra(servicio):
+    servicio.fijar(pipeline=Pipeline(conteo={"AH7441": 2}), trabajador_ocr=types.SimpleNamespace(_agent=Agente(placa="AH7441")))
+    servicio.disparar_captura(candidato(ancho=60, alto=50))   # casi cuadrada: placa de moto
+    assert servicio.http.rutas()[0] == "detecciones/ingreso"
+
+
+def test_una_placa_diplomatica_de_auto_si_se_registra(servicio):
+    servicio.fijar(pipeline=Pipeline(conteo={"CC1234": 2}), trabajador_ocr=types.SimpleNamespace(_agent=Agente(placa="CC1234")))
+    servicio.disparar_captura(candidato())
+    assert servicio.http.rutas()[0] == "detecciones/ingreso"
+
+
+def test_si_el_ocr_lee_formato_de_moto_se_espera_al_verificador_y_su_lectura_se_registra(servicio, monkeypatch):
+    """Placa de auto movida: el OCR leyó PJ001 (le falta la F). Sin registro rápido para esa lectura:
+    se espera al verificador, que leyó PJF001, y se registra esa placa."""
+    _con_fila_de_caracteres(monkeypatch)
+    _configurar(servicio, monkeypatch, presupuesto_registro_s=0.3)
+    liberar = threading.Event()
+    monkeypatch.setattr(servicio.motor._dep, "verificador", lambda: VerificadorTardio("PJF001", liberar))
+    servicio.fijar(pipeline=Pipeline(conteo={"PJ001": 2}), trabajador_ocr=types.SimpleNamespace(_agent=Agente(placa="PJ001")))
+    threading.Timer(0.3, liberar.set).start()
+    servicio.disparar_captura(candidato())
+    assert servicio.http.rutas() == ["detecciones/ingreso", "detecciones/completar-ocr"]
+    assert servicio.http.envios[1][1]["placa_reconocida"].replace("-", "") == "PJF001"
+
+
 def test_anti_duplicados_por_track_y_por_placa(servicio):
     servicio.fijar(pipeline=Pipeline(conteo={"PBA1234": 2}), trabajador_ocr=types.SimpleNamespace(_agent=Agente()))
     servicio.disparar_captura(candidato(tid=5))
