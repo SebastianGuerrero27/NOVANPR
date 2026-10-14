@@ -1,18 +1,18 @@
 import React, { useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import {
-  Activity, AlertTriangle, ArrowRight, CalendarClock, Camera, CarFront, CheckCircle2, ClipboardPlus, Clock, Database,
-  KeyRound, Mail, MonitorPlay, Server, ShieldAlert, ShieldCheck, Target, TrendingDown, TrendingUp, UserCheck,
+  Activity, AlertTriangle, ArrowRight, Camera, CarFront, CheckCircle2, ClipboardPlus, Clock, History, MonitorPlay, ShieldAlert, ShieldCheck,
+  TrendingDown, TrendingUp,
 } from 'lucide-react';
 import api from '../../infraestructura/api';
 import { useAuth } from '../../aplicacion/AuthContext';
 import { useEvento, useReconexion } from '../../aplicacion/tiempoReal';
 import { useConsulta, useDiferido, usePaginaVisible } from '../../aplicacion/hooks';
-import type { Deteccion, PanelAdministracion, ResumenPanel } from '../../dominio/tipos';
-import { diaCorto, fechaHora, numero, relativo, ROLES, SERIES_ESTADO } from '../../dominio/formato';
-import { Aviso, Cargando, Kpi, Tarjeta, Vacio } from '../componentes/ui';
-import { BarraDistribucion, BarrasApiladas, Leyenda } from '../componentes/Graficos';
-import { RegistroManualModal, TarjetaDeteccion, ValidarModal } from '../componentes/deteccion';
+import type { Deteccion, ResumenPanel } from '../../dominio/tipos';
+import { diaCorto, fecha, fechaHora, hora, numero, porcentaje, relativo, SERIES_ESTADO } from '../../dominio/formato';
+import { Aviso, Cargando, FilasEsqueleto, InsigniaEstado, Kpi, Placa, Tarjeta, Vacio } from '../componentes/ui';
+import { BarrasApiladas, BarrasHorizontales, Dona, Leyenda } from '../componentes/Graficos';
+import { describirVehiculo, RegistroManualModal, TarjetaDeteccion, ValidarModal } from '../componentes/deteccion';
 import GestionPermisos from './GestionPermisos';
 
 function saludo(): string {
@@ -127,10 +127,10 @@ const PanelOperador: React.FC = () => {
 
   return (
     <div className="pagina">
-      <div className="fila" style={{ justifyContent: 'space-between', marginBottom: 18 }}>
+      <div className="encabezado-pagina">
         <div>
-          <h2 style={{ fontSize: 21, fontWeight: 800 }}>{saludo()}, {user?.nombre.split(' ')[0]}</h2>
-          <p className="texto-secundario">Resumen del acceso vehicular de hoy · {fechaHora(new Date())}</p>
+          <h2>{saludo()}, {user?.nombre.split(' ')[0]}</h2>
+          <p>Resumen del acceso vehicular de hoy · {fechaHora(new Date())}</p>
         </div>
         <div className="fila">
           <button className="btn btn-secondary" onClick={() => setManual(true)}><ClipboardPlus size={16} /> Ingreso manual</button>
@@ -159,107 +159,93 @@ const PanelOperador: React.FC = () => {
 
 /* ─────────────── Panel de gestión (permiso alertas:gestionar: Administrador) ─────────────── */
 
-const Tendencia: React.FC<{ r: ResumenPanel }> = ({ r }) => (
-  <Tarjeta titulo="Últimos 7 días" subtitulo="Ingresos diarios por estado" acciones={<Leyenda series={SERIES_ESTADO} />}>
-    {r.tendencia.every(d => d.total === 0)
-      ? <Vacio titulo="Sin ingresos en los últimos 7 días" icono={<Activity size={22} />} />
-      : <BarrasApiladas datos={r.tendencia} series={SERIES_ESTADO} etiquetaX={d => diaCorto(d.fecha)} alto={200} resaltar={6} />}
+/** Dona: cómo se repartieron los ingresos de hoy entre los estados de la decisión. */
+const DistribucionHoy: React.FC<{ r: ResumenPanel }> = ({ r }) => (
+  <Tarjeta titulo="Distribución de ingresos" subtitulo={`Hoy · ${numero(r.hoy.total)} ingresos, ${numero(r.hoy.validados)} confirmados por el personal`}>
+    {r.hoy.total === 0
+      ? <Vacio titulo="Sin ingresos hoy" texto="La distribución aparece con el primer paso registrado." icono={<Activity size={22} />} />
+      : <Dona valores={r.hoy} series={SERIES_ESTADO} />}
   </Tarjeta>
 );
 
-const Listas: React.FC<{ r: ResumenPanel }> = ({ r }) => {
-  const l = r.listas;
+/** Barras horizontales: ingresos de cada uno de los últimos 7 días, del más reciente al más antiguo. */
+const UltimosSieteDias: React.FC<{ r: ResumenPanel }> = ({ r }) => {
+  const total = r.tendencia.reduce((s, d) => s + d.total, 0);
   return (
-    <Tarjeta titulo="Listas de control" sinPadding>
-      <div className="tabla-contenedor"><table className="tabla"><tbody>
-        <tr><td><Link to="/listas/autorizados" style={{ textDecoration: 'none' }}><ShieldCheck size={14} color="var(--autorizado)" style={{ verticalAlign: -2 }} /> Autorizados vigentes</Link></td><td className="num"><b>{numero(l.autorizados_vigentes)}</b></td></tr>
-        <tr><td><CalendarClock size={14} color="var(--no-registrado)" style={{ verticalAlign: -2 }} /> Vencen en {l.dias_aviso} días</td><td className="num"><b style={{ color: l.autorizados_por_vencer ? 'var(--no-registrado)' : undefined }}>{numero(l.autorizados_por_vencer)}</b></td></tr>
-        <tr><td><Clock size={14} color="var(--text-4)" style={{ verticalAlign: -2 }} /> Autorizaciones vencidas</td><td className="num"><b>{numero(l.autorizados_vencidos)}</b></td></tr>
-        <tr><td><Link to="/listas/alertas" style={{ textDecoration: 'none' }}><ShieldAlert size={14} color="var(--alerta)" style={{ verticalAlign: -2 }} /> Placas en lista negra</Link></td><td className="num"><b>{numero(l.alertas_vigentes)}</b></td></tr>
-      </tbody></table></div>
-    </Tarjeta>
-  );
-};
-
-const Exactitud: React.FC<{ r: ResumenPanel }> = ({ r }) => {
-  const { validadas, correctas } = r.exactitud_ocr;
-  const pct = validadas ? correctas / validadas : null;
-  return (
-    <Tarjeta titulo="Exactitud de lectura (7 días)" subtitulo="Lectura automática frente a la placa confirmada por el personal">
-      {!validadas ? <p className="texto-secundario">Aún no hay lecturas confirmadas por el personal para medir la exactitud.</p> : (
-        <div className="pila" style={{ gap: 10 }}>
-          <div className="fila" style={{ alignItems: 'baseline', gap: 10 }}>
-            <span style={{ fontSize: 32, fontWeight: 800 }}>{Math.round(pct! * 1000) / 10} %</span>
-            <span className="texto-secundario">{numero(correctas)} de {numero(validadas)} lecturas correctas</span>
-          </div>
-          <div style={{ height: 8, borderRadius: 4, background: 'var(--surface-3)', overflow: 'hidden' }}>
-            <div style={{ width: `${pct! * 100}%`, height: '100%', background: 'var(--navy-700)' }} />
-          </div>
-          <Link to="/evaluacion" className="btn btn-ghost btn-sm" style={{ alignSelf: 'flex-start' }}><Target size={14} /> Ver evaluación completa</Link>
+    <Tarjeta titulo="Ingresos por día" subtitulo={`Últimos 7 días · ${numero(total)} ingresos`}>
+      {total === 0 ? <Vacio titulo="Sin ingresos en los últimos 7 días" icono={<Activity size={22} />} /> : (
+        <div className="pila" style={{ gap: 14 }}>
+          <BarrasHorizontales series={SERIES_ESTADO}
+            filas={[...r.tendencia].reverse().map(d => ({ etiqueta: diaCorto(d.fecha), total: d.total, valores: d }))} />
+          <div style={{ borderTop: '1px solid var(--border)', paddingTop: 10 }}><Leyenda series={SERIES_ESTADO} /></div>
         </div>
       )}
     </Tarjeta>
   );
 };
 
-const Administracion: React.FC = () => {
-  const { datos: a, cargando, recargar } = useConsulta<PanelAdministracion>(() => api.get('/panel/administracion').then(r => r.data), []);
-  const visible = usePaginaVisible();
-  useEffect(() => { if (visible) recargar(true); }, [visible]); // eslint-disable-line react-hooks/exhaustive-deps
-  if (cargando && !a) return <Tarjeta titulo="Administración"><Cargando /></Tarjeta>;
-  if (!a) return null;
-  const s = a.servicios;
+/** Los 50 ingresos más recientes en una tabla, actualizada en tiempo real. */
+const IngresosRecientes: React.FC = () => {
+  const navigate = useNavigate();
+  const { datos, cargando, error, recargar } = useConsulta<Deteccion[]>(
+    () => api.get('/detecciones/recientes', { params: { limite: 50 } }).then(r => r.data), []);
+  const diferido = useDiferido(() => recargar(true), 1500);
+  useEvento('deteccion:nueva', diferido);
+  useEvento('deteccion:actualizada', diferido);
+  useEvento('deteccion:eliminada', diferido);
+  useEvento('deteccion:eliminadas', diferido);
+  useReconexion(diferido);
   return (
-    <>
-      <div className="grid-kpi">
-        <Kpi etiqueta="Usuarios activos" valor={numero(a.usuarios.activos)} icono={<UserCheck size={17} />} color="var(--autorizado)" fondo="var(--autorizado-bg)"
-          pie={`${a.usuarios.por_rol.Admin ?? 0} admin · ${a.usuarios.por_rol.GestorPermisos ?? 0} gestores de permisos · ${a.usuarios.por_rol.Guardia ?? 0} guardias`} />
-        <Kpi etiqueta="Cuentas por verificar" valor={numero(a.usuarios.pendientes)} icono={<Mail size={17} />} color="var(--pendiente)" fondo="var(--pendiente-bg)" pie="Registro sin confirmar el correo" />
-        <Kpi etiqueta="Cuentas bloqueadas" valor={numero(a.usuarios.bloqueados)} icono={<KeyRound size={17} />} color="var(--alerta)" fondo="var(--alerta-bg)" pie="Administrativo o por intentos" />
-        <Kpi etiqueta="Accesos fallidos (24 h)" valor={numero(a.accesos_24h.fallidos)} icono={<ShieldAlert size={17} />} color="var(--no-registrado)" fondo="var(--no-registrado-bg)"
-          pie={`${numero(a.accesos_24h.exitosos)} inicios de sesión correctos`} />
+    <Tarjeta titulo="Ingresos recientes" subtitulo="Los 50 últimos pasos registrados; se actualiza en tiempo real"
+      acciones={<Link to="/detecciones" className="btn btn-ghost btn-sm"><History size={14} /> Historial completo <ArrowRight size={14} /></Link>} sinPadding>
+      {error && <Aviso tipo="error" style={{ margin: 12 }}>{error}</Aviso>}
+      <div className="tabla-contenedor" style={{ maxHeight: 560 }}>
+        <table className="tabla">
+          <thead><tr>
+            <th className="num" style={{ width: 44 }}>#</th><th>Placa</th><th>Fecha y hora</th><th>Estado</th><th>Cámara</th>
+            <th className="ocultar-movil">Vehículo / titular</th><th className="num ocultar-movil">Confianza OCR</th><th>Validación</th>
+          </tr></thead>
+          <tbody>
+            {cargando && !datos ? <FilasEsqueleto columnas={8} /> : (datos ?? []).map((d, i) => (
+              <tr key={d.id} className="clic" onClick={() => navigate(`/detecciones/${d.id}`)}>
+                <td className="num texto-secundario">{i + 1}</td>
+                <td className="nowrap"><Placa valor={d.placa} /></td>
+                <td className="nowrap"><strong style={{ color: 'var(--text)', fontWeight: 600 }}>{hora(d.fecha_hora_ingreso)}</strong><span className="secundario">{fecha(d.fecha_hora_ingreso)}</span></td>
+                <td><InsigniaEstado estado={d.estado_validacion} procesando={d.estado_procesamiento === 'pendiente_ocr'} /></td>
+                <td>{d.camara ? d.camara.nombre : <span className="texto-secundario">{d.fuente === 'manual' ? 'Registro manual' : '—'}</span>}</td>
+                <td className="ocultar-movil" style={{ maxWidth: 240 }}>
+                  <span className="truncar" style={{ display: 'block' }}>{d.alerta ? <b style={{ color: 'var(--alerta)' }}>{d.alerta.motivo}</b> : d.autorizado?.propietario ?? describirVehiculo(d)}</span>
+                </td>
+                <td className="num ocultar-movil">{porcentaje(d.confianza_ocr)}</td>
+                <td>{d.validado_manualmente
+                  ? <span title={d.validacion?.usuario?.email}>{d.validacion?.usuario?.nombre ?? 'Personal'}</span>
+                  : <span className="texto-secundario">Automática</span>}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
       </div>
-      <div className="grid-3">
-        <Tarjeta titulo="Servicios">
-          <div className="pila" style={{ gap: 12, fontSize: 13 }}>
-            <div className="fila" style={{ justifyContent: 'space-between' }}><span className="fila" style={{ gap: 8 }}><Database size={15} /> Base de datos</span><span className="fila" style={{ gap: 6 }}><span className="punto verde" /> En línea</span></div>
-            <div className="fila" style={{ justifyContent: 'space-between' }}><span className="fila" style={{ gap: 8 }}><Server size={15} /> Motor ANPR</span>
-              <span className="fila" style={{ gap: 6 }}><span className={`punto ${s.anpr.en_linea ? 'verde' : 'rojo'}`} />{s.anpr.en_linea ? `En línea · ${numero(s.anpr.fps_captura ?? 0)} fps` : s.anpr.error ?? 'Fuera de línea'}</span></div>
-            <div className="fila" style={{ justifyContent: 'space-between' }}><span className="fila" style={{ gap: 8 }}><Mail size={15} /> Correo (SMTP)</span>
-              <span className="fila" style={{ gap: 6 }}><span className={`punto ${s.correo.configurado ? 'verde' : 'ambar'}`} />{s.correo.configurado ? 'Configurado' : 'Sin configurar'}</span></div>
-            {s.anpr.en_linea && <p className="texto-secundario" style={{ fontSize: 12 }}>Detector {s.anpr.detector} · OCR {s.anpr.ocr}{s.anpr.verificador ? ` · verificador ${s.anpr.verificador}` : ''}</p>}
-          </div>
-        </Tarjeta>
-        <Tarjeta titulo="Actividad reciente" acciones={<Link to="/auditoria" className="btn btn-ghost btn-sm">Auditoría <ArrowRight size={14} /></Link>}>
-          {a.actividad.length === 0 ? <p className="texto-secundario">Sin actividad registrada.</p> : (
-            <ul className="linea-tiempo">
-              {a.actividad.slice(0, 6).map((x, i) => (
-                <li key={i}><div><strong>{x.accion.replace(/_/g, ' ').toLowerCase()}</strong><span>{x.actor ?? 'sistema'} · {relativo(x.fecha)}</span>{x.detalle && <span className="truncar" title={x.detalle}>{x.detalle}</span>}</div></li>
-              ))}
-            </ul>
-          )}
-        </Tarjeta>
-        <Tarjeta titulo="Intentos de acceso fallidos" acciones={<Link to="/auditoria?fuente=accesos&resultado=fallo" className="btn btn-ghost btn-sm">Ver <ArrowRight size={14} /></Link>}>
-          {a.ultimos_fallidos.length === 0 ? <p className="texto-secundario">Sin intentos fallidos recientes.</p> : (
-            <ul className="linea-tiempo">
-              {a.ultimos_fallidos.map((x, i) => <li key={i}><div><strong className="truncar">{x.email}</strong><span>{x.motivo} · {x.ip} · {relativo(x.fecha)}</span></div></li>)}
-            </ul>
-          )}
-        </Tarjeta>
-      </div>
-    </>
+      {datos && datos.length === 0 && (
+        <Vacio titulo="Aún no hay ingresos registrados" texto="Los pasos vehiculares aparecerán aquí en cuanto el motor ANPR los registre." icono={<CarFront size={22} />} />
+      )}
+    </Tarjeta>
   );
 };
 
+/**
+ * Dashboard de gestión, simple como el de vigilance-heart: indicadores del día, la distribución de
+ * hoy, los últimos 7 días y los 50 ingresos recientes. Servicios, cuentas, listas de control y
+ * exactitud están en Estado del sistema.
+ */
 const PanelGestion: React.FC = () => {
-  const { user, puede } = useAuth();
+  const { user } = useAuth();
   const { datos: r, cargando, error } = useResumen();
   return (
     <div className="pagina">
-      <div className="fila" style={{ justifyContent: 'space-between', marginBottom: 18 }}>
+      <div className="encabezado-pagina">
         <div>
-          <h2 style={{ fontSize: 21, fontWeight: 800 }}>{saludo()}, {user?.nombre.split(' ')[0]}</h2>
-          <p className="texto-secundario">Panel de {ROLES[user!.rol].toLowerCase()} · {r ? `actualizado ${relativo(r.generado)}` : 'cargando…'}</p>
+          <h2>Dashboard</h2>
+          <p>Vista general del acceso vehicular · {saludo()}, {user?.nombre.split(' ')[0]} · {r ? `actualizado ${relativo(r.generado)}` : 'cargando…'}</p>
         </div>
         <div className="fila">
           <Link to="/reportes" className="btn btn-secondary"><Activity size={16} /> Reportes</Link>
@@ -269,25 +255,10 @@ const PanelGestion: React.FC = () => {
       {error && <Aviso tipo="error" style={{ marginBottom: 16 }}>{error}</Aviso>}
       <div className="pila">
         <KpisDelDia r={r} cargando={cargando} />
-        {r && (
-          <>
-            <div className="grid-principal">
-              <GraficoPorHora r={r} />
-              <Tarjeta titulo="Distribución de hoy" subtitulo={`${numero(r.hoy.total)} ingresos · ${numero(r.hoy.validados)} confirmados por el personal`}>
-                <BarraDistribucion valores={r.hoy} series={SERIES_ESTADO} />
-              </Tarjeta>
-            </div>
-            <div className="grid-principal">
-              <Tendencia r={r} />
-              <div className="pila"><Listas r={r} /><Exactitud r={r} /></div>
-            </div>
-            <div className="grid-principal"><EstadoCamaras r={r} /><UltimasAlertas r={r} /></div>
-          </>
-        )}
-        {puede('usuarios:gestionar') && <>
-          <h3 style={{ fontSize: 15, fontWeight: 700, marginTop: 8 }}>Administración del sistema</h3>
-          <Administracion />
-        </>}
+        {r
+          ? <div className="grid-2"><DistribucionHoy r={r} /><UltimosSieteDias r={r} /></div>
+          : <Tarjeta titulo="Distribución de ingresos"><Cargando /></Tarjeta>}
+        <IngresosRecientes />
       </div>
     </div>
   );

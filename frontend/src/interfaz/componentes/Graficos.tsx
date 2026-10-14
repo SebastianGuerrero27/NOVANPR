@@ -184,3 +184,60 @@ export const BarraDistribucion: React.FC<{ valores: object; series: readonly Ser
     </div>
   );
 };
+
+/**
+ * Dona de una distribución (como el panel de vigilance-heart): porcentaje junto a cada segmento,
+ * total al centro y leyenda a la derecha. Separación de 2 px entre segmentos.
+ */
+export const Dona: React.FC<{ valores: object; series: readonly Serie[]; tamano?: number; unidad?: string }> =
+  ({ valores, series, tamano = 220, unidad = 'ingresos' }) => {
+    const total = series.reduce((s, x) => s + conteo(valores, x.clave), 0);
+    const margen = 34;   // espacio para los porcentajes alrededor
+    const lado = tamano + margen * 2;
+    const c = lado / 2;
+    const radio = tamano * 0.38;
+    const grosor = tamano * 0.16;
+    const circ = 2 * Math.PI * radio;
+    let acumulado = 0;
+    const segmentos = series.map(s => {
+      const v = conteo(valores, s.clave);
+      const frac = total ? v / total : 0;
+      const inicio = acumulado;
+      acumulado += frac;
+      return { s, v, frac, inicio };
+    }).filter(x => x.v > 0);
+    const separacion = segmentos.length > 1 ? 2 : 0;
+    return (
+      <div className="dona">
+        <svg width={lado} height={lado} viewBox={`0 0 ${lado} ${lado}`} role="img"
+          aria-label={`Distribución: ${segmentos.map(x => `${x.s.etiqueta} ${Math.round(x.frac * 100)} %`).join(', ') || 'sin datos'}`}>
+          <circle cx={c} cy={c} r={radio} fill="none" stroke="var(--surface-3)" strokeWidth={grosor} />
+          {segmentos.map(({ s, v, frac, inicio }) => {
+            const largo = Math.max(0, frac * circ - separacion);
+            return (
+              <circle key={s.clave} cx={c} cy={c} r={radio} fill="none" stroke={s.color} strokeWidth={grosor}
+                strokeDasharray={`${largo} ${circ - largo}`} strokeDashoffset={-inicio * circ} transform={`rotate(-90 ${c} ${c})`}>
+                <title>{`${s.etiqueta}: ${numero(v)}`}</title>
+              </circle>
+            );
+          })}
+          {segmentos.map(({ s, frac, inicio }) => {
+            if (frac < 0.03) return null;
+            const angulo = (inicio + frac / 2) * 2 * Math.PI - Math.PI / 2;
+            const d = radio + grosor / 2 + 17;
+            return (
+              <text key={s.clave} x={c + d * Math.cos(angulo)} y={c + d * Math.sin(angulo)} textAnchor="middle" dominantBaseline="middle"
+                fill={s.color} fontSize={14} fontWeight={600}>{Math.round(frac * 100)}%</text>
+            );
+          })}
+          <text x={c} y={c - 4} textAnchor="middle" fontSize={26} fontWeight={600} fill="var(--text)">{numero(total)}</text>
+          <text x={c} y={c + 17} textAnchor="middle" fontSize={10.5} fill="var(--text-3)" letterSpacing="1.5">{unidad.toUpperCase()}</text>
+        </svg>
+        <div className="dona-leyenda">
+          {series.map(s => (
+            <span key={s.clave} style={{ color: s.color }}><i style={{ background: s.color }} />{s.etiqueta} <b>{numero(conteo(valores, s.clave))}</b></span>
+          ))}
+        </div>
+      </div>
+    );
+  };

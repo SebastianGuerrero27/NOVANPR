@@ -1,4 +1,5 @@
 import React, { useEffect, useId, useState } from 'react';
+import { createPortal } from 'react-dom';
 import {
   AlertCircle, AlertTriangle, CheckCircle2, ChevronLeft, ChevronRight, Clock, HelpCircle, Info, Inbox, Loader2,
   ShieldAlert, ShieldCheck, X,
@@ -32,15 +33,20 @@ export const Tarjeta: React.FC<{
 export const Kpi: React.FC<{
   etiqueta: string; valor: React.ReactNode; icono?: React.ReactNode; color?: string; fondo?: string;
   pie?: React.ReactNode; onClick?: () => void; cargando?: boolean;
-}> = ({ etiqueta, valor, icono, color = 'var(--navy-800)', fondo = 'var(--surface-3)', pie, onClick, cargando }) => {
+}> = ({ etiqueta, valor, icono, color, fondo = 'var(--surface-3)', pie, onClick, cargando }) => {
   const Tag = onClick ? 'button' : 'div';
+  // Tarjeta de estado: el título y el valor toman el color de la variante (azul el total, sin color)
+  const acento = color ?? '#2563eb';
+  const variables = { '--kpi-color': acento, '--kpi-valor': color ?? 'var(--text)' } as React.CSSProperties;
   return (
-    <Tag className="kpi" onClick={onClick} style={onClick ? { cursor: 'pointer', textAlign: 'left', font: 'inherit' } : undefined}>
+    <Tag className="kpi" onClick={onClick} style={{ ...variables, ...(onClick ? { cursor: 'pointer', textAlign: 'left', font: 'inherit' } : {}) }}>
       <div className="kpi-cabecera">
-        <span className="kpi-etiqueta">{etiqueta}</span>
-        {icono && <span className="kpi-icono" style={{ color, background: fondo }}>{icono}</span>}
+        <div className="kpi-texto">
+          <span className="kpi-etiqueta">{etiqueta}</span>
+          {cargando ? <div className="esqueleto" style={{ height: 30, width: 70 }} /> : <div className="kpi-valor">{valor}</div>}
+        </div>
+        {icono && <span className="kpi-icono" style={{ color: acento, background: color ? fondo : '#eff6ff' }}>{icono}</span>}
       </div>
-      {cargando ? <div className="esqueleto" style={{ height: 30, width: 70 }} /> : <div className="kpi-valor">{valor}</div>}
       {pie && <div className="kpi-pie">{pie}</div>}
     </Tag>
   );
@@ -133,7 +139,10 @@ export const Modal: React.FC<{
     document.body.style.overflow = 'hidden';
     return () => { window.removeEventListener('keydown', fn); document.body.style.overflow = overflow; };
   }, [onCerrar, bloquear]);
-  return (
+  // Se dibuja en el <body>: dentro de un ancestro con backdrop-filter, transform o filter (p. ej. el
+  // encabezado, donde está la campana) `position: fixed` se mide respecto de ese ancestro y el modal
+  // quedaba recortado a su altura.
+  return createPortal(
     <div className="modal-fondo" onMouseDown={e => { if (e.target === e.currentTarget && !bloquear) onCerrar(); }}>
       <div className={`modal${tamano !== 'normal' ? ' ' + tamano : ''}`} role="dialog" aria-modal="true" aria-labelledby={id}>
         <div className="modal-cabecera">
@@ -143,7 +152,8 @@ export const Modal: React.FC<{
         <div className="modal-cuerpo">{children}</div>
         {pie && <div className="modal-pie">{pie}</div>}
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 };
 

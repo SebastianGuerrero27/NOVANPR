@@ -1,6 +1,8 @@
 import React, { Suspense, useEffect, useRef, useState } from 'react';
 import { NavLink, useLocation, useNavigate } from 'react-router-dom';
-import { Bell, ChevronsLeft, ChevronsRight, Clock, KeyRound, LogOut, Menu, UserCircle, Volume2, VolumeX } from 'lucide-react';
+import {
+  Bell, ChevronDown, ChevronsLeft, ChevronsRight, Clock, KeyRound, LogOut, Menu, Shield, UserCircle, Volume2, VolumeX, Wifi, WifiOff,
+} from 'lucide-react';
 import api from '../../infraestructura/api';
 import { useAuth } from '../../aplicacion/AuthContext';
 import { useEvento, useReconexion, useTiempoReal } from '../../aplicacion/tiempoReal';
@@ -10,7 +12,7 @@ import { Cargando } from '../componentes/ui';
 import { AvisosAcceso } from '../componentes/AvisosAcceso';
 import { CampanaNotificaciones } from '../componentes/CentroNotificaciones';
 import { alCambiarSonido, fijarSonido, sonidoActivo } from '../../infraestructura/avisos';
-import { itemDeRuta, menuPara } from './navegacion';
+import { itemDeRuta, menuPara, pestanasPara } from './navegacion';
 import logo from '../../assets/ecu911.png';
 
 const CLAVE_COLAPSO = 'anpr_menu_colapsado';
@@ -52,7 +54,7 @@ const Sidebar: React.FC<{ colapsado: boolean; onColapsar: () => void; abiertoMov
       <aside className={`sidebar${colapsado ? ' colapsado' : ''}${abiertoMovil ? ' abierto-movil' : ''}`} aria-label="Menú principal">
         <div className="sidebar-marca">
           <div className="logo"><img src={logo} alt="ECU 911" /></div>
-          <div className="texto"><strong>Sistema ANPR</strong><span>Control de ingreso vehicular</span></div>
+          <div className="texto"><strong>ECU 911</strong><span>Sistema ANPR</span></div>
         </div>
         <nav className="sidebar-nav">
           {menuPara(puede).map(g => (
@@ -122,13 +124,16 @@ const MenuUsuario: React.FC = () => {
   if (!user) return null;
   return (
     <div ref={ref} style={{ position: 'relative' }}>
-      <button className="usuario-boton" onClick={() => setAbierto(a => !a)} aria-expanded={abierto} aria-haspopup="menu">
-        <span className="avatar">{iniciales(user.nombre)}</span>
-        <span className="usuario-datos ocultar-movil"><strong>{user.nombre}</strong><span>{ROLES[user.rol]}</span></span>
+      <button className={`boton-rol${user.rol === 'Admin' ? ' admin' : ''}`} onClick={() => setAbierto(a => !a)} aria-expanded={abierto} aria-haspopup="menu"
+        title="Perfil, notificaciones y sesión">
+        <Shield size={13} /><span className="ocultar-movil">{ROLES[user.rol]}</span><ChevronDown size={13} style={{ opacity: 0.7 }} />
       </button>
       {abierto && (
         <div className="menu" role="menu">
-          <div className="menu-cabecera"><strong>{user.nombre}</strong><span>{user.email}</span></div>
+          <div className="menu-cabecera fila" style={{ flexWrap: 'nowrap', gap: 10 }}>
+            <span className="avatar">{iniciales(user.nombre)}</span>
+            <div style={{ minWidth: 0 }}><strong>{user.nombre}</strong><span>{user.email}</span></div>
+          </div>
           <button className="menu-item" role="menuitem" onClick={() => { setAbierto(false); navigate('/perfil'); }}><UserCircle size={16} /> Mi perfil</button>
           <button className="menu-item" role="menuitem" onClick={() => { setAbierto(false); navigate('/notificaciones'); }}><Bell size={16} /> Notificaciones</button>
           <button className="menu-item" role="menuitem" onClick={() => { setAbierto(false); navigate('/perfil#contrasena'); }}><KeyRound size={16} /> Cambiar contraseña</button>
@@ -139,27 +144,46 @@ const MenuUsuario: React.FC = () => {
   );
 };
 
+/** Barra de pestañas estilo IDE: accesos directos a las vistas de uso diario del rol. */
+const BarraPestanas: React.FC = () => {
+  const { puede } = useAuth();
+  const pestanas = pestanasPara(puede);
+  if (!pestanas.length) return null;
+  return (
+    <nav className="ide-tab-bar" aria-label="Accesos rápidos">
+      {pestanas.map(p => (
+        <NavLink key={p.ruta} to={p.ruta} end={p.ruta === '/'} className={({ isActive }) => `ide-tab${isActive ? ' activa' : ''}`}>{p.etiqueta}</NavLink>
+      ))}
+    </nav>
+  );
+};
+
 const Header: React.FC<{ onMenuMovil: () => void }> = ({ onMenuMovil }) => {
   const { pathname } = useLocation();
   const { conectado } = useTiempoReal();
-  const { puede } = useAuth();
+  const { puede, user } = useAuth();
   const item = itemDeRuta(pathname, puede);
   return (
     <header className="header">
-      <button className="btn btn-ghost btn-icono header-menu-movil" onClick={onMenuMovil} aria-label="Abrir menú"><Menu size={20} /></button>
-      <div className="header-titulo">
-        <h1>{item?.titulo ?? 'Sistema ANPR'}</h1>
-        {item?.descripcion && <p>{item.descripcion}</p>}
+      <div className="header-fila">
+        <button className="btn btn-ghost btn-icono header-menu-movil" onClick={onMenuMovil} aria-label="Abrir menú"><Menu size={20} /></button>
+        <div className="header-titulo" title={item?.descripcion}>
+          <span className="header-sistema">Sistema ANPR</span>
+          <h1>{item?.titulo ?? 'Inicio'}</h1>
+        </div>
+        <div className="header-acciones">
+          <span className={`pastilla-red ocultar-movil ${conectado ? 'en-linea' : 'sin-conexion'}`}
+            title={conectado ? 'Recibiendo eventos en tiempo real' : 'Sin conexión de tiempo real: reintentando'}>
+            {conectado ? <Wifi size={13} /> : <WifiOff size={13} />} {conectado ? 'En línea' : 'Reconectando…'}
+          </span>
+          <span className="ocultar-movil"><RelojSesion /></span>
+          <BotonSonido />
+          <CampanaNotificaciones />
+          {user && <span className="pastilla-usuario ocultar-movil" title={user.nombre}><span className="punto-vivo" />{user.nombre}</span>}
+          <MenuUsuario />
+        </div>
       </div>
-      <div className="header-acciones">
-        <span className="fila ocultar-movil texto-secundario" style={{ fontSize: 12 }} title={conectado ? 'Recibiendo eventos en tiempo real' : 'Sin conexión de tiempo real: reintentando'}>
-          <span className={`punto ${conectado ? 'verde' : 'ambar latido'}`} /> {conectado ? 'En línea' : 'Reconectando…'}
-        </span>
-        <span className="ocultar-movil"><RelojSesion /></span>
-        <BotonSonido />
-        <CampanaNotificaciones />
-        <MenuUsuario />
-      </div>
+      <BarraPestanas />
     </header>
   );
 };

@@ -1,6 +1,6 @@
 import React from 'react';
 import {
-  BarChart3, Bell, Camera, ClipboardList, FileCheck2, FlaskConical, History, LayoutDashboard, MonitorPlay, Settings, ShieldAlert,
+  BarChart3, Bell, Camera, ClipboardList, FileCheck2, FlaskConical, History, LayoutDashboard, MonitorPlay, Server, Settings, ShieldAlert,
   ShieldCheck, UserCircle, Users,
 } from 'lucide-react';
 import { esVistaGestionPermisos, type Permiso } from '../../dominio/permisos';
@@ -27,7 +27,7 @@ export const MENU: GrupoMenu[] = [
   {
     titulo: 'Operación',
     items: [
-      { ruta: '/', titulo: 'Inicio', descripcion: 'Resumen de la operación del día', icono: <LayoutDashboard size={18} />, permiso: 'operacion:monitorear' },
+      { ruta: '/', titulo: 'Dashboard', descripcion: 'Resumen de la operación del día', icono: <LayoutDashboard size={18} />, permiso: 'operacion:monitorear' },
       { ruta: '/monitoreo', titulo: 'Monitoreo en vivo', descripcion: 'Video del acceso y detecciones en tiempo real', icono: <MonitorPlay size={18} />, permiso: 'operacion:monitorear' },
       // Registro de canales: solo el administrador (el guardia ve el video, no registra cámaras)
       { ruta: '/camaras', titulo: 'Registro de cámaras', descripcion: 'Alta de canales RTSP, conectividad y diagnóstico', icono: <Camera size={18} />, permiso: 'camaras:gestionar' },
@@ -53,6 +53,7 @@ export const MENU: GrupoMenu[] = [
     titulo: 'Administración',
     items: [
       { ruta: '/usuarios', titulo: 'Usuarios', descripcion: 'Cuentas, roles y accesos del personal', icono: <Users size={18} />, permiso: 'usuarios:gestionar' },
+      { ruta: '/sistema', titulo: 'Estado del sistema', descripcion: 'Servicios, cuentas, accesos, listas de control y exactitud de lectura', icono: <Server size={18} />, permiso: 'usuarios:gestionar' },
       { ruta: '/auditoria', titulo: 'Auditoría', descripcion: 'Trazabilidad de acciones y accesos', icono: <ClipboardList size={18} />, permiso: 'auditoria:ver' },
       { ruta: '/configuracion', titulo: 'Configuración', descripcion: 'Parámetros del sistema', icono: <Settings size={18} />, permiso: 'configuracion:gestionar' },
     ],
@@ -81,6 +82,30 @@ export const MENU_GESTION_PERMISOS: GrupoMenu[] = [
 export function menuPara(puede: (p: Permiso) => boolean): GrupoMenu[] {
   if (esVistaGestionPermisos(puede)) return MENU_GESTION_PERMISOS;
   return MENU.map(g => ({ ...g, items: g.items.filter(i => !i.permiso || puede(i.permiso)) })).filter(g => g.items.length);
+}
+
+/**
+ * Barra de pestañas estilo IDE bajo el encabezado (como en vigilance-heart): accesos directos a
+ * las vistas de uso diario. Cada pestaña aparece solo si el rol puede abrir esa vista (su entrada
+ * del menú, con el mismo permiso que exige la API).
+ */
+const PESTANAS: { ruta: string; etiqueta: string }[] = [
+  { ruta: '/', etiqueta: 'Dashboard' },
+  { ruta: '/monitoreo', etiqueta: 'Monitoreo' },
+  { ruta: '/detecciones', etiqueta: 'Ingresos' },
+  { ruta: '/listas/autorizados', etiqueta: 'Lista blanca' },
+  { ruta: '/listas/alertas', etiqueta: 'Lista negra' },
+  { ruta: '/solicitudes', etiqueta: 'Solicitudes' },
+  { ruta: '/reportes', etiqueta: 'Reportes' },
+  { ruta: '/camaras', etiqueta: 'Cámaras' },
+  { ruta: '/usuarios', etiqueta: 'Usuarios' },
+];
+
+export function pestanasPara(puede: (p: Permiso) => boolean): { ruta: string; etiqueta: string }[] {
+  const disponibles = new Set(menuPara(puede).flatMap(g => g.items.map(i => i.ruta)));
+  const pestanas = PESTANAS.filter(p => disponibles.has(p.ruta));
+  // Con una sola vista (gestor de permisos) la barra no aporta nada
+  return pestanas.length > 1 ? pestanas : [];
 }
 
 /** Título y descripción de la ruta actual para el encabezado. */

@@ -65,6 +65,8 @@ describe('Quitar notificaciones de la bandeja', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Limpiar revisadas (3)' }));
     expect(centro.eliminarRevisadas).not.toHaveBeenCalled();
     expect(screen.getByText(/Las alarmas pendientes de atención y las no leídas se conservan/)).toBeTruthy();
+    // La confirmación se dibuja en el <body>, no dentro del encabezado (su backdrop-filter la recortaba)
+    expect(document.querySelector('.modal-fondo')?.parentElement).toBe(document.body);
     await act(async () => { fireEvent.click(screen.getByRole('button', { name: /Sí, limpiar revisadas/ })); });
     expect(centro.eliminarRevisadas).toHaveBeenCalledTimes(1);
     expect(notificar).toHaveBeenCalledWith('exito', 'Se eliminaron 3 notificaciones revisadas. Las alarmas pendientes siguen en la bandeja.');

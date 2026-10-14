@@ -28,6 +28,7 @@ const Configuracion = lazy(() => import('./paginas/Configuracion'));
 const Perfil = lazy(() => import('./paginas/Perfil'));
 const Notificaciones = lazy(() => import('./paginas/Notificaciones'));
 const SolicitudesAcceso = lazy(() => import('./paginas/SolicitudesAcceso'));
+const EstadoSistema = lazy(() => import('./paginas/EstadoSistema'));
 
 /**
  * Exige sesión y, si se indica, el permiso de la pantalla (matriz RBAC del backend, entregada en
@@ -78,6 +79,7 @@ const App: React.FC = () => (
 
               {/* Administración */}
               <Route path="/usuarios" element={<Privada permiso="usuarios:gestionar"><Usuarios /></Privada>} />
+              <Route path="/sistema" element={<Privada permiso="usuarios:gestionar"><EstadoSistema /></Privada>} />
               <Route path="/auditoria" element={<Privada permiso="auditoria:ver"><Auditoria /></Privada>} />
               <Route path="/camaras" element={<Privada permiso="camaras:gestionar"><Camaras /></Privada>} />
               <Route path="/configuracion" element={<Privada permiso="configuracion:gestionar"><Configuracion /></Privada>} />
