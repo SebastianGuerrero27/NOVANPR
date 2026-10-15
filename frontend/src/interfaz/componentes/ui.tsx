@@ -69,7 +69,11 @@ export const InsigniaEstado: React.FC<{ estado: EstadoValidacion; procesando?: b
   return <span className={`insignia ${estado}${solido ? ' solido' : ''}`}>{ICONO_ESTADO[estado]} {corta ? e.corta : e.etiqueta}</span>;
 };
 
-/** Placa con el formato de la ANT (ABC-1234 / AB-123C); una lectura con otro formato se muestra tal cual. */
+/**
+ * Lectura de la placa en texto con el formato de la ANT (ABC-1234 / AB-123C); una lectura con otro
+ * formato se muestra tal cual. La imagen de la placa es siempre la foto real del recorte (PlacaFoto,
+ * en deteccion.tsx), nunca un dibujo.
+ */
 export const Placa: React.FC<{ valor?: string | null; grande?: boolean }> = ({ valor, grande }) =>
   valor
     ? <span className={`placa${grande ? ' grande' : ''}`}>{formatearPlaca(valor)}</span>

@@ -9,9 +9,9 @@ import type { Deteccion, DeteccionDetalle, EvidenciaLectura } from '../../domini
 import { ESTADOS, fechaHora, NIVELES_ALERTA, numero, porcentaje, relativo } from '../../dominio/formato';
 import { formatearPlaca, validarTexto } from '../../dominio/validacion';
 import { REGLA_MOTIVO_CONSULTA } from '../../dominio/reglas';
-import { Aviso, Cargando, InsigniaEstado, Modal, Placa, Tarjeta, Vacio } from '../componentes/ui';
+import { Aviso, Cargando, InsigniaEstado, Modal, Tarjeta, Vacio } from '../componentes/ui';
 import { CampoTexto } from '../componentes/campos';
-import { describirVehiculo, ImagenEvidencia, ValidarModal } from '../componentes/deteccion';
+import { describirVehiculo, ImagenEvidencia, PlacaFoto, ValidarModal } from '../componentes/deteccion';
 import { VisorZoom } from '../componentes/ZoomDual';
 import { useNotificar } from '../componentes/Notificaciones';
 import { FormularioLista } from '../componentes/FormularioLista';
@@ -223,7 +223,7 @@ const DetalleDeteccion: React.FC = () => {
         <div className="pila">
           <Tarjeta>
             <div className="pila" style={{ gap: 12, alignItems: 'flex-start' }}>
-              <Placa valor={d.placa} grande />
+              <PlacaFoto d={d} grande alto={90} onClick={() => setZoom(true)} />
               <InsigniaEstado estado={d.estado_validacion} procesando={procesando} />
               <dl className="definiciones" style={{ width: '100%' }}>
                 <dt>Ingreso</dt><dd>{fechaHora(d.fecha_hora_ingreso)} <span className="texto-secundario">({relativo(d.fecha_hora_ingreso)})</span></dd>

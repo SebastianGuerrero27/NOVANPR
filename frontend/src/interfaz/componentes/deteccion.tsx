@@ -32,6 +32,37 @@ export const ImagenEvidencia: React.FC<{ ruta: string | null; alt: string; alto?
     );
   };
 
+/**
+ * URL del recorte real de la placa. Si el motor no pudo recortarla, la API repite en imagen_placa la
+ * foto del vehículo: entonces no hay recorte que mostrar.
+ */
+export function recortePlaca(d: Pick<Deteccion, 'imagen_placa' | 'imagen_vehiculo'>): string | null {
+  return d.imagen_placa && d.imagen_placa !== d.imagen_vehiculo ? d.imagen_placa : null;
+}
+
+/**
+ * La placa tal como la captó la cámara: la foto real del recorte y, al lado (o debajo, en tamaño
+ * grande), la lectura del sistema. Si el paso no tiene recorte se indica en lugar de la foto.
+ */
+export const PlacaFoto: React.FC<{ d: Pick<Deteccion, 'placa' | 'imagen_placa' | 'imagen_vehiculo'>; alto?: number; grande?: boolean; onClick?: () => void }> =
+  ({ d, alto = 36, grande, onClick }) => {
+    const [error, setError] = useState(false);
+    const src = urlMedia(recortePlaca(d));
+    useEffect(() => setError(false), [src]);
+    const foto = src && !error;
+    return (
+      <span className={`placa-foto${grande ? ' grande' : ''}`}>
+        <span className="placa-foto-imagen" title={foto ? undefined : 'Sin recorte de la placa'} onClick={foto ? onClick : undefined}
+          style={{ height: alto, width: grande ? '100%' : alto * 3, cursor: foto && onClick ? 'zoom-in' : undefined }}>
+          {foto
+            ? <img src={src} alt={`Placa ${d.placa ?? 'sin lectura'}`} loading="lazy" decoding="async" onError={() => setError(true)} />
+            : <ImageOff size={grande ? 22 : 14} />}
+        </span>
+        <Placa valor={d.placa} grande={grande} />
+      </span>
+    );
+  };
+
 export function describirVehiculo(d: Pick<Deteccion, 'vehiculo' | 'tipo_vehiculo'>): string {
   const v = d.vehiculo;
   const nombre = [v.marca, v.modelo].filter(Boolean).join(' ');

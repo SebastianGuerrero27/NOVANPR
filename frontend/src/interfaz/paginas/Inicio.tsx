@@ -10,9 +10,9 @@ import { useEvento, useReconexion } from '../../aplicacion/tiempoReal';
 import { useConsulta, useDiferido, usePaginaVisible } from '../../aplicacion/hooks';
 import type { Deteccion, ResumenPanel } from '../../dominio/tipos';
 import { diaCorto, fecha, fechaHora, hora, numero, porcentaje, relativo, SERIES_ESTADO } from '../../dominio/formato';
-import { Aviso, Cargando, FilasEsqueleto, InsigniaEstado, Kpi, Placa, Tarjeta, Vacio } from '../componentes/ui';
+import { Aviso, Cargando, FilasEsqueleto, InsigniaEstado, Kpi, Tarjeta, Vacio } from '../componentes/ui';
 import { BarrasApiladas, BarrasHorizontales, Dona, Leyenda } from '../componentes/Graficos';
-import { describirVehiculo, RegistroManualModal, TarjetaDeteccion, ValidarModal } from '../componentes/deteccion';
+import { describirVehiculo, PlacaFoto, RegistroManualModal, TarjetaDeteccion, ValidarModal } from '../componentes/deteccion';
 import GestionPermisos from './GestionPermisos';
 
 function saludo(): string {
@@ -209,7 +209,7 @@ const IngresosRecientes: React.FC = () => {
             {cargando && !datos ? <FilasEsqueleto columnas={8} /> : (datos ?? []).map((d, i) => (
               <tr key={d.id} className="clic" onClick={() => navigate(`/detecciones/${d.id}`)}>
                 <td className="num texto-secundario">{i + 1}</td>
-                <td className="nowrap"><Placa valor={d.placa} /></td>
+                <td className="nowrap"><PlacaFoto d={d} /></td>
                 <td className="nowrap"><strong style={{ color: 'var(--text)', fontWeight: 600 }}>{hora(d.fecha_hora_ingreso)}</strong><span className="secundario">{fecha(d.fecha_hora_ingreso)}</span></td>
                 <td><InsigniaEstado estado={d.estado_validacion} procesando={d.estado_procesamiento === 'pendiente_ocr'} /></td>
                 <td>{d.camara ? d.camara.nombre : <span className="texto-secundario">{d.fuente === 'manual' ? 'Registro manual' : '—'}</span>}</td>

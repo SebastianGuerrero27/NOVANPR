@@ -7,7 +7,7 @@ import type { Deteccion } from '../../dominio/tipos';
 import { fecha, hora, NIVELES_ALERTA } from '../../dominio/formato';
 import { formatearPlaca } from '../../dominio/validacion';
 import { alCambiarSonido, detenerSonido, fijarSonido, sonarAutorizado, sonarDenegado, sonidoActivo } from '../../infraestructura/avisos';
-import { describirVehiculo, ImagenEvidencia, ValidarModal } from './deteccion';
+import { describirVehiculo, ImagenEvidencia, PlacaFoto, recortePlaca, ValidarModal } from './deteccion';
 import { FormularioLista } from './FormularioLista';
 import { FormularioSolicitud } from './FormularioSolicitud';
 import { useNotificar } from './Notificaciones';
@@ -98,9 +98,12 @@ const ModalNoAutorizado: React.FC<{
           <div className="alerta-acceso-cuerpo">
             <div className="pila" style={{ gap: 14 }}>
               <div className="alerta-placa">
-                <span className="pais">REPÚBLICA DEL ECUADOR</span>
-                <span className="numero">{d.placa ?? 'SIN LECTURA'}</span>
-                <span className="pie"><span>ANT</span><span>{esAlerta ? 'EN LISTA NEGRA' : restringido ? 'PERMISO RESTRINGIDO' : 'NO AUTORIZADO'}</span></span>
+                <span className="alerta-etiqueta"><Eye size={13} /> Placa captada por la cámara</span>
+                <ImagenEvidencia ruta={recortePlaca(d)} alt={`Placa ${d.placa ?? 'sin lectura'}`} alto={120} ajuste="contain" fondoOscuro onClick={() => setZoom(true)} />
+                <span className="alerta-placa-lectura">
+                  <span className="numero">{d.placa ?? 'SIN LECTURA'}</span>
+                  <span className="estado">{esAlerta ? 'EN LISTA NEGRA' : restringido ? 'PERMISO RESTRINGIDO' : 'NO AUTORIZADO'}</span>
+                </span>
               </div>
               <dl className="alerta-ficha">
                 <dt>Motivo</dt><dd className="destacado">{esAlerta ? d.alerta?.motivo ?? 'Placa en la lista negra'
@@ -113,12 +116,8 @@ const ModalNoAutorizado: React.FC<{
               {d.verificacion_vehiculo === 'no_coincide' && (
                 <div className="alerta-nota">El vehículo observado no coincide con el registrado ({d.verificacion_detalle}): posible placa clonada o lectura errónea.</div>
               )}
-              <div className="grid-2" style={{ gap: 10 }}>
-                <div><span className="alerta-etiqueta"><Eye size={13} /> Recorte de placa</span>
-                  <ImagenEvidencia ruta={d.imagen_placa} alt="Recorte de placa" alto={96} ajuste="contain" fondoOscuro onClick={() => setZoom(true)} /></div>
-                <div><span className="alerta-etiqueta"><Camera size={13} /> Vehículo</span>
-                  <ImagenEvidencia ruta={d.imagen_vehiculo} alt="Vehículo" alto={96} fondoOscuro onClick={() => setZoom(true)} /></div>
-              </div>
+              <div><span className="alerta-etiqueta"><Camera size={13} /> Vehículo</span>
+                <ImagenEvidencia ruta={d.imagen_vehiculo} alt="Vehículo" alto={150} fondoOscuro onClick={() => setZoom(true)} /></div>
             </div>
 
             <div className="alerta-protocolo">
@@ -161,7 +160,7 @@ const AvisoAutorizado: React.FC<{ d: Deteccion; onCerrar: () => void; onConfirma
         <span className="icono"><ShieldCheck size={24} /></span>
         <div style={{ minWidth: 0 }}>
           <strong>CONFIRME EL INGRESO</strong>
-          <span className="placa">{formatearPlaca(d.placa)}</span>
+          <PlacaFoto d={d} alto={34} />
           <span className="detalle" style={{ whiteSpace: 'normal' }}>{d.motivo_revision}</span>
           <button className="btn btn-sm btn-exito" style={{ marginTop: 8 }} onClick={() => { onCerrar(); onConfirmar(d); }}>Confirmar placa</button>
         </div>
@@ -174,7 +173,7 @@ const AvisoAutorizado: React.FC<{ d: Deteccion; onCerrar: () => void; onConfirma
       <span className="icono"><ShieldCheck size={24} /></span>
       <div style={{ minWidth: 0 }}>
         <strong>ACCESO AUTORIZADO{d.validado_manualmente ? ' · CONFIRMADO' : ''}</strong>
-        <span className="placa">{formatearPlaca(d.placa)}</span>
+        <PlacaFoto d={d} alto={34} />
         <span className="detalle">{d.autorizado?.propietario ?? 'Padrón institucional'}{d.autorizado?.departamento ? ` · ${d.autorizado.departamento}` : ''}</span>
         <span className="detalle">{d.camara?.nombre ?? 'Acceso'} · {hora(d.fecha_hora_ingreso)}</span>
       </div>

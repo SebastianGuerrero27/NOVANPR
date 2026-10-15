@@ -10,6 +10,7 @@ import { fechaHora, numero, relativo } from '../../dominio/formato';
 import { formatearPlaca } from '../../dominio/validacion';
 import { Aviso, Kpi, Pestanas, Placa, Tarjeta, Vacio } from '../componentes/ui';
 import { FormularioLista } from '../componentes/FormularioLista';
+import { PlacaFoto } from '../componentes/deteccion';
 import { useNotificar } from '../componentes/Notificaciones';
 import SolicitudesAcceso from './SolicitudesAcceso';
 import Listas from './Listas';
@@ -107,7 +108,7 @@ const GestionPermisos: React.FC = () => {
                 <div className="tabla-contenedor"><table className="tabla"><tbody>
                   {p.denegados_recientes.map(d => (
                     <tr key={d.id}>
-                      <td><Placa valor={d.placa} /></td>
+                      <td><PlacaFoto d={d} /></td>
                       <td>{d.restriccion_acceso
                         ? <span className="insignia no_reconocido"><Clock size={12} /> {RESTRICCION[d.restriccion_acceso]}</span>
                         : <span className="insignia alerta">Sin permiso</span>}

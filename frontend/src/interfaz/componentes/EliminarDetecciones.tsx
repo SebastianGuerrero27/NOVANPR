@@ -5,7 +5,8 @@ import type { Deteccion } from '../../dominio/tipos';
 import { fechaHora, numero } from '../../dominio/formato';
 import { formatearPlaca, validarTexto } from '../../dominio/validacion';
 import { reglaMotivoEliminacion } from '../../dominio/reglas';
-import { Aviso, Modal, Placa } from './ui';
+import { Aviso, Modal } from './ui';
+import { PlacaFoto } from './deteccion';
 import { CampoTexto } from './campos';
 import { useNotificar } from './Notificaciones';
 
@@ -67,7 +68,7 @@ export const EliminarUno: React.FC<{ d: Deteccion; onCerrar: () => void; onElimi
         </button>
       </>}>
       <div className="pila" style={{ gap: 14 }}>
-        <div className="fila"><Placa valor={d.placa} /> <span className="texto-secundario">Se eliminará el registro y sus fotografías. No se puede deshacer.</span></div>
+        <div className="fila"><PlacaFoto d={d} alto={32} /> <span className="texto-secundario">Se eliminará el registro y sus fotografías. No se puede deshacer.</span></div>
         <SelectorMotivo valor={motivo} onCambiar={setMotivo} minimo={3} />
         {error && <Aviso tipo="error">{error}</Aviso>}
       </div>
