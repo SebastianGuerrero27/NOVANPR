@@ -86,7 +86,7 @@ profiles") de los sistemas comerciales de control de acceso vehicular.
 
 Un permiso existente que no está vigente **no concede el paso** (regla R2 de la política de decisión):
 el ingreso queda `no_reconocido` con `restriccion_acceso`, el personal ve el motivo concreto
-("fuera de horario: L–V 07:00–19:00") y el gestor de accesos recibe una notificación. Solo quien tiene
+("fuera de horario: L–V 07:00–19:00") y el guardia y el administrador reciben la notificación `acceso.restringido`. Solo quien tiene
 `accesos:excepcion` puede conceder ese paso concreto, con motivo obligatorio y auditado.
 
 ## 6. Flujo de solicitudes de acceso

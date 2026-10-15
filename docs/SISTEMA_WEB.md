@@ -6,12 +6,14 @@ valores de relleno (un indicador sin registros vale cero y cada pantalla tiene s
 
 ## Roles
 
+Tres roles desde la migración v6 (`OPERADOR` → `GUARDIA`, `GESTOR_ACCESOS` → `GESTOR_PERMISOS`; las
+cuentas `SUPERVISOR` pasaron a Guardia por mínimo privilegio):
+
 | Rol | Puede |
 |---|---|
-| **Operador** | Inicio operativo, monitoreo en vivo, registro de ingresos, validar/corregir lecturas, registro manual, consultar listas, **solicitar autorizaciones**. Recibe el aviso de garita con protocolo |
-| **Gestor de accesos** | Permisos de placa (categoría, vigencia, **franjas horarias**), **resolver solicitudes de acceso**, autorizar **excepciones**, reportes. Recibe alertas de accesos denegados/fuera de horario, solicitudes y reincidencias |
-| **Supervisor** | Todo lo del operador + ambas listas, solicitudes, excepciones, reportes, evaluación, cámara del motor; recibe alarmas escaladas |
-| **Administrador** | Todo + usuarios, auditoría, cámaras, configuración, eliminar ingresos y consulta de propietario (convenio) |
+| **Guardia** | Inicio de su turno, monitoreo en vivo, registro de ingresos, validar/corregir lecturas, registro manual, consultar las listas y **solicitar autorizaciones**. Recibe el aviso de garita con protocolo y la notificación de cada permiso otorgado |
+| **Gestor de permisos** | Una sola vista (*Gestión de permisos*): permisos de placa (categoría, vigencia, **franjas horarias**) y **resolución de solicitudes de acceso**. Sin monitoreo; solo se le notifica la llegada de los vehículos a los que dio permiso, las solicitudes nuevas y los permisos por vencer |
+| **Administrador** | Todo: usuarios, cámaras y zonas, configuración, auditoría, lista negra, excepciones, reportes, evaluación, estado del sistema, eliminar ingresos, consulta de propietario (convenio) y alarmas escaladas |
 
 La autorización es **por permisos** (matriz única en `backend/src/dominio/permisos.ts`, detalle en
 [ROLES_Y_PERMISOS.md](ROLES_Y_PERMISOS.md)): la API exige `requierePermiso(...)` en cada endpoint y el
@@ -22,10 +24,11 @@ frontend arma el menú, las rutas y las acciones con `puede(...)` a partir de lo
 | Ruta | Pantalla |
 |---|---|
 | `/login`, `/registro`, `/configuracion-inicial`, `/verificar-email`, `/restablecer-password` | Acceso y ciclo de vida de la cuenta |
-| `/` | Inicio: panel del operador (su turno, cola de validación, alertas), panel del **gestor de accesos** (solicitudes, permisos por vencer, denegados de hoy, reincidentes) o panel de gestión (indicadores, ingresos por hora, 7 días, distribución, listas, exactitud de lectura, cámaras; el administrador ve además cuentas, accesos fallidos, actividad y servicios) |
+| `/` | Según el rol: **Dashboard** del administrador (tarjetas de estado del día, dona con la distribución de hoy, barras de los últimos 7 días y tabla de los **50 ingresos recientes** actualizada en tiempo real), *Gestión de permisos* del gestor (solicitudes, permisos de placa y accesos denegados recientes) o panel del guardia (su turno, ingresos por hora, cola de validación, últimas alertas, cámaras) |
+| `/sistema` | **Estado del sistema** (Administrador): servicios, cuentas, accesos, listas de control, tendencia y exactitud de lectura (lo que antes ocupaba el inicio como "Administración del sistema") |
 | `/monitoreo` | Video en vivo de las cámaras registradas (sin cámaras habilitadas: estado vacío con acceso al registro), último paso destacado, feed en tiempo real, aviso de alerta con sonido, consulta de placa, ingreso manual |
 | `/detecciones` | Registro de ingresos paginado con filtros en la URL, exportación CSV |
-| `/detecciones/:id` | Detalle: evidencia, lectura automática vs. confirmada, validez de la lectura (evidencias del motor, incluida la lectura directa de cada carácter y el texto leído por cada lector sin interpretar), condiciones de captura, pasos anteriores, trazabilidad, acciones |
+| `/detecciones/:id` | Detalle: evidencia (foto del vehículo y recorte de la placa), lectura automática vs. confirmada, validez de la lectura (evidencias del motor, incluida la lectura directa de cada carácter y el texto leído por cada lector sin interpretar), condiciones de captura, pasos anteriores, trazabilidad, acciones |
 | `/listas/autorizados`, `/listas/alertas` | Permisos de placa (categoría, vigencia desde/hasta, horario) y lista de alertas, con filtro de vigencia |
 | `/solicitudes` | Solicitudes de acceso: crear, aprobar con ajustes de vigencia/horario, rechazar, cancelar |
 | `/notificaciones` | Bandeja de alarmas (sin leer / pendientes de atención), activación de Web Push en el equipo y avisos que recibe el rol |
@@ -33,6 +36,32 @@ frontend arma el menú, las rutas y las acciones con `puede(...)` a partir de lo
 | `/evaluacion` | Métricas científicas del reconocimiento |
 | `/usuarios`, `/auditoria`, `/camaras`, `/configuracion` | Administración (en Cámaras, **Zonas** dibuja sobre el video el área de detección y las zonas de exclusión) |
 | `/perfil` | Datos propios y cambio de contraseña |
+
+## Diseño de la interfaz
+
+- **Colores institucionales del Centro de Control:** rojo ECU 911 (`#cc1925`), barra lateral carbón
+  (`#23252a`) con el elemento activo en rojo oscuro (`#760e15`), fondo gris claro, esquinas casi
+  rectas (4–8 px), encabezados de tabla en mayúsculas espaciadas y botones rojos con degradado. Los
+  colores son variables CSS en `frontend/src/index.css`.
+- **Densidad compacta por omisión:** texto base de 13 px (12,5 px en portátiles de 901–1400 px de
+  ancho) sin `zoom` de CSS, que rompería la barra lateral de altura completa y la alineación de las
+  cajas sobre el video.
+- **Encabezado:** «SISTEMA ANPR · título de la pantalla», píldora de conexión en tiempo real, reloj
+  de la sesión, sonido, campana de notificaciones, nombre del usuario y botón del rol con su menú.
+  El botón de menú (☰) solo aparece en pantallas de hasta 900 px.
+- **Barra de pestañas estilo IDE** bajo el encabezado (Dashboard, Monitoreo, Ingresos, Lista blanca,
+  Lista negra, Solicitudes, Reportes, Cámaras, Usuarios), filtrada por los permisos de la sesión
+  (`pestanasPara` en `plantilla/navegacion.tsx`); se oculta si el rol tiene una sola vista.
+- **La placa se muestra con la foto real del recorte**, nunca dibujada: el componente `PlacaFoto`
+  (`componentes/deteccion.tsx`) presenta el recorte que guardó el motor y, junto a él, la lectura del
+  sistema en texto. Se usa en el dashboard, el detalle del ingreso, la alarma de acceso no
+  autorizado, los avisos de acceso autorizado, los accesos denegados recientes y la confirmación de
+  eliminación. Si el motor no pudo recortar la placa, la API repite en `imagen_placa` la foto del
+  vehículo; `recortePlaca` lo detecta y la interfaz muestra «Sin recorte de la placa» en lugar de
+  presentar la foto del vehículo como si fuera la placa. Donde no existe fotografía (listas,
+  solicitudes, reportes) la placa aparece solo como texto.
+- **Ventanas modales en el `<body>`** (`createPortal`): un ancestro con `backdrop-filter` (el
+  encabezado) recortaba las ventanas de confirmación.
 
 ## Reconocimiento: cuadro de la placa y autorización automática
 

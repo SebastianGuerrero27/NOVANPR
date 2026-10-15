@@ -1,156 +1,99 @@
-# Guía de Optimización de Modelos YOLO mediante Cuantización
+# Guía de optimización de los modelos YOLO mediante cuantización
 
-## Overview
+## Resumen
 
-Esta guía explica cómo optimizar los modelos YOLO utilizados en el sistema ANPR mediante técnicas de cuantización para mejorar el rendimiento de inferencia en producción.
+El detector de placas en producción es `models/license_plate_detector.pt` (YOLO26n afinado en Open
+Images V7, una clase `license_plate`; ficha en [`models/MODEL_CARD.md`](../models/MODEL_CARD.md)). El
+detector de vehículos para los atributos es `yolo26n.pt` (`VEHICLE_DETECTOR_PATH`). Ambos corren en
+CPU; la forma de desplegarlos en CPU es OpenVINO, que ya está medida. La cuantización FP16, INT8 o
+TensorRT es una **opción no adoptada**: el script existe, pero no se ha medido su efecto en la
+exactitud ni en la latencia de este sistema.
 
-## Tipos de Cuantización Disponibles
+## Lo que está medido (ficha del modelo)
 
-### 1. FP16 (Half Precision)
-- **Compresión**: 2x reducción de tamaño
-- **Rendimiento**: 1.5-2x más rápido en hardware con soporte FP16
-- **Precisión**: Pérdida mínima de precisión
-- **Hardware**: Requiere GPU con soporte FP16 (CUDA) o CPU moderna
+Conjunto de prueba de Open Images (2 048 imágenes, 2 816 placas), imgsz 512, IoU ≥ 0,5, Xeon de 4 vCPU
+en contenedor, 300 imágenes para la latencia (`docs/resultados/detector_yolo26n_vs_yolov8n_openimages.json`):
 
-### 2. INT8 (Integer 8-bit)
-- **Compresión**: 4x reducción de tamaño
-- **Rendimiento**: 2-3x más rápido en CPU con instrucciones AVX/AVX2
-- **Precisión**: Pérdida moderada de precisión (1-2% mAP)
-- **Hardware**: Funciona en CPU y GPU
+| Modelo | F1 (IC 95 %) | ms CPU PyTorch (p95) | ms CPU OpenVINO (p95) |
+|---|---|---|---|
+| YOLOv8n Koushim (anterior producción) | 0,611 (0,593–0,630) | 30,2 (43,2) | 25,3 (32,3) |
+| **YOLO26n Open Images (producción)** | **0,873 (0,860–0,884)** | 38,6 (54,3) | **24,0 (31,9)** |
 
-### 3. TensorRT
-- **Compresión**: Variable (depende del modelo)
-- **Rendimiento**: 3-5x más rápido en GPUs NVIDIA
-- **Precisión**: Similar al modelo original
-- **Hardware**: Requiere GPU NVIDIA con TensorRT
+En el portátil de desarrollo, con el motor completo, el detector tarda una mediana de ≈ 99 ms aislado
+y más cuando el OCR profundo, el verificador y CLIP compiten por la CPU
+([`docs/AUDITORIA_MOTOR_ANPR.md`](../../../docs/AUDITORIA_MOTOR_ANPR.md) §3–4).
 
-## Instrucciones de Uso
+## Tipos de cuantización disponibles en el script
 
-### Paso 1: Instalar Dependencias Adicionales
+| Tipo | Qué hace | Hardware |
+|---|---|---|
+| FP16 | Pesos en media precisión | GPU con FP16 o CPU que lo soporte |
+| INT8 | Pesos y activaciones en 8 bits (requiere calibración) | CPU con AVX/AVX2 o GPU |
+| TensorRT | Motor optimizado para NVIDIA | GPU NVIDIA con TensorRT |
+
+Lo habitual es que FP16 e INT8 reduzcan el tamaño y el tiempo a costa de algo de exactitud, pero la
+magnitud depende del modelo y del equipo: en este sistema hay que medirla antes de usarla.
+
+## Instrucciones
+
+### 1. Dependencias adicionales
 
 ```bash
 cd services/anpr
-pip install onnx==1.16.0 onnxruntime==1.18.0
+pip install onnx onnxruntime        # versiones compatibles con requirements.txt
+pip install tensorrt                # opcional, solo con GPU NVIDIA
 ```
 
-Para TensorRT (opcional, requiere GPU NVIDIA):
+### 2. Generar el modelo cuantizado
+
 ```bash
-pip install tensorrt==8.6.1
+# Detector de placas de producción
+python scripts/quantize_yolo.py --model models/license_plate_detector.pt --type fp16 --benchmark
+python scripts/quantize_yolo.py --model models/license_plate_detector.pt --type int8 --benchmark
+python scripts/quantize_yolo.py --model models/license_plate_detector.pt --type all --output ./models
 ```
 
-### Paso 2: Generar Modelos Cuantizados
+`--benchmark` mide el tiempo de inferencia (`--iterations`, 100 por omisión); no mide la exactitud.
 
-Ejecutar el script de cuantización:
+### 3. Evaluar antes de adoptar
 
-```bash
-# Cuantización FP16 (recomendado para empezar)
-python scripts/quantize_yolo.py --model yolo11n.pt --type fp16 --benchmark
+Compare la exactitud con `scripts/evaluate_detectors.py` sobre el mismo conjunto de prueba
+([`docs/EXPERIMENTO_MODELOS.md`](../../../docs/EXPERIMENTO_MODELOS.md)) y la latencia con el motor
+completo (`scripts/evaluar_secuencias.py`). La cuantización solo se adopta si no degrada la detección
+de placas (prueba de McNemar por placa, como en la ficha del modelo) y si mejora el tiempo por cuadro
+en el equipo de la garita.
 
-# Cuantización INT8
-python scripts/quantize_yolo.py --model yolo11n.pt --type int8 --benchmark
+### 4. Usar el modelo cuantizado
 
-# Todos los tipos
-python scripts/quantize_yolo.py --model yolo11n.pt --type all --benchmark
-
-# TensorRT (requiere CUDA)
-python scripts/quantize_yolo.py --model yolo11n.pt --type tensorrt --benchmark
-```
-
-### Paso 3: Usar el modelo cuantizado
-
-El servicio carga los modelos desde las rutas configuradas en `.env`. Para usar un modelo
-cuantizado, apunte la ruta correspondiente al archivo generado en el paso 2:
+El servicio usa exactamente los archivos indicados en el entorno; no hay carga automática ni respaldo
+(si el archivo no existe, el servicio no arranca y lo informa en el registro):
 
 ```bash
-YOLO_MODEL_PATH=models/yolo26n_fp16.pt
 PLATE_MODEL_PATH=models/license_plate_detector_fp16.pt
+VEHICLE_DETECTOR_PATH=models/yolo26n_fp16.pt
 ```
 
-Compare la exactitud antes y después con `scripts/evaluate_detectors.py` (docs/EXPERIMENTO_MODELOS.md):
-la cuantización solo se adopta si no degrada la detección de placas.
+`/status` informa la arquitectura cargada; el arranque verifica que el detector de placas tenga la
+clase `license_plate`.
 
-## Resultados Esperados
+## Recomendaciones por escenario
 
-### FP16 Cuantización
-- **Tamaño**: ~3 MB (reducción de ~50%)
-- **Inferencia**: ~8-12 ms (30-40% más rápido)
-- **Precisión**: Sin pérdida perceptible
+- **CPU sin GPU (situación actual):** OpenVINO en FP32 (medido). INT8 solo tras evaluarlo.
+- **GPU NVIDIA:** probar TensorRT o FP16 y evaluarlos; la ficha del modelo no tiene mediciones en GPU.
+- **Desarrollo:** modelo original FP32.
 
-### INT8 Cuantización
-- **Tamaño**: ~1.5 MB (reducción de ~75%)
-- **Inferencia**: ~5-8 ms (50-60% más rápido en CPU)
-- **Precisión**: Pérdida de 1-2% en mAP
+## Problemas frecuentes
 
-### TensorRT
-- **Tamaño**: ~2-3 MB
-- **Inferencia**: ~3-5 ms (70-80% más rápido en GPU)
-- **Precisión**: Similar al original
-
-## Comparación de Rendimiento
-
-| Modelo | Tamaño | Inferencia (CPU) | Inferencia (GPU) | mAP |
-|--------|--------|-----------------|-----------------|-----|
-| Original FP32 | 5.6 MB | 15-20 ms | 8-10 ms | 0.89 |
-| FP16 | 2.8 MB | 12-15 ms | 5-7 ms | 0.88 |
-| INT8 | 1.4 MB | 8-12 ms | 6-8 ms | 0.87 |
-| TensorRT | 2.5 MB | N/A | 3-5 ms | 0.88 |
-
-## Recomendaciones por Escenario
-
-### Despliegue en CPU (sin GPU dedicada)
-- **Recomendado**: INT8
-- **Alternativa**: FP16 (si el hardware lo soporta)
-
-### Despliegue en GPU NVIDIA
-- **Recomendado**: TensorRT
-- **Alternativa**: FP16
-
-### Despliegue en Edge Devices (Raspberry Pi, Jetson)
-- **Recomendado**: INT8
-- **Alternativa**: FP16
-
-### Desarrollo y Testing
-- **Recomendado**: Modelo original (FP32)
-- **Motivo**: Máxima precisión para debugging
-
-## Troubleshooting
-
-### Error: "CUDA not available"
-**Solución**: Desactivar cuantización TensorRT, usar FP16 o INT8 en su lugar.
-
-### Error: "Modelo cuantizado no encontrado"
-**Solución**: Ejecutar el script de cuantización primero para generar los modelos.
-
-### Precisión insuficiente
-**Solución**: 
-1. Ajustar umbrales de confianza en `.env`
-2. Usar FP16 en lugar de INT8
-3. Volver al modelo original si la pérdida de precisión es inaceptable
-
-### Inferencia más lenta después de cuantización
-**Solución**: 
-1. Verificar que el hardware soporta el tipo de cuantización
-2. Usar el tipo de cuantización apropiado para el hardware
-3. Considerar que la cuantización en CPU puede ser más lenta si no hay instrucciones AVX
-
-## Integración con el Sistema
-
-No hay carga automática ni respaldo: el servicio usa exactamente los archivos indicados en
-`YOLO_MODEL_PATH` y `PLATE_MODEL_PATH`. Si el archivo no existe, el servicio no arranca y lo
-informa en el registro.
-
-## Monitoreo de Rendimiento
-
-Para monitorear el impacto de la cuantización en el rendimiento:
-
-1. Revisar los logs del servicio ANPR para tiempos de inferencia
-2. Comparar FPS antes y después de la cuantización
-3. Verificar la precisión de reconocimiento de placas
-4. Monitorear el uso de CPU/GPU
+| Problema | Solución |
+|---|---|
+| «CUDA not available» | No use TensorRT; pruebe FP16 o INT8 en CPU |
+| Modelo cuantizado no encontrado | Genere primero el archivo (paso 2) y revise la ruta en `.env` |
+| Menos placas detectadas | Vuelva al modelo FP32 o pruebe FP16 en lugar de INT8 |
+| Inferencia más lenta | Verifique que la CPU tenga las instrucciones que exige el tipo elegido |
 
 ## Referencias
 
-- [Ultralytics YOLO Documentation](https://docs.ultralytics.com/)
+- [Ultralytics YOLO: exportación e integración con OpenVINO](https://docs.ultralytics.com/)
 - [PyTorch Quantization](https://pytorch.org/docs/stable/quantization.html)
 - [ONNX Runtime Quantization](https://onnxruntime.ai/docs/performance/quantization.html)
 - [NVIDIA TensorRT](https://developer.nvidia.com/tensorrt)

@@ -2,7 +2,7 @@
 
 ## 1. Requisitos
 
-1. El **Operador** y el **Gestor de accesos** reciben alertas de accesos (vehículo sin permiso, permiso
+1. El **Guardia** y el **Administrador** reciben alertas de accesos (vehículo sin permiso, permiso
    fuera de horario o vencido, placa en lista de alertas, posible placa clonada) en menos de 1 s.
 2. Ninguna alarma se pierde si el navegador estuvo desconectado: se recupera al reconectar.
 3. Las alarmas importantes llegan aunque la pestaña esté cerrada o en segundo plano.
@@ -85,7 +85,7 @@ stateDiagram-v2
 - **Reconocimiento global:** la primera persona que reconoce la alarma queda registrada como quien
   la atendió y la alarma deja de estar pendiente para todos. Se mide el tiempo de reconocimiento.
 - **Escalamiento:** alarmas críticas/altas sin reconocer tras `notif_escalamiento_segundos`
-  (90 s por omisión) generan `alarma.escalada` para Supervisor y Administrador (y correo opcional).
+  (90 s por omisión) generan `alarma.escalada` para quien tiene `alarmas:escalamiento` (el Administrador; correo opcional).
   La cota superior del tiempo sin atención es umbral + 15 s (periodo del barrido).
 - **Supresión de avalanchas:** la misma clave (p. ej. `no_registrado:ABC1234`) dentro de la ventana
   del tipo incrementa `repeticiones` y vuelve a marcarla como no leída, en lugar de crear otra alarma.
@@ -102,7 +102,7 @@ stateDiagram-v2
 | Tipo | Prioridad | Destinatarios (permiso) | ACK | Ventana | Push |
 |---|---|---|:-:|---|:-:|
 | `acceso.alerta_seguridad` | según nivel (crítica/alta/media) | `avisos:seguridad` | ✓ | 120 s | ✓ |
-| `acceso.no_registrado` | alta | `avisos:acceso` (garita + gestor) | ✓ | 120 s | ✓ |
+| `acceso.no_registrado` | alta | `avisos:acceso` (guardia y administrador) | ✓ | 120 s | ✓ |
 | `acceso.restringido` (fuera de horario, no vigente, vencido) | alta | `avisos:acceso` | ✓ | 120 s | ✓ |
 | `acceso.vehiculo_no_coincide` (posible placa clonada) | alta | `avisos:acceso` | ✓ | 120 s | ✓ |
 | `acceso.confirmacion` (lectura dudosa / confianza baja) | media | `avisos:garita` | ✓ | 120 s | |
@@ -163,7 +163,8 @@ notificación; `backend/scripts/benchmark_notificaciones.js`, 200 pasos sin perm
 | 200 | 200 (100 %) | 33,2 ms | 31,5 ms | 40,3 ms | 61,4 ms | 71,1 ms |
 
 Escalamiento con umbral de 20 s: la alarma se escaló a los 34 s (≤ umbral + 15 s) y llegó solo a
-Supervisor y Administrador. Escalado horizontal: verificada la entrega entre dos instancias.
+los roles con `alarmas:escalamiento` (medición de la versión 5, cuando existía el rol Supervisor;
+hoy ese permiso lo tiene solo el Administrador). Escalado horizontal: verificada la entrega entre dos instancias.
 
 Reproducir:
 

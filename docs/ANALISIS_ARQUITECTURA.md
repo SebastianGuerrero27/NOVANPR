@@ -1,5 +1,21 @@
 # Análisis de arquitectura y código · Sistema ANPR ECU 911 (versión 5)
 
+> **Estado vigente (2026-10-14).** Este documento registra el análisis de la versión 5 y se conserva
+> como base del artículo. Desde entonces:
+>
+> - **Roles:** quedan tres (Administrador, Guardia y Gestor de permisos; migración v6). El rol
+>   Supervisor se eliminó y el Gestor de accesos pasó a llamarse Gestor de permisos.
+> - **Pruebas:** backend 45 suites y 741 pruebas; motor 189; frontend 46 (todas en verde).
+> - **Esquema:** v12 (retención de la auditoría, concurrencia optimista en solicitudes, flujo de vista
+>   y credenciales RTSP cifradas, zonas de exclusión, quitar notificaciones revisadas).
+> - **Motor:** registro del paso en menos de 1 s con reevaluación tardía, interpretación de la placa
+>   por mínimo de sustituciones, lectura directa por carácter (E5), regla «solo placas» y
+>   deduplicación por placa y cámara ([AUDITORIA_MOTOR_ANPR.md](AUDITORIA_MOTOR_ANPR.md)).
+> - **Seguridad:** cámaras solo desde la base, destinos de red restringidos (SSRF), cabeceras HTTP y
+>   límite de solicitudes ([SISTEMA_WEB.md](SISTEMA_WEB.md)).
+> - **Interfaz:** colores institucionales, barra de pestañas tipo IDE, dashboard con los 50 ingresos
+>   recientes y placa mostrada con la foto real del recorte.
+
 Documento base para la sección de **materiales y métodos** del artículo: qué se analizó, qué se
 encontró, qué se cambió y por qué, cómo se compara con el estado del arte y cómo se evalúa.
 
@@ -240,5 +256,5 @@ cd backend && node scripts/benchmark_notificaciones.js --api http://localhost:50
 - Laroca, R., Zanlorensi, L. A., Gonçalves, G. R., et al. (2021). An efficient and layout-independent automatic license plate recognition system based on the YOLO detector. *IET Intelligent Transport Systems, 15*(4), 483–503.
 - Sandhu, R. S., Coyne, E. J., Feinstein, H. L., & Youman, C. E. (1996). Role-based access control models. *IEEE Computer, 29*(2), 38–47.
 - Sendelbach, S., & Funk, M. (2013). Alarm fatigue: A patient safety concern. *AACN Advanced Critical Care, 24*(4), 378–386.
-- Silva, S. M., & Jung, C. R. (2018). License plate detection and recognition in unconstrained scenarios. *ECCV 2018*, 580–596.
+- Silva, S. M., & Jung, C. R. (2018). License plate detection and recognition in unconstrained scenarios. *ECCV 2018*, LNCS, 593–609. https://doi.org/10.1007/978-3-030-01258-8_36
 - Thomson, M., Damaggio, E., & Raymor, B. (2016). *Generic Event Delivery Using HTTP Push* (RFC 8030); Thomson, M. (2017). *Message Encryption for Web Push* (RFC 8291); Thomson, M., & Beverloo, P. (2017). *Voluntary Application Server Identification (VAPID) for Web Push* (RFC 8292).

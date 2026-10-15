@@ -7,13 +7,19 @@ vehicular: detección y lectura de placas en tiempo real, permisos de placa con 
 lista de alertas, solicitudes de acceso, centro de alarmas con notificaciones en tiempo real y Web
 Push, y evaluación científica del reconocimiento y de las alarmas.
 
+Estado actual (octubre de 2026): el paso se registra en menos de 1 s desde la foto (lo que el
+verificador o el análisis del vehículo aporten después llega como reevaluación), solo se registran
+lecturas con forma de placa, la interfaz usa los colores institucionales con barra de pestañas tipo
+IDE y la placa se muestra siempre con la foto real del recorte. Pruebas: backend 741, motor 189,
+frontend 46, todas en verde.
+
 ## Componentes
 
 | Carpeta | Servicio | Tecnología |
 |---|---|---|
-| `frontend/` | Interfaz web por roles | React 18 + TypeScript + Vite, Socket.IO, service worker Web Push |
+| `frontend/` | Interfaz web por roles | React 18 + TypeScript + Vite, Socket.IO, service worker Web Push; diseño institucional ECU 911 |
 | `backend/` | API, política de acceso, centro de notificaciones | Express + TypeScript, Socket.IO (adaptador Redis), web-push, SQL Server |
-| `services/anpr/` | Motor de reconocimiento | FastAPI + Python: YOLO26n / RF-DETR, OCR cct-s-v2, verificador PP-OCRv6 (OpenVINO) |
+| `services/anpr/` | Motor de reconocimiento | FastAPI + Python: detector YOLO26n afinado (RF-DETR como alternativa), seguimiento con filtro de Kalman, OCR cct-s-v2-global (ONNX), verificador PP-OCRv6 (OpenVINO), atributos del vehículo con CLIP |
 | `db/` | Esquema y migraciones | SQL Server 2022 (`init.sql` + `migration_*.sql`, registradas en `SchemaMigraciones`) |
 | `mediamtx/` | Video | Relay RTSP → WebRTC (WHEP) |
 | `monitoring/` | Observabilidad | Prometheus + Grafana |
@@ -85,5 +91,11 @@ node backend/scripts/benchmark_notificaciones.js --api http://localhost:5000 --s
 | [docs/CAMARA_HIKVISION_ANPR.md](docs/CAMARA_HIKVISION_ANPR.md) | Cámaras Hikvision (H.265/H.265+): estado del arte, doble flujo, credenciales cifradas, configuración, validación y lista de producción |
 | [docs/METODO_VERIFICACION_LECTURA.md](docs/METODO_VERIFICACION_LECTURA.md) | Validez de la lectura y regla de autorización |
 | [docs/EXPERIMENTO_MODELOS.md](docs/EXPERIMENTO_MODELOS.md) | Experimento de detectores y OCR, estadística |
-| [docs/BASE_DE_DATOS.md](docs/BASE_DE_DATOS.md) | Esquema v5 y reglas de negocio |
+| [docs/BASE_DE_DATOS.md](docs/BASE_DE_DATOS.md) | Esquema v12, migraciones y reglas de negocio |
+| [docs/AUDITORIA_MOTOR_ANPR.md](docs/AUDITORIA_MOTOR_ANPR.md) | Flujo real del motor, deduplicación, OCR, registro en menos de 1 s, latencias medidas y riesgos |
+| [docs/PROTOCOLO_EVALUACION_SECUENCIAS.md](docs/PROTOCOLO_EVALUACION_SECUENCIAS.md) | Protocolo para evaluar el motor con video real etiquetado |
+| [docs/ARQUITECTURA_LIMPIA.md](docs/ARQUITECTURA_LIMPIA.md) | Capas y regla de dependencias de backend, frontend y motor |
+| [docs/CUMPLIMIENTO_NORMAS.md](docs/CUMPLIMIENTO_NORMAS.md) | Trazabilidad con ISO/IEC 25010, 12207, 29119, OWASP ASVS, ISO/IEC 27001 y LOPDP |
+| [ESTADO_DEL_SISTEMA.md](ESTADO_DEL_SISTEMA.md), [walkthrough_dos_fases.md](walkthrough_dos_fases.md) | Arquitectura vigente y recorrido de un paso vehicular de la cámara al registro |
+| [MARCO_TEORICO_TESIS.md](MARCO_TEORICO_TESIS.md), [CADENAS_BUSQUEDA_LITERATURA.md](CADENAS_BUSQUEDA_LITERATURA.md) | Marco teórico de la tesis (categorías de las variables) y búsqueda bibliográfica |
 | [docs/MONITORING.md](docs/MONITORING.md), [docs/CICD.md](docs/CICD.md) | Operación |

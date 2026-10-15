@@ -117,7 +117,7 @@ frontend/src/
 ├── infraestructura/    api.ts (cliente HTTP), push.ts (Web Push), webrtc.ts, descargas.ts, avisos.ts (sonido)
 ├── aplicacion/         AuthContext.tsx (sesión), tiempoReal.tsx (Socket.IO), notificaciones.tsx (centro),
 │                       notificar.ts (contrato de los avisos emergentes), hooks.ts
-├── interfaz/           App.tsx, componentes/, paginas/ (por rol), plantilla/ (menú y estructura)
+├── interfaz/           App.tsx, componentes/ (incl. PlacaFoto: foto real del recorte), paginas/ (por rol, incl. EstadoSistema), plantilla/ (menú, encabezado y barra de pestañas IDE)
 ├── assets/             Imágenes
 └── main.tsx            Punto de entrada
 ```

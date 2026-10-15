@@ -1,143 +1,121 @@
-> **Documento histórico (fase 0).** La arquitectura vigente, los hallazgos del análisis de código y el
-> protocolo de evaluación están en [docs/ANALISIS_ARQUITECTURA.md](docs/ANALISIS_ARQUITECTURA.md);
-> roles y permisos en [docs/ROLES_Y_PERMISOS.md](docs/ROLES_Y_PERMISOS.md) y alarmas en
-> [docs/NOTIFICACIONES.md](docs/NOTIFICACIONES.md).
+# Estado actual del sistema ANPR — ECU 911 Coordinación Zonal 3
 
-# Arquitectura y Estado Actual del Sistema ANPR — ECU 911 Zona 3
+Resumen de la arquitectura vigente (14 de octubre de 2026, rama `refactor/arquitectura-limpia`). El
+detalle de cada parte está en los documentos enlazados; este archivo reemplaza la descripción de la
+fase 0 (30 FPS, EasyOCR/PaddleOCR y video MJPEG), que ya no corresponde al sistema.
 
-Este documento detalla la arquitectura técnica, los modelos de Inteligencia Artificial utilizados, el flujo de datos en dos fases y la integración de microservicios desarrollada para el proyecto de titulación.
+## 1. Qué hace el sistema
 
----
+Registra el ingreso vehicular a partir del video de una cámara IP: detecta y lee la placa, decide el
+acceso con la lista blanca (permisos con vigencia y horario) y la lista negra (alertas), guarda el
+paso con su evidencia fotográfica y avisa al personal en tiempo real. El guardia confirma o corrige
+las lecturas dudosas; nada se autoriza solo sin una lectura válida.
 
-## 1. ¿El sistema está consumiendo YOLO en este momento?
-
-**SÍ, de forma activa y continua en dos etapas clave:**
-
-1. **Detección y Localización de la Placa**:
-   * Utiliza el framework **Ultralytics YOLO** cargando el modelo especializado `models/license_plate_detector.pt` (y como fallback `yolo11n.pt`).
-   * En cada cuadro capturado por la cámara (a 30 FPS), YOLO analiza la imagen, identifica el bounding box (coordenadas $[x_1, y_1, x_2, y_2]$) de la placa vehicular y calcula la métrica de confianza de detección (`confianza_deteccion`).
-
-2. **Tracking Espaciotemporal y Selección del Mejor Fotograma**:
-   * Los bounding boxes generados por YOLO son procesados por el algoritmo de seguimiento (**ByteTrack** / `plate_agent.py`).
-   * El sistema evalúa la nitidez (mediante varianza Laplaciana) de varios cuadros consecutivos y **selecciona automáticamente la fotografía más nítida** para enviarla al reconocimiento óptico de caracteres (OCR).
-
----
-
-## 2. Diagrama de la Arquitectura del Sistema
+## 2. Arquitectura
 
 ```mermaid
-graph TD
-    subgraph Captura_y_Vision [Microservicio ANPR - Python + FastAPI]
-        Cam[Cámara IP RTSP vía MediaMTX] -->|Stream 30 FPS| VideoSource[VideoSource Abstraction]
-        VideoSource -->|Frames| YoloDetector[Detector YOLOv11 / Best.pt]
-        YoloDetector -->|Bounding Boxes| FrameSelector[Selector de Mejor Frame]
-        FrameSelector -->|Foto Nítida + Recorte| OCREngine[Motor OCR: PaddleOCR / EasyOCR]
-        OCREngine -->|Placa + Confianza| EventSync[Módulo de Sincronización HTTP / Sockets]
-    end
-
-    subgraph Backend_Core [Backend - Node.js + Express + TypeScript]
-        EventSync -->|POST /api/detecciones/ingreso| API[API REST / Controllers]
-        API -->|Lectura / Escritura| SQL[(SQL Server 2022 - ANPR_ECU911)]
-        API -->|Verifica Lista Negra| BlacklistCheck{¿Está en Lista Negra?}
-        BlacklistCheck -->|Sí / Alerta Crítica| SocketIO[Socket.io Server]
-        BlacklistCheck -->|No / Normal| SocketIO
-        API -->|Guarda / Sirve Fotos| MediaDir[(Almacenamiento /media)]
-    end
-
-    subgraph Frontend_App [Frontend - React 18 + Vite + TypeScript]
-        SocketIO -->|Eventos en Tiempo Real| Dashboard[Dashboard de Monitoreo]
-        Dashboard -->|Stream MJPEG 30 FPS| VideoFeed[Monitor de Video en Vivo]
-        Dashboard -->|Alerta Sonora + Visual| AlertModal[Alerta de Lista Negra]
-        Dashboard -->|Validación Manual| Validador[Modal de Corrección de Placa]
-        API -->|Consultas y Filtros| Historial[Historial de Ingresos & Reportes CSV]
-        API -->|CRUD Operadores & Placas| AdminPanel[Panel de Administración]
-    end
+flowchart LR
+  CAM[Cámara IP Hikvision\nflujo principal y secundario] -->|RTSP| MTX[MediaMTX]
+  MTX -->|RTSP interno| MOTOR
+  MTX -->|WebRTC / WHEP| WEB
+  subgraph MOTOR[Motor ANPR · FastAPI]
+    MOV[Compuerta de movimiento\ny zonas] --> DET[Detector YOLO26n] --> TRK[Seguimiento\nKalman + asociación en dos fases]
+    TRK --> OCR[OCR rápido cct-s-v2-global\nconsenso por pista]
+    TRK --> SEL[Mejor cuadro] --> REG[Registro en < 1 s:\nOCR profundo, verificador PP-OCRv6,\natributos YOLO26n + CLIP]
+  end
+  REG -->|ingreso · completar-ocr · reevaluar\nX-Servicio-Token| API
+  subgraph BACK[Backend · Express + TypeScript]
+    API[API REST + OpenAPI] --> DOM[Dominio: decisión R1–R7,\nRBAC, horarios, alarmas]
+    API --> NOT[Centro de notificaciones\nISA-18.2]
+  end
+  API <--> SQL[(SQL Server 2022\nesquema v12)]
+  NOT <--> RED[(Redis)]
+  NOT -->|Socket.IO · Web Push| WEB[Frontend React 18 + Vite]
+  PROM[Prometheus + Grafana] --> API & MOTOR
 ```
 
----
+## 3. Flujo de un paso vehicular
 
-## 3. Arquitectura del Pipeline de Dos Fases (Two-Phase Pipeline)
+| Etapa | Implementación vigente | Detalle |
+|---|---|---|
+| Captura | RTSP desde MediaMTX (flujo principal de la cámara), cola de un solo cuadro: se analiza siempre el más reciente | [AUDITORIA_MOTOR_ANPR.md §1](docs/AUDITORIA_MOTOR_ANPR.md) |
+| Movimiento | Compuerta de inferencia por diferencia de cuadros y MOG2, dentro del área de detección y fuera de las zonas de exclusión | [METODO_VERIFICACION_LECTURA.md §2.4](docs/METODO_VERIFICACION_LECTURA.md) |
+| Detección | YOLO26n afinado en Open Images V7 (`models/license_plate_detector.pt`), 512 px, umbral 0,22, sobre el recorte del área de detección | [MODEL_CARD.md](services/anpr/models/MODEL_CARD.md) |
+| Seguimiento | Asociación en dos fases al estilo ByteTrack con filtro de Kalman | AUDITORIA §1 |
+| Lectura en vivo | fast-plate-ocr `cct-s-v2-global` (ONNX) por pista; consenso ponderado por confianza y nitidez | AUDITORIA §1 |
+| Registro | Sobre la mejor foto, en paralelo: OCR profundo, verificador PP-OCRv6 medium (OpenVINO) y atributos del vehículo (YOLO26n + CLIP ViT-B-32). El paso se registra en menos de 1 s; lo que llega después se envía como reevaluación | AUDITORIA §4 |
+| Validez | E1 formato ANT · E2 placa completa · E3 fila de caracteres · E4 confirmación · E5 lectura directa de cada carácter; «solo placas» (formato coherente con la forma del recuadro) | METODO §2.2 |
+| Deduplicación | Un paso = un registro: misma placa en la misma cámara dentro de 35 s | AUDITORIA §2.2 |
+| Decisión | Backend, regla R1–R7: las alertas nunca se rebajan; autorización automática solo con lectura válida, permiso vigente y confianza mínima | METODO §2.3 |
+| Aviso | Notificación persistente por Socket.IO y Web Push, con reconocimiento, escalamiento y supresión de repeticiones | [NOTIFICACIONES.md](docs/NOTIFICACIONES.md) |
 
-Para garantizar un tiempo de respuesta menor a 2 segundos y evitar latencias o bloqueos en la cámara, el microservicio ANPR está desacoplado en dos hilos paralelos:
+## 4. Interfaz web
 
-```
-[ Cámara ] ──► ( Hilo 1: Productor @ 30 FPS ) ──► [ Cola de Inferencia ]
-                                                          │
-                                                          ▼
-                                            ( Hilo 2: Consumidor YOLO )
-                                                          │
-                                                          ▼
-                                            [ Selector de Mejor Frame ]
-                                                          │
-                                                          ▼
-                                        ( Worker Asíncrono de OCR ) ──► [ Backend Node.js ]
-```
+Tres roles: **Guardia** (monitoreo, validación, registro manual, solicitudes), **Gestor de permisos**
+(lista blanca y solicitudes, en una sola vista) y **Administrador** (todo). Colores institucionales,
+barra de pestañas tipo IDE, dashboard con los 50 ingresos recientes en tiempo real y página *Estado
+del sistema*. La placa se muestra siempre con la foto real del recorte. Detalle en
+[SISTEMA_WEB.md](docs/SISTEMA_WEB.md) y [ROLES_Y_PERMISOS.md](docs/ROLES_Y_PERMISOS.md).
 
-1. **Fase 1: Captura Fotográfica Inmediata (Hilo Productor & Consumidor)**
-   * Captura frames a 30 FPS continuos sin latencia.
-   * YOLO localiza la placa en ~8–15 ms en CPU.
-   * Cuando el vehículo está a la distancia y nitidez óptimas, guarda la fotografía de evidencia y notifica al backend el estado `pendiente_ocr`.
+## 5. Estructura del repositorio
 
-2. **Fase 2: Extracción y Corrección OCR (Worker Asíncrono)**
-   * El motor OCR (EasyOCR / PaddleOCR) procesa el recorte ampliado de la placa.
-   * Aplica reglas de validación para **formatos de placas ecuatorianas** (3 letras + 3 o 4 dígitos, diplomáticos, institucionales).
-   * Corrige sustituciones tipográficas frecuentes (ej. `O` $\leftrightarrow$ `0`, `I` $\leftrightarrow$ `1`, `B` $\leftrightarrow$ `8`).
-   * Envía el texto final y el backend emite la actualización `ingreso_actualizado` vía WebSockets.
-
----
-
-## 4. Estructura de Módulos del Proyecto
-
-Backend y frontend siguen una arquitectura por capas con las dependencias hacia el dominio; una prueba
-de aptitud en cada uno impide que una capa interna dependa de una externa (detalle en
-[docs/ARQUITECTURA_LIMPIA.md](docs/ARQUITECTURA_LIMPIA.md)).
+Backend, frontend y motor siguen arquitectura limpia; una prueba de aptitud en cada uno impide que una
+capa interna dependa de una externa ([ARQUITECTURA_LIMPIA.md](docs/ARQUITECTURA_LIMPIA.md)).
 
 ```text
 /ANPR
-├── docker-compose.yml           # SQL Server, Redis, MediaMTX, backend, frontend, motor ANPR y monitoreo
-├── backend/                     # API REST: Node.js + Express + TypeScript (arquitectura limpia)
-│   └── src/
-│       ├── dominio/             # Reglas puras: validación (placa ANT), permisos, decisión de acceso, horarios…
-│       ├── aplicacion/          # Casos de uso por módulo y sus puertos
-│       ├── infraestructura/     # Repositorios SQL, sesiones, Socket.IO, Web Push, correo, MediaMTX, motor ANPR
-│       ├── interfaz/http/       # Routers finos, middlewares de sesión/permiso y catálogo OpenAPI (Swagger)
-│       ├── contenedor/          # Raíz de composición
-│       └── tests/               # Pruebas por capa + prueba de aptitud de la arquitectura
-├── frontend/                    # React 18 + Vite + TypeScript
-│   └── src/
-│       ├── dominio/             # Validación, reglas, permisos, tipos y formato (sin React ni red)
-│       ├── infraestructura/     # Cliente HTTP, Web Push, WebRTC, descargas y aviso sonoro
-│       ├── aplicacion/          # Sesión, tiempo real (Socket.IO) y centro de notificaciones
-│       └── interfaz/            # Componentes, páginas por rol y plantilla con el menú
-├── services/anpr/               # Motor de reconocimiento: Python + FastAPI (YOLO26n afinado + OCR)
-│   ├── app/dominio/             # Validación de placas ecuatorianas y modelos (puro)
-│   ├── app/aplicacion/          # MotorAnpr (tiempo real), pipeline de detección, verificación, OCR asíncrono
-│   ├── app/infraestructura/     # Modelos YOLO/OCR/CLIP, cámaras, acceso al backend, métricas, config
-│   ├── app/interfaz/api.py      # Servidor HTTP y WebSocket (FastAPI)
-│   ├── app/main.py              # Raíz de composición
+├── docker-compose.yml           # SQL Server, Redis, MediaMTX, backend, frontend, motor ANPR, Prometheus y Grafana
+├── backend/src/                 # Express + TypeScript
+│   ├── dominio/                 # Reglas puras: validación (placa ANT), permisos, decisión de acceso, horarios, alarmas
+│   ├── aplicacion/              # Casos de uso por módulo y sus puertos
+│   ├── infraestructura/         # Repositorios SQL, sesiones, Socket.IO, Web Push, correo, MediaMTX, motor ANPR
+│   ├── interfaz/http/           # Routers, middlewares de sesión/permiso y catálogo OpenAPI (Swagger)
+│   └── contenedor/              # Raíz de composición
+├── frontend/src/                # React 18 + Vite + TypeScript
+│   ├── dominio/                 # Validación, reglas, permisos, tipos y formato
+│   ├── infraestructura/         # Cliente HTTP, Web Push, WebRTC, descargas, aviso sonoro
+│   ├── aplicacion/              # Sesión, tiempo real y centro de notificaciones
+│   └── interfaz/                # Componentes, páginas por rol y plantilla (menú y barra de pestañas)
+├── services/anpr/               # Motor ANPR: Python + FastAPI
+│   ├── app/dominio/             # Interpretación y validación de placas ecuatorianas (puro)
+│   ├── app/aplicacion/          # Motor en tiempo real, detección, seguimiento, verificación, registro
+│   ├── app/infraestructura/     # Modelos YOLO/OCR/CLIP, cámara, acceso al backend, métricas, configuración
+│   ├── app/interfaz/            # Servidor HTTP y WebSocket
 │   ├── models/                  # Pesos y MODEL_CARD.md
-│   └── scripts/                 # Entrenamiento, evaluación y estadística (McNemar, IC 95 %)
-└── db/                          # init.sql y migraciones versionadas (v2 … v8)
+│   └── scripts/                 # Entrenamiento, evaluación A/B y estadística (McNemar, IC 95 %)
+├── db/                          # init.sql y migraciones versionadas (v2 … v12)
+├── mediamtx/ · monitoring/ · k8s/
+└── docs/                        # Documentación técnica y resultados medidos (docs/resultados)
 ```
 
----
+## 6. Base de datos
 
-## 5. Base de Datos (SQL Server)
+SQL Server 2022, esquema v12. Tablas principales: `DeteccionVehiculo` (cada paso con evidencia,
+lectura, validez y decisión), `VehiculosAutorizados` (permisos de placa), `ListaNegra`,
+`SolicitudesAcceso`, `Camaras` (credenciales RTSP cifradas, zonas), `Usuarios`, `Notificaciones` y
+las tablas de auditoría. No hay usuarios, cámaras ni datos de prueba predefinidos. Detalle en
+[BASE_DE_DATOS.md](docs/BASE_DE_DATOS.md).
 
-* **`Usuarios`**: Cuentas del personal con contraseñas encriptadas con `bcrypt` (`admin` y `operator`).
-* **`Camaras`**: Registro de cámaras IP del ECU 911 Zona 3 (IP `10.126.9.104`).
-* **`ListaNegra`**: Placas con encargo judicial, robo o sospecha con niveles de alerta (`CRITICA`, `ALTA`, `MEDIA`).
-* **`VehiculosAutorizados`**: Padrón vehicular institucional de funcionarios y directivos.
-* **`DeteccionVehiculo` / `EventosIngreso`**: Registro histórico de accesos con placa leída, porcentaje de confianza YOLO/OCR, rutas de imágenes y usuario validador.
+## 7. Servicios y puertos
 
----
+| Servicio | Contenedor | Puerto | Exposición |
+|---|---|---|---|
+| Frontend (React + Vite) | `anpr-frontend` | 3000 | red local |
+| Backend API (Express) | `anpr-backend` | 5000 | red local |
+| Motor ANPR (FastAPI) | `anpr-service` | 8000 | red local (solo WebSocket con ticket para el navegador) |
+| MediaMTX | `anpr-mediamtx` | 8889 (WHEP), 8189 (WebRTC) · 8554 (RTSP) | WebRTC en la red local; RTSP solo en el equipo |
+| SQL Server 2022 | `anpr-db` | 14333 → 1433 | solo `127.0.0.1` |
+| Redis | `anpr-redis` | 6379 | solo `127.0.0.1` |
+| Prometheus / Grafana | `anpr-prometheus` / `anpr-grafana` | 9090 / 3001 | solo `127.0.0.1` |
 
-## 6. Resumen de Puertos y Servicios en Ejecución
+Cómo ejecutarlo: [EJECUTAR_SISTEMA.md](EJECUTAR_SISTEMA.md).
 
-| Servicio | Tecnología | Puerto | Descripción |
-| :--- | :--- | :--- | :--- |
-| **Frontend** | React 18 + Vite | `3000` | Interfaz gráfica de monitoreo y administración |
-| **Backend API** | Node.js + Express | `5000` | API REST, lógica de negocio y WebSockets |
-| **Microservicio ANPR** | Python + FastAPI | `8000` | Inferencia YOLO, OCR y Stream MJPEG de la cámara |
-| **Base de Datos** | SQL Server 2022 | `14333` (Host) / `1433` (Docker) | Persistencia transaccional de eventos y usuarios |
-| **Relay RTSP** | MediaMTX | `8554` / `8888` | Conversión de protocolos de video para cámaras IP |
+## 8. Verificación
+
+- Pruebas (14 de octubre de 2026): backend 45 suites y 741 pruebas; motor 189; frontend 46. Todas en
+  verde, con compilación TypeScript, lint y build del frontend.
+- Mediciones del motor (registro en menos de 1 s, zonas, compuerta, interpretación de la placa) en
+  [AUDITORIA_MOTOR_ANPR.md](docs/AUDITORIA_MOTOR_ANPR.md) y `docs/resultados/`.
+- **Pendiente:** la cámara real de la garita no se ha probado con un flujo autorizado; las mediciones
+  usan una cámara Hikvision simulada y recortes reales de 2 placas. El protocolo para validar en
+  sitio está en [PROTOCOLO_EVALUACION_SECUENCIAS.md](docs/PROTOCOLO_EVALUACION_SECUENCIAS.md).
