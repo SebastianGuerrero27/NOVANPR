@@ -1,9 +1,10 @@
 import React, { Suspense, useEffect, useRef, useState } from 'react';
 import { NavLink, useLocation, useNavigate } from 'react-router-dom';
 import {
-  Bell, ChevronDown, ChevronsLeft, ChevronsRight, Clock, KeyRound, LogOut, Menu, Shield, UserCircle, Volume2, VolumeX, Wifi, WifiOff,
+  Bell, Camera, ChevronDown, ChevronsLeft, ChevronsRight, Clock, GripVertical, KeyRound, LogOut, Menu, Moon, Shield, Sun, UserCircle, Volume2, VolumeX, Wifi, WifiOff,
 } from 'lucide-react';
 import api from '../../infraestructura/api';
+import type { Camara } from '../../dominio/tipos';
 import { useAuth } from '../../aplicacion/AuthContext';
 import { useEvento, useReconexion, useTiempoReal } from '../../aplicacion/tiempoReal';
 import { useDiferido, useTic } from '../../aplicacion/hooks';
@@ -16,6 +17,23 @@ import { itemDeRuta, menuPara, pestanasPara } from './navegacion';
 import logo from '../../assets/ecu911.png';
 
 const CLAVE_COLAPSO = 'anpr_menu_colapsado';
+const CLAVE_TEMA = 'anpr_tema';
+
+const BotonTema: React.FC = () => {
+  const [oscuro, setOscuro] = useState(() => {
+    try { return localStorage.getItem(CLAVE_TEMA) === 'oscuro'; } catch { return false; }
+  });
+  useEffect(() => {
+    document.documentElement.dataset.theme = oscuro ? 'dark' : 'light';
+    try { localStorage.setItem(CLAVE_TEMA, oscuro ? 'oscuro' : 'claro'); } catch { /* preferencia no disponible */ }
+  }, [oscuro]);
+  return (
+    <button className="btn btn-ghost btn-sm btn-icono" onClick={() => setOscuro(v => !v)}
+      title={oscuro ? 'Cambiar a modo claro' : 'Cambiar a modo oscuro'} aria-label={oscuro ? 'Cambiar a modo claro' : 'Cambiar a modo oscuro'}>
+      {oscuro ? <Sun size={17} /> : <Moon size={17} />}
+    </button>
+  );
+};
 
 /** Pendientes de revisión (contador del menú), actualizado por eventos en tiempo real. */
 function useColaRevision(activo: boolean): number {
@@ -46,6 +64,19 @@ function useSolicitudesPendientes(activo: boolean): number {
 const Sidebar: React.FC<{ colapsado: boolean; onColapsar: () => void; abiertoMovil: boolean; onCerrarMovil: () => void }> =
   ({ colapsado, onColapsar, abiertoMovil, onCerrarMovil }) => {
     const { user, puede } = useAuth();
+    const navigate = useNavigate();
+    const { pathname } = useLocation();
+    const [camaras, setCamaras] = useState<Camara[]>([]);
+    useEffect(() => {
+      if (!user || !puede('operacion:monitorear')) return;
+      let vigente = true;
+      api.get('/camaras').then(r => { if (vigente) setCamaras(r.data); }).catch(() => undefined);
+      return () => { vigente = false; };
+    }, [user, puede, pathname]);
+    useEvento<Camara>('camara:actualizada', c => setCamaras(actual => actual.some(x => x.id === c.id)
+      ? actual.map(x => x.id === c.id ? { ...x, ...c } : x)
+      : [...actual, c]));
+    useEvento<{ id: number }>('camara:eliminada', ({ id }) => setCamaras(actual => actual.filter(c => c.id !== id)));
     const revision = useColaRevision(!!user && puede('operacion:monitorear'));
     const solicitudes = useSolicitudesPendientes(!!user && puede('solicitudes:resolver'));
     if (!user) return null;
@@ -72,6 +103,23 @@ const Sidebar: React.FC<{ colapsado: boolean; onColapsar: () => void; abiertoMov
               ))}
             </div>
           ))}
+          {puede('operacion:monitorear') && (
+            <div className="sidebar-grupo sidebar-camaras">
+              <div className="sidebar-grupo-titulo">Cámaras · arrastrar al NVR</div>
+              {camaras.filter(c => c.activa).map(c => (
+                <button key={c.id} type="button" className="sidebar-link sidebar-camara"
+                  draggable
+                  onDragStart={e => { e.dataTransfer.setData('application/x-anpr-camera', String(c.id)); e.dataTransfer.effectAllowed = 'copy'; }}
+                  onClick={() => { if (window.location.pathname !== '/monitoreo') navigate('/monitoreo'); }}
+                  title={colapsado ? `${c.nombre} · ${c.direccion}` : `Arrastre ${c.nombre} a una celda NVR · ${c.direccion}`}>
+                  <GripVertical size={14} className="sidebar-camara-arrastre" />
+                  <Camera size={16} />
+                  <span className="etiqueta">{c.nombre}<small>{c.direccion === 'salida' ? 'Salida' : 'Ingreso'}</small></span>
+                </button>
+              ))}
+              {camaras.length === 0 && !colapsado && <span className="sidebar-camaras-vacio">Sin cámaras registradas</span>}
+            </div>
+          )}
         </nav>
         <div className="sidebar-pie">
           <button className="sidebar-colapsar" onClick={onColapsar} aria-label={colapsado ? 'Expandir menú' : 'Contraer menú'}>
@@ -177,6 +225,7 @@ const Header: React.FC<{ onMenuMovil: () => void }> = ({ onMenuMovil }) => {
             {conectado ? <Wifi size={13} /> : <WifiOff size={13} />} {conectado ? 'En línea' : 'Reconectando…'}
           </span>
           <span className="ocultar-movil"><RelojSesion /></span>
+          <BotonTema />
           <BotonSonido />
           <CampanaNotificaciones />
           {user && <span className="pastilla-usuario ocultar-movil" title={user.nombre}><span className="punto-vivo" />{user.nombre}</span>}

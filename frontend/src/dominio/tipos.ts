@@ -1,7 +1,7 @@
 /** Contratos de la API (espejo de los mapeadores del backend). */
 import type { Rol } from './permisos';
 
-export type EstadoValidacion = 'autorizado' | 'alerta' | 'no_reconocido' | 'pendiente_revision';
+export type EstadoValidacion = 'autorizado' | 'alerta' | 'no_reconocido' | 'pendiente_revision' | 'salida_registrada';
 export type EstadoProcesamiento = 'pendiente_ocr' | 'procesado' | 'no_legible';
 export type RestriccionAcceso = 'fuera_horario' | 'no_iniciada' | 'vencida';
 
@@ -18,6 +18,7 @@ export interface Deteccion {
   confianza_deteccion: number | null;
   confianza_ocr: number | null;
   fecha_hora_ingreso: string;
+  tipo_movimiento: 'ingreso' | 'salida';
   fecha_hora_procesamiento: string | null;
   fuente: string | null;
   tracking_id: number | null;
@@ -89,6 +90,7 @@ export interface Camara {
   nombre: string;
   ip: string;
   ubicacion: string;
+  direccion: 'ingreso' | 'salida';
   rtsp_url: string;
   /** Flujo secundario para la vista en vivo (contraseña enmascarada); null: la vista usa el principal */
   rtsp_url_vista: string | null;

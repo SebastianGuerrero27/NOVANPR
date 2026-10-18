@@ -9,7 +9,7 @@ import { useAuth } from '../../aplicacion/AuthContext';
 import { useEvento, useReconexion } from '../../aplicacion/tiempoReal';
 import { useConsulta, useDiferido, usePaginaVisible } from '../../aplicacion/hooks';
 import type { Deteccion, ResumenPanel } from '../../dominio/tipos';
-import { diaCorto, fecha, fechaHora, hora, numero, porcentaje, relativo, SERIES_ESTADO } from '../../dominio/formato';
+import { colorConfianza, diaCorto, fecha, fechaHora, hora, numero, porcentaje, relativo, SERIES_ESTADO } from '../../dominio/formato';
 import { Aviso, Cargando, FilasEsqueleto, InsigniaEstado, Kpi, Tarjeta, Vacio } from '../componentes/ui';
 import { BarrasApiladas, BarrasHorizontales, Dona, Leyenda } from '../componentes/Graficos';
 import { describirVehiculo, PlacaFoto, RegistroManualModal, TarjetaDeteccion, ValidarModal } from '../componentes/deteccion';
@@ -196,7 +196,7 @@ const IngresosRecientes: React.FC = () => {
   useEvento('deteccion:eliminadas', diferido);
   useReconexion(diferido);
   return (
-    <Tarjeta titulo="Ingresos recientes" subtitulo="Los 50 últimos pasos registrados; se actualiza en tiempo real"
+    <Tarjeta titulo="Movimientos recientes" subtitulo="Los 50 últimos pasos registrados; se actualiza en tiempo real"
       acciones={<Link to="/detecciones" className="btn btn-ghost btn-sm"><History size={14} /> Historial completo <ArrowRight size={14} /></Link>} sinPadding>
       {error && <Aviso tipo="error" style={{ margin: 12 }}>{error}</Aviso>}
       <div className="tabla-contenedor" style={{ maxHeight: 560 }}>
@@ -212,11 +212,11 @@ const IngresosRecientes: React.FC = () => {
                 <td className="nowrap"><PlacaFoto d={d} /></td>
                 <td className="nowrap"><strong style={{ color: 'var(--text)', fontWeight: 600 }}>{hora(d.fecha_hora_ingreso)}</strong><span className="secundario">{fecha(d.fecha_hora_ingreso)}</span></td>
                 <td><InsigniaEstado estado={d.estado_validacion} procesando={d.estado_procesamiento === 'pendiente_ocr'} /></td>
-                <td>{d.camara ? d.camara.nombre : <span className="texto-secundario">{d.fuente === 'manual' ? 'Registro manual' : '—'}</span>}</td>
+                <td>{d.camara ? <>{d.camara.nombre}<span className="secundario">{d.tipo_movimiento === 'salida' ? 'Salida' : 'Ingreso'} · {d.camara.ubicacion}</span></> : <span className="texto-secundario">{d.fuente === 'manual' ? 'Registro manual' : d.tipo_movimiento === 'salida' ? 'Salida' : '—'}</span>}</td>
                 <td className="ocultar-movil" style={{ maxWidth: 240 }}>
                   <span className="truncar" style={{ display: 'block' }}>{d.alerta ? <b style={{ color: 'var(--alerta)' }}>{d.alerta.motivo}</b> : d.autorizado?.propietario ?? describirVehiculo(d)}</span>
                 </td>
-                <td className="num ocultar-movil">{porcentaje(d.confianza_ocr)}</td>
+                <td className="num ocultar-movil"><span style={{ color: colorConfianza(d.confianza_ocr), fontWeight: 700 }}>{porcentaje(d.confianza_ocr)}</span></td>
                 <td>{d.validado_manualmente
                   ? <span title={d.validacion?.usuario?.email}>{d.validacion?.usuario?.nombre ?? 'Personal'}</span>
                   : <span className="texto-secundario">Automática</span>}</td>

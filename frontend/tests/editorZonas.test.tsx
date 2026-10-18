@@ -21,6 +21,7 @@ import { EditorRoi, errorZonas } from '../src/interfaz/componentes/EditorRoi';
 
 const CAMARA: Camara = {
   id: 3, nombre: 'Garita norte', ubicacion: 'Acceso vehicular norte', ip: '192.0.2.10',
+  direccion: 'ingreso',
   rtsp_url: 'rtsp://admin:******@192.0.2.10:554/Streaming/Channels/101', rtsp_url_vista: null, tiene_credenciales: true,
   activa: true, estado: 'EN_LINEA', ultimo_ping: null, tiempo_respuesta_ms: null, mensaje_ping: null, created_at: '2026-10-09T10:00:00Z',
   roi: null, exclusiones: [],

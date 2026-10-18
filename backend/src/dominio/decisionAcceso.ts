@@ -30,7 +30,7 @@ import type { Vigencia } from './horario';
  *   R7  sin permiso                                                    → no_reconocido
  */
 
-export type EstadoValidacion = 'autorizado' | 'alerta' | 'no_reconocido' | 'pendiente_revision';
+export type EstadoValidacion = 'autorizado' | 'alerta' | 'no_reconocido' | 'pendiente_revision' | 'salida_registrada';
 export type RestriccionAcceso = Exclude<Vigencia, 'vigente'>;
 export type CriterioAutorizacion = 'validez_y_confianza' | 'validez' | 'confianza';
 export type FuenteConfianza = 'ocr' | 'deteccion' | 'ambas';

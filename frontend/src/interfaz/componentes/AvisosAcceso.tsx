@@ -267,7 +267,7 @@ export const AvisosAcceso: React.FC = () => {
         onValidada={d => setCola(c => c.filter(x => x.id !== d.id))} />}
       {solicitando && (
         <FormularioSolicitud
-          inicial={{ placa: solicitando.placa, marca: solicitando.vehiculo.marca, modelo: solicitando.vehiculo.modelo, color: solicitando.vehiculo.color, tipo_vehiculo: solicitando.tipo_vehiculo, deteccion_id: solicitando.id }}
+          inicial={{ placa: solicitando.placa, marca: solicitando.vehiculo.marca, modelo: solicitando.vehiculo.modelo, color: solicitando.vehiculo.color, deteccion_id: solicitando.id }}
           onCerrar={() => setSolicitando(null)}
           onEnviada={s => {
             notificar('exito', `Solicitud #${s.id} enviada`, 'El gestor de permisos fue notificado. Mantenga el vehículo en espera.');
@@ -277,7 +277,7 @@ export const AvisosAcceso: React.FC = () => {
       )}
       {autorizando && autorizando.placa && (
         <FormularioLista tipo="autorizados"
-          inicial={{ placa: autorizando.placa, marca: autorizando.vehiculo.marca, modelo: autorizando.vehiculo.modelo, color: autorizando.vehiculo.color, tipo_vehiculo: autorizando.tipo_vehiculo }}
+          inicial={{ placa: autorizando.placa, marca: autorizando.vehiculo.marca, modelo: autorizando.vehiculo.modelo, color: autorizando.vehiculo.color }}
           onCerrar={() => setAutorizando(null)}
           onGuardado={() => {
             notificar('exito', `${formatearPlaca(autorizando.placa)} agregado al padrón de autorizados`, 'Valide este ingreso para registrarlo como autorizado.');

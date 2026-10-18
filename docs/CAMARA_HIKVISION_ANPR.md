@@ -126,7 +126,18 @@ integraciones es usar **H.265 o H.264 estándar** con un intervalo de cuadros cl
           (URL descifrada solo en memoria) y autoriza cada lectura (/api/medios/autorizar).
 ```
 
-### 3.1 Flujo de vista
+ Cada cámara tiene una dirección (`ingreso` o `salida`, migración v13), copiada en el evento al
+ registrarse. Una salida se almacena como movimiento independiente: no consulta las listas de
+ autorización ni altera el ingreso del mismo vehículo.
+
+ **Límite de procesamiento vigente:** el servicio ANPR compone una sola instancia `MotorAnpr` y
+ `camaraMotor` asigna una cámara activa a ese motor. La cuadrícula NVR de cuatro celdas reproduce
+ flujos, pero no equivale a cuatro procesos ANPR; solo la cámara activa genera pistas, OCR y
+ decisiones. Por ello el HUD se conecta únicamente al flujo de esa cámara. No se debe anunciar
+ procesamiento simultáneo ni capacidad para cientos de cámaras hasta desplegar workers aislados
+ por cámara y superar pruebas de carga en el hardware objetivo.
+
+ ### 3.1 Flujo de vista
 
 - Columna `Camaras.rtsp_url_vista` (migración v9). Vacía: la vista usa el principal (cámaras
   sin secundario, celulares).
@@ -227,15 +238,18 @@ teleobjetivo (o una cámara ANPR dedicada con obturación de 1/1000 s o menos e 
 ## 5. Alta en el sistema
 
 1. Administración › Cámaras › Registrar cámara › tipo **Cámara Hikvision**.
-2. IP, puerto 554, ruta `/Streaming/Channels/101` (canal 1), usuario y contraseña. La contraseña
-   puede tener símbolos: se codifica sola.
+2. Elija la dirección de la cámara (**Ingreso** o **Salida**), luego IP, puerto 554 y ruta
+   `/Streaming/Channels/101` (canal 1). Usuario y contraseña son opcionales si el equipo permite
+   RTSP anónimo; cuando se requieren, la contraseña puede tener símbolos y se codifica sola.
 3. Deje marcada **Vista en vivo por el flujo secundario**: se genera
    `/Streaming/Channels/102` con las mismas credenciales.
 4. **Ping**: debe responder el principal (DESCRIBE con Digest) y el aviso del secundario debe
    decir «entrega video». **Play**: compruebe los dos flujos. Si el secundario llega en H.265,
    cámbielo a H.264 en la cámara.
-5. Guardar. En Monitoreo › cámara del motor, la barra inferior muestra el enlace del motor (por
-   ejemplo «H.265 1920×1080 · 30 fps recibidos»).
+5. Guardar. En Monitoreo se puede arrastrar la cámara desde el menú lateral a una celda de la
+   cuadrícula NVR. La cuadrícula conserva sus cuatro asignaciones entre módulos y sesiones. Para
+   asignar el análisis ANPR, use el selector **Cámara que procesa el motor** en la vista ANPR; la
+   cuadrícula por sí sola solo visualiza video.
 
 ## 6. Validación de punta a punta
 
@@ -354,6 +368,9 @@ ser pareada.
 
 ## 8. Limitaciones
 
+- El servicio ANPR procesa una sola cámara activa; la cuadrícula NVR de cuatro streams es solo de
+  visualización. Cientos de cámaras requieren workers distribuidos, aislamiento de trackers y
+  pruebas de capacidad (CPU/GPU) todavía no implementados.
 - No se ha probado con la cámara física: la validación de §6 usa una cámara simulada que
   reproduce su comportamiento en la red (Digest, rutas, códecs, GOP). La prueba de campo de §7 es
   obligatoria antes de producción.

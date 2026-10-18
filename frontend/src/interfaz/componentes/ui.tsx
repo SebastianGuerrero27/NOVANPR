@@ -1,7 +1,7 @@
 import React, { useEffect, useId, useState } from 'react';
 import { createPortal } from 'react-dom';
 import {
-  AlertCircle, AlertTriangle, CheckCircle2, ChevronLeft, ChevronRight, Clock, HelpCircle, Info, Inbox, Loader2,
+  AlertCircle, AlertTriangle, CheckCircle2, ChevronLeft, ChevronRight, Clock, HelpCircle, Info, Inbox, Loader2, LogOut,
   ShieldAlert, ShieldCheck, X,
 } from 'lucide-react';
 import type { EstadoValidacion } from '../../dominio/tipos';
@@ -59,6 +59,7 @@ const ICONO_ESTADO: Record<EstadoValidacion, React.ReactNode> = {
   alerta: <ShieldAlert size={13} />,
   no_reconocido: <HelpCircle size={13} />,
   pendiente_revision: <Clock size={13} />,
+  salida_registrada: <LogOut size={13} />,
 };
 
 export const InsigniaEstado: React.FC<{ estado: EstadoValidacion; procesando?: boolean; corta?: boolean; solido?: boolean }> = ({ estado, procesando, corta, solido }) => {
@@ -243,4 +244,3 @@ export const Interruptor: React.FC<{ activo: boolean; onCambiar: (v: boolean) =>
     <span />
   </label>
 );
-

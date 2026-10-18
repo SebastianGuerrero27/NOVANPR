@@ -75,17 +75,19 @@ export const repositorioDeteccionesSql: RepositorioDetecciones = {
    * dentro de la ventana, medida en milisegundos igual que en el motor. El tracking solo cuenta sin
    * placa: sus números vuelven a empezar cuando el motor se reinicia y podrían ser de otro vehículo.
    */
-  async mismoPaso(trackingId, pista, camaraId) {
+  async mismoPaso(trackingId, pista, camaraId, tipoMovimiento) {
     const r = await db().request()
       .input('tid', sql.Int, trackingId)
       .input('placa', sql.VarChar(20), pista)
       .input('camara', sql.Int, camaraId)
+      .input('movimiento', sql.VarChar(10), tipoMovimiento)
       .input('ventana', sql.Int, VENTANA_MISMO_PASO_S * 1000)
       .query(`
         SELECT TOP 1 id, fecha_hora_ingreso FROM DeteccionVehiculo
         WHERE ((LEN(@placa) < 4 AND tracking_id = @tid AND @tid > 0)
                OR (LEN(@placa) >= 4 AND REPLACE(REPLACE(COALESCE(placa_reconocida, ''), '-', ''), ' ', '') = @placa))
-          AND (@camara IS NULL OR camara_id IS NULL OR camara_id = @camara)
+          AND ((camara_id = @camara) OR (camara_id IS NULL AND @camara IS NULL))
+          AND tipo_movimiento = @movimiento
           AND estado_procesamiento IN ('pendiente_ocr', 'procesado')
           AND fecha_hora_ingreso > DATEADD(MILLISECOND, -@ventana, GETDATE())
         ORDER BY fecha_hora_ingreso DESC`);
@@ -97,6 +99,12 @@ export const repositorioDeteccionesSql: RepositorioDetecciones = {
     return r.recordset.length > 0;
   },
 
+  async direccionCamara(id) {
+    const r = await db().request().input('id', sql.Int, id).query('SELECT direccion FROM Camaras WHERE id = @id');
+    const direccion = r.recordset[0]?.direccion;
+    return direccion === 'salida' ? 'salida' : direccion === 'ingreso' ? 'ingreso' : null;
+  },
+
   async crearIngreso(n) {
     const r = await db().request()
       .input('tid', sql.Int, n.trackingId)
@@ -105,12 +113,57 @@ export const repositorioDeteccionesSql: RepositorioDetecciones = {
       .input('conf', sql.Float, n.confianza)
       .input('fuente', sql.VarChar(255), n.fuente)
       .input('camara', sql.Int, n.camaraId)
+      .input('movimiento', sql.VarChar(10), n.tipoMovimiento)
       .query(`
         INSERT INTO DeteccionVehiculo (tracking_id, placa_reconocida, ruta_imagen_ingreso, confianza_deteccion, fuente,
-                                       camara_id, estado_procesamiento, estado_validacion, fecha_hora_ingreso)
+                                       camara_id, tipo_movimiento, estado_procesamiento, estado_validacion, fecha_hora_ingreso)
         OUTPUT INSERTED.id, INSERTED.fecha_hora_ingreso
-        VALUES (@tid, @pista, @ruta, @conf, @fuente, @camara, 'pendiente_ocr', 'pendiente_revision', GETDATE())`);
+        VALUES (@tid, @pista, @ruta, @conf, @fuente, @camara, @movimiento, 'pendiente_ocr', 'pendiente_revision', GETDATE())`);
     return r.recordset[0];
+  },
+
+  async guardarSalida(id, lectura) {
+    await db().request()
+      .input('id', sql.Int, id)
+      .input('placa', sql.VarChar(20), lectura.placa)
+      .input('confianza', sql.Float, lectura.confianza)
+      .input('ruta', sql.VarChar(255), lectura.rutaPlaca)
+      .query(`UPDATE DeteccionVehiculo SET
+          placa_reconocida = @placa, confianza_ocr = @confianza,
+          ruta_imagen_placa = COALESCE(@ruta, ruta_imagen_placa),
+          fecha_hora_procesamiento = GETDATE(), estado_procesamiento = 'procesado',
+          estado_validacion = 'salida_registrada', decision_automatica = 'salida_registrada',
+          alerta_id = NULL, vehiculo_autorizado_id = NULL, restriccion_acceso = NULL
+        WHERE id = @id AND tipo_movimiento = 'salida'`);
+  },
+
+  async validarSalida(id, lectura) {
+    await db().request()
+      .input('id', sql.Int, id)
+      .input('placa', sql.VarChar(20), lectura.placa)
+      .input('usuario', sql.Int, lectura.usuarioId)
+      .query(`UPDATE DeteccionVehiculo SET
+          placa_validada = @placa, validado_manualmente = 1, usuario_validador_id = @usuario,
+          fecha_validacion = GETDATE(), estado_procesamiento = 'procesado',
+          estado_validacion = 'salida_registrada', decision_automatica = COALESCE(decision_automatica, 'salida_registrada'),
+          alerta_id = NULL, vehiculo_autorizado_id = NULL, restriccion_acceso = NULL
+        WHERE id = @id AND tipo_movimiento = 'salida'`);
+  },
+
+  async crearSalidaManual({ placa, camaraId, usuarioId }) {
+    const r = await db().request()
+      .input('placa', sql.VarChar(20), placa)
+      .input('camara', sql.Int, camaraId)
+      .input('usuario', sql.Int, usuarioId)
+      .query(`INSERT INTO DeteccionVehiculo (
+          placa_reconocida, placa_validada, camara_id, tipo_movimiento, fuente, fecha_hora_ingreso,
+          fecha_hora_procesamiento, estado_procesamiento, estado_validacion, decision_automatica,
+          validado_manualmente, usuario_validador_id, fecha_validacion
+        )
+        OUTPUT INSERTED.id
+        VALUES (@placa, @placa, @camara, 'salida', 'manual', GETDATE(), GETDATE(),
+                'procesado', 'salida_registrada', 'salida_registrada', 1, @usuario, GETDATE())`);
+    return r.recordset[0].id;
   },
 
   guardarMetadatos: (id, metadatos) => guardarMetadatosCaptura(db(), id, metadatos as never),
@@ -133,17 +186,19 @@ export const repositorioDeteccionesSql: RepositorioDetecciones = {
   },
 
   /** Otro paso ya procesado con la misma placa, en la misma cámara y dentro de la ventana. */
-  async pasoProcesadoConPlaca(idExcluido, placa) {
+  async pasoProcesadoConPlaca(idExcluido, placa, camaraId, tipoMovimiento) {
     const r = await db().request()
       .input('id', sql.Int, idExcluido)
       .input('placa', sql.VarChar(20), placa)
+      .input('camara', sql.Int, camaraId)
+      .input('movimiento', sql.VarChar(10), tipoMovimiento)
       .input('ventana', sql.Int, VENTANA_MISMO_PASO_S * 1000)
       .query(`
-        DECLARE @camara INT = (SELECT camara_id FROM DeteccionVehiculo WHERE id = @id);
         SELECT TOP 1 id FROM DeteccionVehiculo
         WHERE id <> @id AND estado_procesamiento = 'procesado'
           AND REPLACE(REPLACE(COALESCE(placa_reconocida, ''), '-', ''), ' ', '') = @placa
-          AND (@camara IS NULL OR camara_id IS NULL OR camara_id = @camara)
+          AND ((camara_id = @camara) OR (camara_id IS NULL AND @camara IS NULL))
+          AND tipo_movimiento = @movimiento
           AND fecha_hora_ingreso > DATEADD(MILLISECOND, -@ventana, GETDATE())
         ORDER BY fecha_hora_ingreso DESC`);
     return r.recordset[0]?.id ?? null;

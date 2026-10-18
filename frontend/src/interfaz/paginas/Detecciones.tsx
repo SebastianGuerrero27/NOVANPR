@@ -5,7 +5,7 @@ import api, { mensajeError } from '../../infraestructura/api';
 import { useEvento, useReconexion } from '../../aplicacion/tiempoReal';
 import { useConsulta, useRetardado } from '../../aplicacion/hooks';
 import type { Camara, Deteccion, EstadoValidacion, Pagina } from '../../dominio/tipos';
-import { ESTADOS, fecha, hora, limiteDia, nombreDescarga, porcentaje } from '../../dominio/formato';
+import { colorConfianza, ESTADOS, fecha, hora, limiteDia, nombreDescarga, porcentaje } from '../../dominio/formato';
 import { descargarBlob } from '../../infraestructura/descargas';
 import { normalizarPlaca } from '../../dominio/validacion';
 import { Aviso, FilasEsqueleto, InsigniaEstado, Paginacion, Placa, Tarjeta, Vacio } from '../componentes/ui';
@@ -21,7 +21,7 @@ const MarcaEstado: React.FC<{ d: Deteccion }> = ({ d }) =>
   d.estado_validacion === 'autorizado' ? <span className="marca-estado ok">OK</span>
     : d.estado_validacion === 'alerta' ? <span className="marca-estado alerta">ALERTA</span> : null;
 
-const ESTADOS_FILTRO: (EstadoValidacion | '')[] = ['', 'autorizado', 'pendiente_revision', 'no_reconocido', 'alerta'];
+const ESTADOS_FILTRO: (EstadoValidacion | '')[] = ['', 'autorizado', 'pendiente_revision', 'no_reconocido', 'alerta', 'salida_registrada'];
 
 const Detecciones: React.FC = () => {
   const [params, setParams] = useSearchParams();
@@ -170,15 +170,15 @@ const Detecciones: React.FC = () => {
                   <tr key={d.id} className={`clic${d.estado_validacion === 'autorizado' ? ' fila-autorizado' : d.estado_validacion === 'alerta' ? ' fila-alerta' : ''}`} onClick={() => navigate(`/detecciones/${d.id}`)}>
                     <td onClick={e => { e.stopPropagation(); if (d.imagen_placa || d.imagen_vehiculo) setZoom(d); }} className="miniatura-zoom" title="Ampliar evidencia">
                       <ImagenEvidencia ruta={d.imagen_placa || d.imagen_vehiculo} alt="" alto={40} ajuste="contain" fondoOscuro /></td>
-                    <td className="nowrap"><Placa valor={d.placa} /> <MarcaEstado d={d} /></td>
+                    <td className="nowrap"><Placa valor={d.placa} /> <MarcaEstado d={d} />{d.tipo_movimiento === 'salida' && <span className="marca-estado salida">SALIDA</span>}</td>
                     <td className="nowrap"><strong style={{ color: 'var(--text)', fontWeight: 600 }}>{hora(d.fecha_hora_ingreso)}</strong><span className="secundario">{fecha(d.fecha_hora_ingreso)}</span></td>
                     <td><InsigniaEstado estado={d.estado_validacion} procesando={d.estado_procesamiento === 'pendiente_ocr'} /></td>
-                    <td>{d.camara ? <>{d.camara.nombre}<span className="secundario">{d.camara.ubicacion}</span></> : <span className="texto-secundario">{d.fuente === 'manual' ? 'Registro manual' : '—'}</span>}</td>
+                    <td>{d.camara ? <>{d.camara.nombre}<span className="secundario">{d.tipo_movimiento === 'salida' ? 'Salida' : 'Ingreso'} · {d.camara.ubicacion}</span></> : <span className="texto-secundario">{d.fuente === 'manual' ? 'Registro manual' : d.tipo_movimiento === 'salida' ? 'Salida' : '—'}</span>}</td>
                     <td className="ocultar-movil" style={{ maxWidth: 240 }}>
                       <span className="truncar" style={{ display: 'block' }}>{d.alerta ? <b style={{ color: 'var(--alerta)' }}>{d.alerta.motivo}</b> : d.autorizado?.propietario ?? describirVehiculo(d)}</span>
                       {d.autorizado?.departamento && <span className="secundario">{d.autorizado.departamento}</span>}
                     </td>
-                    <td className="num ocultar-movil">{porcentaje(d.confianza_ocr)}</td>
+                    <td className="num ocultar-movil"><span style={{ color: colorConfianza(d.confianza_ocr), fontWeight: 700 }}>{porcentaje(d.confianza_ocr)}</span></td>
                     <td onClick={e => e.stopPropagation()}>
                       {d.validado_manualmente
                         ? <span className="texto-secundario" title={d.validacion?.usuario?.email}>{d.validacion?.usuario?.nombre ?? 'Personal'}</span>

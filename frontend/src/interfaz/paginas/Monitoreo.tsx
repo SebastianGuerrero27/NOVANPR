@@ -6,7 +6,7 @@ import { useAuth } from '../../aplicacion/AuthContext';
 import { useEvento, useReconexion } from '../../aplicacion/tiempoReal';
 import { useConsulta, usePaginaVisible } from '../../aplicacion/hooks';
 import type { Camara, Deteccion, EstadoAnpr } from '../../dominio/tipos';
-import { codecVideo, ESTADOS, fecha, fechaHora, hora, numero, relativo } from '../../dominio/formato';
+import { codecVideo, colorConfianza, ESTADOS, fecha, fechaHora, hora, numero, relativo } from '../../dominio/formato';
 import { formatearPlaca, normalizarPlaca } from '../../dominio/validacion';
 import { Aviso, Cargando, InsigniaEstado, Modal, Placa, Segmentado, Tarjeta, Vacio } from '../componentes/ui';
 import { filtrarEscrito } from '../componentes/campos';
@@ -17,6 +17,7 @@ import { alCambiarSonido, fijarSonido, sonarAutorizado, sonarDenegado, sonidoAct
 import { PERFILES, PerfilVideo, VisorVideo } from '../componentes/video';
 import { VisorEnVivo } from '../componentes/envivo';
 import { useNotificar } from '../componentes/Notificaciones';
+import { useNvrDock } from '../componentes/NvrDock';
 
 const MAX_FEED = 30;
 const CLAVE_PERFIL = 'anpr_perfil_video';
@@ -63,8 +64,8 @@ const BuscarPlacaModal: React.FC<{ onCerrar: () => void }> = ({ onCerrar }) => {
           {resultado.estado === 'autorizado' && <Aviso tipo="exito"><b>{formatearPlaca(resultado.placa)} está autorizada</b> · {resultado.autorizado.propietario}{resultado.autorizado.departamento ? ` · ${resultado.autorizado.departamento}` : ''}</Aviso>}
           {resultado.estado === 'no_registrado' && <Aviso tipo="advertencia"><b>{formatearPlaca(resultado.placa)}</b> no consta en la lista blanca ni en la lista negra.</Aviso>}
           <div>
-            <h4 style={{ fontSize: 13, marginBottom: 8 }}>Últimos ingresos</h4>
-            {resultado.ultimos_ingresos.length === 0 ? <p className="texto-secundario">Sin ingresos registrados con esta placa.</p> : (
+            <h4 style={{ fontSize: 13, marginBottom: 8 }}>Últimos movimientos</h4>
+            {resultado.ultimos_ingresos.length === 0 ?             <p className="texto-secundario">Sin movimientos registrados con esta placa.</p> : (
               <div className="tabla-contenedor"><table className="tabla"><thead><tr><th>Fecha</th><th>Estado</th><th>Cámara</th></tr></thead><tbody>
                 {resultado.ultimos_ingresos.map((d: Deteccion) => (
                   <tr key={d.id} className="clic" onClick={() => { onCerrar(); navigate(`/detecciones/${d.id}`); }}>
@@ -82,6 +83,7 @@ const BuscarPlacaModal: React.FC<{ onCerrar: () => void }> = ({ onCerrar }) => {
 
 const Monitoreo: React.FC = () => {
   const { user, puede } = useAuth();
+  const { abierto: nvrAbierto, alternar: alternarNvr } = useNvrDock();
   const navigate = useNavigate();
   const notificar = useNotificar();
   const visible = usePaginaVisible();
@@ -198,6 +200,9 @@ const Monitoreo: React.FC = () => {
               <div className="fila" style={{ marginLeft: 'auto', gap: 8 }}>
                 {hayCamaras && (
                   <>
+                    <button className="btn btn-secondary btn-sm" onClick={alternarNvr}>
+                      {nvrAbierto ? 'Ocultar NVR' : 'Cuadrícula NVR'}
+                    </button>
                     <Segmentado valor={modo} onCambiar={cambiarModo} opciones={[
                       { valor: 'webrtc', etiqueta: 'Tiempo real' },
                       { valor: 'compat', etiqueta: 'Compatibilidad' },
@@ -224,6 +229,12 @@ const Monitoreo: React.FC = () => {
                   accion={puede('camaras:gestionar')
                     ? <button className="btn btn-navy btn-sm" onClick={() => navigate('/camaras')}><Plus size={14} /> Registrar cámara</button>
                     : undefined} />
+              ) : nvrAbierto ? (
+                <div className="nvr-monitor-resumen">
+                  <Camera size={19} />
+                  <span>La cuadrícula NVR está activa y permanecerá reproduciéndose al cambiar de módulo.</span>
+                  <button className="btn btn-secondary btn-sm" onClick={alternarNvr}>Contraer cuadrícula</button>
+                </div>
               ) : modo === 'compat' ? <VisorVideo perfil={perfil} pausado={pausado} claveReinicio={reinicioVideo} />
                   : !motor && estadoMotor.cargando ? <div style={{ aspectRatio: '16 / 9', background: '#050b16', borderRadius: 10 }} />
                     : <VisorEnVivo camaraId={motor?.camara_activa?.id ?? null} vista={Boolean(camaraActiva?.rtsp_url_vista)} pausado={pausado} claveReinicio={reinicioVideo}
@@ -259,10 +270,10 @@ const Monitoreo: React.FC = () => {
           </Tarjeta>
 
           {/* Último paso: tamaño destacado para la garita */}
-          <Tarjeta titulo="Último paso registrado" acciones={
+          <Tarjeta titulo="Último movimiento registrado" acciones={
             <div className="fila">
               <button className="btn btn-secondary btn-sm" onClick={() => setBuscar(true)}><Search size={14} /> Consultar placa</button>
-              <button className="btn btn-secondary btn-sm" onClick={() => setManual(true)}><ClipboardPlus size={14} /> Ingreso manual</button>
+              <button className="btn btn-secondary btn-sm" onClick={() => setManual(true)}><ClipboardPlus size={14} /> Movimiento manual</button>
               <button className={`btn btn-sm ${sonido ? 'btn-secondary' : 'btn-ghost'}`} title={sonido ? 'Silenciar alertas' : 'Activar sonido de alertas'}
                 onClick={() => fijarSonido(!sonido)}>
                 {sonido ? <Bell size={14} /> : <BellOff size={14} />} {sonido ? 'Sonido activo' : 'Silenciado'}
@@ -277,7 +288,7 @@ const Monitoreo: React.FC = () => {
                 <div className="pila" style={{ gap: 10, minWidth: 220 }}>
                   <Placa valor={ultima.placa} grande />
                   <InsigniaEstado estado={ultima.estado_validacion} />
-                  <span className="texto-secundario">{fechaHora(ultima.fecha_hora_ingreso)} · {relativo(ultima.fecha_hora_ingreso)}</span>
+                  <span className="texto-secundario">{ultima.tipo_movimiento === 'salida' ? 'Salida' : 'Ingreso'} · {fechaHora(ultima.fecha_hora_ingreso)} · {relativo(ultima.fecha_hora_ingreso)}</span>
                   <span style={{ fontSize: 13 }}>
                     {ultima.alerta ? <b style={{ color: 'var(--alerta)' }}>{ultima.alerta.motivo}</b>
                       : ultima.autorizado ? <>{ultima.autorizado.propietario}{ultima.autorizado.departamento ? ` · ${ultima.autorizado.departamento}` : ''}</>
@@ -342,7 +353,7 @@ const TarjetaImagen: React.FC<{ d: Deteccion; ruta: string | null; titulo: strin
 };
 
 /**
- * Ingresos recientes (como la tabla de la versión anterior): filas verdes para autorizados,
+ * Movimientos recientes: filas verdes para autorizados,
  * rojas para alertas, con la marca OK / ALERTA junto a la placa. Usa los mismos datos del
  * feed en tiempo real, sin consultas adicionales.
  */
@@ -350,7 +361,7 @@ const TablaIngresosRecientes: React.FC<{ items: Deteccion[]; onValidar: (d: Dete
   const navigate = useNavigate();
   const [zoom, setZoom] = useState<Deteccion | null>(null);
   return (
-    <Tarjeta titulo="Ingresos recientes" subtitulo="Últimos pasos procesados · verde: autorizado · rojo: alerta" sinPadding>
+    <Tarjeta titulo="Movimientos recientes" subtitulo="Últimos pasos procesados · verde: autorizado · rojo: alerta" sinPadding>
       {items.length === 0 ? <Vacio titulo="Sin ingresos procesados" texto="Los ingresos aparecerán aquí en cuanto el motor termine de leer cada placa." /> : (
         <div className="tabla-contenedor">
           <table className="tabla">
@@ -371,9 +382,9 @@ const TablaIngresosRecientes: React.FC<{ items: Deteccion[]; onValidar: (d: Dete
                       <span className="truncar" style={{ display: 'block', color: aut ? 'var(--autorizado)' : ale ? 'var(--alerta)' : undefined, fontWeight: aut || ale ? 600 : undefined }}>
                         {aut ? `✓ ${d.autorizado?.propietario ?? 'Lista blanca'}` : ale ? `⚠ ${d.alerta?.motivo ?? 'Lista negra'}` : ESTADOS[d.estado_validacion].etiqueta}
                       </span>
-                      <span className="secundario truncar">{[d.tipo_vehiculo, d.camara?.nombre].filter(Boolean).join(' · ') || '—'}</span>
+                      <span className="secundario truncar">{[d.tipo_movimiento === 'salida' ? 'Salida' : 'Ingreso', d.camara?.nombre].filter(Boolean).join(' · ')}</span>
                     </td>
-                    <td className="num ocultar-movil">{d.confianza_ocr !== null ? `${(d.confianza_ocr * 100).toFixed(1)} %` : '—'}</td>
+                    <td className="num ocultar-movil"><span style={{ color: colorConfianza(d.confianza_ocr), fontWeight: 700 }}>{d.confianza_ocr !== null ? `${(d.confianza_ocr * 100).toFixed(1)} %` : '—'}</span></td>
                     <td onClick={e => { e.stopPropagation(); setZoom(d); }} className="miniatura-zoom" title="Ampliar evidencia" style={{ width: 86 }}>
                       <ImagenEvidencia ruta={d.imagen_placa || d.imagen_vehiculo} alt="" alto={36} ajuste="contain" fondoOscuro />
                     </td>

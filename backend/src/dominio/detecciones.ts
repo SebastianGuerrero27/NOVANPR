@@ -36,10 +36,11 @@ export function normalizarFuente(valor: unknown, omision = 'rtsp'): string {
   return /^[a-z_]{1,20}$/.test(v) ? v : omision;
 }
 
-export const ESTADOS_VALIDACION: readonly EstadoValidacion[] = ['autorizado', 'alerta', 'no_reconocido', 'pendiente_revision'];
+export const ESTADOS_VALIDACION: readonly EstadoValidacion[] = ['autorizado', 'alerta', 'no_reconocido', 'pendiente_revision', 'salida_registrada'];
 
 export const ETIQUETA_ESTADO: Record<EstadoValidacion, string> = {
   autorizado: 'Autorizado', alerta: 'Alerta', no_reconocido: 'No registrado', pendiente_revision: 'Pendiente de revisión',
+  salida_registrada: 'Salida registrada',
 };
 
 // ─── Lectura del motor ───────────────────────────────────────────────────────
@@ -286,6 +287,7 @@ export function leerLimite(valor: unknown): number {
 export interface FilaExportacion {
   id: number;
   fecha_hora_ingreso: Date | string;
+  tipo_movimiento?: 'ingreso' | 'salida';
   placa_validada: string | null;
   placa_reconocida: string | null;
   placa_ocr_original: string | null;
@@ -307,7 +309,7 @@ export interface FilaExportacion {
   confianza_ocr: number | null;
 }
 
-const CABECERA_CSV = ['ID', 'Fecha y hora', 'Placa', 'Lectura OCR', 'Estado', 'Validado por operador', 'Validador', 'Cámara', 'Ubicación',
+const CABECERA_CSV = ['ID', 'Fecha y hora', 'Movimiento', 'Placa', 'Lectura OCR', 'Estado', 'Validado por operador', 'Validador', 'Cámara', 'Ubicación',
   'Tipo de vehículo', 'Marca observada', 'Color observado', 'Verificación del vehículo', 'Propietario (padrón)', 'Departamento',
   'Motivo de alerta', 'Nivel de alerta', 'Confianza detección (%)', 'Confianza OCR (%)'];
 
@@ -321,7 +323,7 @@ const porcentaje = (v: number | null) => (typeof v === 'number' ? (v * 100).toFi
  */
 export function csvDetecciones(filas: FilaExportacion[]): string {
   const lineas = filas.map(d => [
-    d.id, fechaHoraLocal(d.fecha_hora_ingreso),
+    d.id, fechaHoraLocal(d.fecha_hora_ingreso), d.tipo_movimiento === 'salida' ? 'Salida' : 'Ingreso',
     d.placa_validada || d.placa_reconocida || '', d.placa_ocr_original || d.placa_reconocida || '',
     ETIQUETA_ESTADO[d.estado_validacion as EstadoValidacion] ?? d.estado_validacion, d.validado_manualmente ? 'Sí' : 'No', d.validador_email || '',
     d.camara_nombre || '', d.camara_ubicacion || '', d.tipo_vehiculo || d.vehiculo_tipo || '', d.vehiculo_marca || '',

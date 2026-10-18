@@ -119,7 +119,7 @@ describe('Cámaras · validación del formulario', () => {
 
   it('acepta datos válidos: textos recortados e IP opcional', () => {
     expect(leerCamara({ ...valida, nombre: '  Garita   principal ' })).toEqual({
-      ok: true, valor: { nombre: 'Garita principal', ubicacion: valida.ubicacion, rtsp: valida.rtsp_url, rtspVista: null, ip: null },
+      ok: true, valor: { nombre: 'Garita principal', ubicacion: valida.ubicacion, rtsp: valida.rtsp_url, rtspVista: null, ip: null, direccion: 'ingreso' },
     });
     expect(leerCamara({ ...valida, ip: ' 192.168.1.64 ' })).toMatchObject({ ok: true, valor: { ip: '192.168.1.64' } });
     expect(leerCamara(null)).toEqual({ ok: false, error: 'El campo «Nombre» es obligatorio.' });
@@ -204,7 +204,7 @@ describe('Cámaras · flujo de vista', () => {
   });
 
   it('la auditoría registra el cambio de la URL de vista y la API la entrega enmascarada', () => {
-    const datos = { nombre: 'Garita', ubicacion: 'Acceso', rtsp: 'rtsp://a', rtspVista: 'rtsp://b', ip: '10.0.0.5' };
+    const datos = { nombre: 'Garita', ubicacion: 'Acceso', rtsp: 'rtsp://a', rtspVista: 'rtsp://b', ip: '10.0.0.5', direccion: 'ingreso' as const };
     expect(cambiosCamara({ nombre: 'Garita', ubicacion: 'Acceso', rtsp_url: 'rtsp://a', rtsp_url_vista: null, ip: '10.0.0.5' }, datos))
       .toEqual(['URL de vista']);
     expect(presentarCamara({
@@ -277,7 +277,7 @@ describe('Cámaras · presentación y alcance del ticket', () => {
     })).toEqual({
       id: 1, nombre: 'Garita', ip: '10.0.0.5', ubicacion: 'Acceso', rtsp_url: `rtsp://admin:${MASCARA}@10.0.0.5/101`,
       rtsp_url_vista: null, tiene_credenciales: true, activa: true, estado: 'SIN_VERIFICAR', ultimo_ping: null, tiempo_respuesta_ms: null,
-      mensaje_ping: null, created_at: creada, detecciones: 2, roi: [[0, 0], [1, 0], [1, 1]], exclusiones: [],
+      mensaje_ping: null, created_at: creada, detecciones: 2, roi: [[0, 0], [1, 0], [1, 1]], exclusiones: [], direccion: 'ingreso',
     });
   });
 

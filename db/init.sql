@@ -155,6 +155,7 @@ BEGIN
         rtsp_url             VARCHAR(512)  NOT NULL,   -- contraseña cifrada (AES-256-GCM)
         rtsp_url_vista       VARCHAR(512)  NULL,       -- flujo secundario para la vista en vivo
         ubicacion            NVARCHAR(150) NOT NULL,
+        direccion            VARCHAR(10)   NOT NULL CONSTRAINT DF_Camaras_direccion DEFAULT ('ingreso'),
         activa               BIT           NOT NULL DEFAULT 1,
         estado               VARCHAR(20)   NULL DEFAULT 'SIN_VERIFICAR',   -- EN_LINEA | SIN_CONEXION | SIN_VERIFICAR
         ultimo_ping          DATETIME      NULL,
@@ -164,7 +165,8 @@ BEGIN
         exclusiones          NVARCHAR(MAX) NULL,   -- zonas de exclusión: JSON [[[x,y],...],...] normalizado 0–1
         registrado_por       INT           NULL REFERENCES Usuarios(id),
         created_at           DATETIME      NOT NULL DEFAULT GETDATE(),
-        fecha_actualizacion  DATETIME2     NULL
+        fecha_actualizacion  DATETIME2     NULL,
+        CONSTRAINT CK_Camaras_direccion CHECK (direccion IN ('ingreso', 'salida'))
     );
 END
 GO
@@ -224,6 +226,7 @@ BEGIN
         id                          INT IDENTITY(1,1) PRIMARY KEY,
         tracking_id                 INT           NULL DEFAULT -1,
         camara_id                   INT           NULL REFERENCES Camaras(id),
+        tipo_movimiento             VARCHAR(10)   NOT NULL CONSTRAINT DF_DeteccionVehiculo_tipo_movimiento DEFAULT ('ingreso'),
         fuente                      VARCHAR(255)  NULL DEFAULT 'rtsp',
         -- Fase 1: captura
         fecha_hora_ingreso          DATETIME      NOT NULL DEFAULT GETDATE(),
@@ -268,7 +271,8 @@ BEGIN
         verificacion_detalle        VARCHAR(255)  NULL,
         -- Validez de la lectura (evidencias independientes del motor, ver verificacion_placa.py)
         lectura_valida              BIT           NULL,
-        evidencia_lectura           NVARCHAR(1500) NULL
+        evidencia_lectura           NVARCHAR(1500) NULL,
+        CONSTRAINT CK_DeteccionVehiculo_tipo_movimiento CHECK (tipo_movimiento IN ('ingreso', 'salida'))
     );
     CREATE NONCLUSTERED INDEX IX_Deteccion_FechaHora ON DeteccionVehiculo (fecha_hora_ingreso DESC);
     CREATE NONCLUSTERED INDEX IX_Deteccion_Placa ON DeteccionVehiculo (placa_reconocida);

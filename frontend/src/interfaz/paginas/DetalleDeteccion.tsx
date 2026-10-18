@@ -6,7 +6,7 @@ import { useAuth } from '../../aplicacion/AuthContext';
 import { useEvento, useReconexion } from '../../aplicacion/tiempoReal';
 import { useConsulta } from '../../aplicacion/hooks';
 import type { Deteccion, DeteccionDetalle, EvidenciaLectura } from '../../dominio/tipos';
-import { ESTADOS, fechaHora, NIVELES_ALERTA, numero, porcentaje, relativo } from '../../dominio/formato';
+import { colorConfianza, ESTADOS, fechaHora, NIVELES_ALERTA, numero, porcentaje, relativo } from '../../dominio/formato';
 import { formatearPlaca, validarTexto } from '../../dominio/validacion';
 import { REGLA_MOTIVO_CONSULTA } from '../../dominio/reglas';
 import { Aviso, Cargando, InsigniaEstado, Modal, Tarjeta, Vacio } from '../componentes/ui';
@@ -189,7 +189,7 @@ const DetalleDeteccion: React.FC = () => {
               <dt>Segunda lectura</dt><dd>{la.verificador ? <span className="mono">{la.verificador}</span> : '—'}</dd>
               <dt>Decisión automática</dt><dd>{la.decision ? DECISION[la.decision] ?? la.decision : '—'}</dd>
               <dt>Resultado final</dt><dd><InsigniaEstado estado={d.estado_validacion} procesando={procesando} />{corregida && <span className="texto-secundario"> · lectura corregida por el personal</span>}</dd>
-              <dt>Confianza de detección</dt><dd>{porcentaje(d.confianza_deteccion)}</dd>
+              <dt>Confianza de detección</dt><dd><span style={{ color: colorConfianza(d.confianza_deteccion), fontWeight: 700 }}>{porcentaje(d.confianza_deteccion)}</span></dd>
               <dt>Latencia de procesamiento</dt><dd>{la.latencia_ms !== null ? `${numero(la.latencia_ms)} ms` : '—'}</dd>
               <dt>Modelos</dt><dd>{[la.modelo_detector, la.modelo_ocr].filter(Boolean).join(' · ') || '—'}</dd>
               <dt>Condiciones de captura</dt><dd>{[
@@ -226,9 +226,8 @@ const DetalleDeteccion: React.FC = () => {
               <PlacaFoto d={d} grande alto={90} onClick={() => setZoom(true)} />
               <InsigniaEstado estado={d.estado_validacion} procesando={procesando} />
               <dl className="definiciones" style={{ width: '100%' }}>
-                <dt>Ingreso</dt><dd>{fechaHora(d.fecha_hora_ingreso)} <span className="texto-secundario">({relativo(d.fecha_hora_ingreso)})</span></dd>
+                <dt>{d.tipo_movimiento === 'salida' ? 'Salida' : 'Ingreso'}</dt><dd>{fechaHora(d.fecha_hora_ingreso)} <span className="texto-secundario">({relativo(d.fecha_hora_ingreso)})</span></dd>
                 <dt>Acceso</dt><dd>{d.camara ? `${d.camara.nombre} · ${d.camara.ubicacion}` : d.fuente === 'manual' ? 'Registro manual' : '—'}</dd>
-                <dt>Tipo de vehículo</dt><dd>{d.tipo_vehiculo ?? '—'}</dd>
                 <dt>Vehículo observado</dt><dd>{describirVehiculo(d)}</dd>
                 {d.autorizado && <><dt>Titular (padrón)</dt><dd>{d.autorizado.propietario}{d.autorizado.departamento && <span className="secundario texto-secundario"> · {d.autorizado.departamento}</span>}</dd></>}
                 {d.restriccion_acceso && <><dt>Restricción del permiso</dt><dd><span className="insignia no_reconocido"><Clock size={12} /> {d.restriccion_acceso === 'fuera_horario' ? 'Fuera de horario' : d.restriccion_acceso === 'no_iniciada' ? 'Aún no vigente' : 'Vencido'}</span></dd></>}
@@ -253,11 +252,11 @@ const DetalleDeteccion: React.FC = () => {
       {validar && <ValidarModal d={d} onCerrar={() => setValidar(false)} onValidada={() => recargar(true)} />}
       {excepcion && <ValidarModal d={d} excepcion onCerrar={() => setExcepcion(false)} onValidada={() => recargar(true)} />}
       {solicitar && d.placa && (
-        <FormularioSolicitud inicial={{ placa: d.placa, marca: d.vehiculo.marca, modelo: d.vehiculo.modelo, color: d.vehiculo.color, tipo_vehiculo: d.tipo_vehiculo, deteccion_id: d.id }}
+        <FormularioSolicitud inicial={{ placa: d.placa, marca: d.vehiculo.marca, modelo: d.vehiculo.modelo, color: d.vehiculo.color, deteccion_id: d.id }}
           onCerrar={() => setSolicitar(false)} onEnviada={s => { setSolicitar(false); notificar('exito', `Solicitud #${s.id} enviada`, 'El gestor de permisos fue notificado.'); }} />
       )}
       {propietario && <ConsultaPropietario d={d} onCerrar={() => setPropietario(false)} />}
-      {lista && d.placa && <FormularioLista tipo={lista} inicial={{ placa: d.placa, marca: d.vehiculo.marca, modelo: d.vehiculo.modelo, color: d.vehiculo.color, tipo_vehiculo: d.tipo_vehiculo }}
+      {lista && d.placa && <FormularioLista tipo={lista} inicial={{ placa: d.placa, marca: d.vehiculo.marca, modelo: d.vehiculo.modelo, color: d.vehiculo.color }}
         onCerrar={() => setLista(null)} onGuardado={() => { setLista(null); notificar('exito', lista === 'autorizados' ? 'Vehículo autorizado' : 'Alerta registrada', 'Aplica a los próximos ingresos de la placa.'); }} />}
       {eliminar && <EliminarUno d={d} onCerrar={() => setEliminar(false)} onEliminada={() => navigate('/detecciones', { replace: true })} />}
       {zoom && <VisorZoom d={d} onCerrar={() => setZoom(false)} />}

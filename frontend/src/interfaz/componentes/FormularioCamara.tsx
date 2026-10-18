@@ -22,12 +22,12 @@ type Perfil = 'hikvision' | 'dahua' | 'generica' | 'manual';
 
 const PERFILES: Record<Perfil, { etiqueta: string; puerto: number; ruta: string; credenciales: 'si' | 'no' | 'opcional'; ayuda: string }> = {
   hikvision: {
-    etiqueta: 'Cámara Hikvision', puerto: 554, ruta: '/Streaming/Channels/101', credenciales: 'si',
-    ayuda: 'Canal 101 = flujo principal (lo analiza el motor); 102 = flujo secundario (vista en vivo). Usuario habitual: admin. En la cámara use H.264 o H.265 sin «+» (los códecs inteligentes H.265+/H.264+ espacian los cuadros clave y retrasan la imagen tras una reconexión).',
+    etiqueta: 'Cámara Hikvision', puerto: 554, ruta: '/Streaming/Channels/101', credenciales: 'opcional',
+    ayuda: 'Canal 101 = flujo principal; 102 = flujo secundario para vista en vivo. Las credenciales son opcionales si el RTSP de la cámara permite acceso sin autenticación. En la cámara use H.264 o H.265 sin «+».',
   },
   dahua: {
-    etiqueta: 'Cámara Dahua / Imou', puerto: 554, ruta: '/cam/realmonitor?channel=1&subtype=0', credenciales: 'si',
-    ayuda: 'subtype=0 es el flujo principal; subtype=1 el secundario.',
+    etiqueta: 'Cámara Dahua / Imou', puerto: 554, ruta: '/cam/realmonitor?channel=1&subtype=0', credenciales: 'opcional',
+    ayuda: 'subtype=0 es el flujo principal; subtype=1 el secundario. Las credenciales son opcionales si la cámara acepta RTSP anónimo.',
   },
   generica: {
     etiqueta: 'Cámara IP genérica (ONVIF / RTSP)', puerto: 554, ruta: '/', credenciales: 'opcional',
@@ -169,6 +169,7 @@ export const FormularioCamara: React.FC<{ camara?: Camara; onCerrar: () => void;
     || previaVista.usuario !== previa.usuario || previaVista.ruta !== rutaSecundaria(previa.ruta)));
   const [nombre, setNombre] = useState(camara?.nombre ?? '');
   const [ubicacion, setUbicacion] = useState(camara?.ubicacion ?? '');
+  const [direccion, setDireccion] = useState<Camara['direccion']>(camara?.direccion ?? 'ingreso');
   const [perfil, setPerfil] = useState<Perfil>(previa ? (vistaPropia ? 'manual' : detectarPerfil(previa.ruta)) : 'hikvision');
   const [host, setHost] = useState(previa?.host ?? '');
   const [puerto, setPuerto] = useState(String(previa?.puerto ?? PERFILES.hikvision.puerto));
@@ -226,16 +227,15 @@ export const FormularioCamara: React.FC<{ camara?: Camara; onCerrar: () => void;
   }, [perfil, urlManual, urlVistaManual, host, puerto, ruta, usuario, clave, claveGuardada, p.puerto, usarVista, secundaria]);
 
   // Mismas reglas que la API: nombre y ubicación alfanuméricos, IP o host válido, puerto 1–65535 y
-  // enlace rtsp:// de hasta 255 caracteres. Hikvision y Dahua exigen usuario y contraseña (*).
+  // enlace rtsp:// de hasta 255 caracteres. Las credenciales son opcionales en todos los perfiles.
   const guiado = perfil !== 'manual';
-  const exigeCredenciales = guiado && p.credenciales === 'si';
+  const exigeCredenciales = false;
   const errorHost = guiado ? errorIp(host) : null;
   const errorUrl = guiado ? null : errorUrlRtsp(urlManual);
   const errorEnlace = guiado && url ? errorFormatoRtsp(url) : null;
   const errorVista = guiado ? (urlVista ? errorFormatoRtsp(urlVista) : null) : (urlVistaManual.trim() ? errorUrlRtsp(urlVistaManual) : null);
   const reescribirClave = Boolean(camara?.tiene_credenciales && otroEquipo && usuario.trim() && !clave);
-  const errorClave = reescribirClave ? 'Cambió la IP o el puerto: escriba de nuevo la contraseña.'
-    : exigeCredenciales && !claveGuardada && usuario.trim() && !clave ? 'La contraseña es obligatoria para este equipo.' : null;
+  const errorClave = reescribirClave ? 'Cambió la IP o el puerto: escriba de nuevo la contraseña.' : null;
   const hostValido = guiado ? !errorHost : !errorUrl;
   const valido = sinErrores({
     nombre: errorDe(validarTexto(nombre, REGLAS_CAMARA.nombre)),
@@ -271,7 +271,7 @@ export const FormularioCamara: React.FC<{ camara?: Camara; onCerrar: () => void;
   const guardar = async () => {
     setEnviando(true);
     setError(null);
-    const cuerpo = { nombre, ubicacion, rtsp_url: url, rtsp_url_vista: urlVista || null, ip: perfil === 'manual' ? '' : host.trim() };
+    const cuerpo = { nombre, ubicacion, direccion, rtsp_url: url, rtsp_url_vista: urlVista || null, ip: perfil === 'manual' ? '' : host.trim() };
     try {
       const r = camara ? await api.put(`/camaras/${camara.id}`, cuerpo) : await api.post('/camaras', cuerpo);
       onGuardada(r.data.camera);
@@ -295,6 +295,13 @@ export const FormularioCamara: React.FC<{ camara?: Camara; onCerrar: () => void;
           placeholder="Ej.: Garita principal - entrada" autoFocus />
         <CampoTexto id="c-ubic" etiqueta="Ubicación*" valor={ubicacion} onCambiar={setUbicacion} regla={REGLAS_CAMARA.ubicacion}
           placeholder="Ej.: Acceso vehicular norte" />
+        <div className="campo"><label htmlFor="c-direccion">Tipo de paso*</label>
+          <select id="c-direccion" className="select" value={direccion} onChange={e => setDireccion(e.target.value as Camara['direccion'])}>
+            <option value="ingreso">Ingreso</option>
+            <option value="salida">Salida</option>
+          </select>
+          <span className="ayuda">Las salidas se registran como eventos independientes y no se bloquean por permisos de ingreso.</span>
+        </div>
 
         <div className="campo completo"><label htmlFor="c-perfil">Tipo de equipo</label>
           <select id="c-perfil" className="select" value={perfil} onChange={e => cambiarPerfil(e.target.value as Perfil)}>

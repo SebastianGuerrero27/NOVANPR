@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Calendar, Camera, Car, Move, RotateCcw, ScanLine, User, X, ZoomIn, ZoomOut } from 'lucide-react';
 import type { Deteccion } from '../../dominio/tipos';
-import { fechaHora, porcentaje } from '../../dominio/formato';
+import { colorConfianza, fechaHora, porcentaje } from '../../dominio/formato';
 import { urlMedia } from '../../infraestructura/api';
 import { InsigniaEstado, Placa } from './ui';
 
@@ -102,7 +102,7 @@ export const VisorZoom: React.FC<{ d: Deteccion; onCerrar: () => void }> = ({ d,
           <div className="fila" style={{ gap: 12 }}>
             <Placa valor={d.placa} grande />
             <InsigniaEstado estado={d.estado_validacion} procesando={d.estado_procesamiento === 'pendiente_ocr'} />
-            {d.confianza_ocr !== null && <span className="zoom-dato"><ScanLine size={13} /> Confianza OCR <b>{porcentaje(d.confianza_ocr)}</b></span>}
+            {d.confianza_ocr !== null && <span className="zoom-dato"><ScanLine size={13} /> Confianza OCR <b style={{ color: colorConfianza(d.confianza_ocr) }}>{porcentaje(d.confianza_ocr)}</b></span>}
           </div>
           <button className="zoom-cerrar" onClick={onCerrar}><X size={16} /> Cerrar (Esc)</button>
         </header>
@@ -111,8 +111,8 @@ export const VisorZoom: React.FC<{ d: Deteccion; onCerrar: () => void }> = ({ d,
           {d.camara && <span><Camera size={13} /> {d.camara.nombre} · {d.camara.ubicacion}</span>}
           {d.autorizado && <span><User size={13} /> {d.autorizado.propietario}{d.autorizado.departamento ? ` · ${d.autorizado.departamento}` : ''}</span>}
           {d.alerta && <span style={{ color: '#fca5a5' }}>{d.alerta.motivo}</span>}
-          {(d.vehiculo.marca || d.vehiculo.color || d.tipo_vehiculo) && (
-            <span><Car size={13} /> {[d.tipo_vehiculo, [d.vehiculo.marca, d.vehiculo.modelo].filter(Boolean).join(' '), d.vehiculo.color].filter(Boolean).join(' · ')}</span>
+          {(d.vehiculo.marca || d.vehiculo.modelo || d.vehiculo.color) && (
+            <span><Car size={13} /> {[ [d.vehiculo.marca, d.vehiculo.modelo].filter(Boolean).join(' '), d.vehiculo.color ].filter(Boolean).join(' · ')}</span>
           )}
         </div>
         <div className="zoom-paneles">

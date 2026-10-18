@@ -23,7 +23,10 @@ function preparar(opciones: { alerta?: Fila | null; permiso?: Fila | null; exist
     obtener: jest.fn().mockResolvedValue(opciones.existente === undefined ? fila() : opciones.existente),
     mismoPaso: jest.fn().mockResolvedValue(null),
     existeCamara: jest.fn().mockResolvedValue(true),
+    direccionCamara: jest.fn().mockResolvedValue('ingreso'),
     crearIngreso: jest.fn().mockResolvedValue({ id: 15, fecha_hora_ingreso: AHORA }),
+    guardarSalida: jest.fn().mockResolvedValue(undefined),
+    validarSalida: jest.fn().mockResolvedValue(undefined),
     guardarMetadatos: jest.fn().mockResolvedValue(undefined),
     guardarVehiculo: jest.fn().mockResolvedValue(undefined),
     registrarLecturaAutomatica: jest.fn().mockResolvedValue(undefined),
@@ -43,6 +46,7 @@ function preparar(opciones: { alerta?: Fila | null; permiso?: Fila | null; exist
     auditoriaDe: jest.fn().mockResolvedValue([]),
     guardarValidacion: jest.fn().mockResolvedValue(undefined),
     crearManual: jest.fn().mockResolvedValue(30),
+    crearSalidaManual: jest.fn().mockResolvedValue(31),
     eliminar: jest.fn().mockResolvedValue(undefined),
     eliminarFiltradas: jest.fn().mockResolvedValue([{ id: 1, ruta_imagen_ingreso: 'a.jpg', ruta_imagen_placa: null }]),
   };
@@ -83,8 +87,8 @@ describe('Detecciones · servicio ANPR', () => {
     const { casos, repositorio, eventos } = preparar();
     const r = await casos.ingreso({ tracking_id: 4, ruta_imagen_ingreso: 'x.jpg', placa: 'pba-12', camara_id: '2', confianza_deteccion: 0.91, metadatos: { luz: 1 } });
     expect(r).toEqual({ nuevo: true, respuesta: { message: 'Ingreso registrado (pendiente de OCR).', ingreso_id: 15, fecha_hora_ingreso: AHORA } });
-    expect(repositorio.mismoPaso).toHaveBeenCalledWith(4, 'PBA12', 2);
-    expect(repositorio.crearIngreso).toHaveBeenCalledWith({ trackingId: 4, pista: 'PBA12', ruta: 'x.jpg', confianza: 0.91, fuente: 'rtsp', camaraId: 2 });
+    expect(repositorio.mismoPaso).toHaveBeenCalledWith(4, 'PBA12', 2, 'ingreso');
+    expect(repositorio.crearIngreso).toHaveBeenCalledWith({ trackingId: 4, pista: 'PBA12', ruta: 'x.jpg', confianza: 0.91, fuente: 'rtsp', camaraId: 2, tipoMovimiento: 'ingreso' });
     expect(repositorio.guardarMetadatos).toHaveBeenCalledWith(15, { luz: 1 });
     expect(eventos.emitir).toHaveBeenCalledWith('deteccion:nueva', expect.objectContaining({ id: 15 }));
   });
@@ -93,8 +97,16 @@ describe('Detecciones · servicio ANPR', () => {
     const { casos, repositorio } = preparar();
     repositorio.existeCamara.mockResolvedValue(false);
     await casos.ingreso({ tracking_id: 7, ruta_imagen_ingreso: 'x.jpg', placa: 'PBA1234', camara_id: 99 });
-    expect(repositorio.mismoPaso).toHaveBeenCalledWith(7, 'PBA1234', null);
-    expect(repositorio.crearIngreso).toHaveBeenCalledWith(expect.objectContaining({ camaraId: null }));
+    expect(repositorio.mismoPaso).toHaveBeenCalledWith(7, 'PBA1234', null, 'ingreso');
+    expect(repositorio.crearIngreso).toHaveBeenCalledWith(expect.objectContaining({ camaraId: null, tipoMovimiento: 'ingreso' }));
+  });
+
+  it('fase 1: conserva como salida la dirección configurada en la cámara', async () => {
+    const { casos, repositorio } = preparar();
+    repositorio.direccionCamara.mockResolvedValue('salida');
+    const r = await casos.ingreso({ tracking_id: 12, ruta_imagen_ingreso: 'salida.jpg', camara_id: 2 });
+    expect(repositorio.crearIngreso).toHaveBeenCalledWith(expect.objectContaining({ tipoMovimiento: 'salida' }));
+    expect(r.respuesta.message).toBe('Salida registrada (pendiente de OCR).');
   });
 
   it('fase 2 sin lectura utilizable: queda para el personal y no se elimina la evidencia', async () => {
@@ -125,6 +137,17 @@ describe('Detecciones · servicio ANPR', () => {
       expect.objectContaining({ permiso: PERMISO_VIGENTE, vigencia: 'vigente' }),
       expect.objectContaining({ estado: 'autorizado', regla: 'R5' }));
     expect(avisos.decision).toHaveBeenCalledWith(expect.objectContaining({ id: 15 }), expect.objectContaining({ estado: 'autorizado' }), PERMISO_VIGENTE);
+  });
+
+  it('fase 2 de salida: registra el egreso sin cruzarlo con listas de acceso', async () => {
+    const { casos, repositorio, listas, avisos } = preparar({ existente: fila({ tipo_movimiento: 'salida' }) });
+    const r = await casos.completarOcr({ ingreso_id: 15, placa_reconocida: 'PBA1234', confianza_ocr: 0.93 });
+    expect(repositorio.guardarSalida).toHaveBeenCalledWith(15, expect.objectContaining({ placa: 'PBA1234', confianza: 0.93 }));
+    expect(repositorio.guardarDecisionAutomatica).not.toHaveBeenCalled();
+    expect(listas.alerta).not.toHaveBeenCalled();
+    expect(listas.permiso).not.toHaveBeenCalled();
+    expect(avisos.decision).not.toHaveBeenCalled();
+    expect(r.message).toBe('Salida registrada.');
   });
 
   it('fase 2 con la placa en la lista negra: alerta (nunca se rebaja) y evento deteccion:alerta', async () => {
@@ -239,6 +262,24 @@ describe('Detecciones · consultas del personal', () => {
 });
 
 describe('Detecciones · acciones del personal', () => {
+  it('corrige una salida sin consultar listas ni exigir datos de autorización', async () => {
+    const { casos, repositorio, listas } = preparar({ existente: fila({ tipo_movimiento: 'salida' }) });
+    const r = await casos.validar(15, { placa_validada: 'PBA1234' }, GUARDIA);
+    expect(repositorio.validarSalida).toHaveBeenCalledWith(15, { placa: 'PBA1234', usuarioId: GUARDIA.id });
+    expect(listas.alerta).not.toHaveBeenCalled();
+    expect(listas.permiso).not.toHaveBeenCalled();
+    expect(r.message).toBe('Lectura de salida corregida.');
+  });
+
+  it('registra una salida manual al seleccionar una cámara de egreso', async () => {
+    const { casos, repositorio } = preparar();
+    repositorio.direccionCamara.mockResolvedValue('salida');
+    const r = await casos.registroManual({ placa: 'PBA1234', motivo: 'Cámara no registró el egreso', camara_id: 2 }, GUARDIA);
+    expect(repositorio.crearSalidaManual).toHaveBeenCalledWith({ placa: 'PBA1234', camaraId: 2, usuarioId: GUARDIA.id });
+    expect(repositorio.crearManual).not.toHaveBeenCalled();
+    expect(r.message).toBe('Salida registrada manualmente.');
+  });
+
   it('validar: placa con formato ANT, excepción solo con accesos:excepcion y con motivo', async () => {
     const { casos, repositorio } = preparar();
     expect((await fallo(casos.validar(15, { placa_validada: 'PBA12' }, ADMIN))).tipo).toBe('validacion');

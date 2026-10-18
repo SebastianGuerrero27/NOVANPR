@@ -16,6 +16,7 @@ const CONTEOS = `
   SUM(CASE WHEN d.estado_validacion = 'pendiente_revision' OR d.estado_procesamiento = 'pendiente_ocr' THEN 1 ELSE 0 END) AS pendientes`;
 
 const W = `d.estado_procesamiento IN ('procesado', 'no_legible', 'pendiente_ocr')
+           AND COALESCE(d.tipo_movimiento, 'ingreso') = 'ingreso'
            AND d.fecha_hora_ingreso >= @desde AND d.fecha_hora_ingreso <= @hasta
            AND (@camara IS NULL OR d.camara_id = @camara)`;
 const DIA = 'CAST(DATEADD(MINUTE, @desfase, d.fecha_hora_ingreso) AS DATE)';

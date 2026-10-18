@@ -21,6 +21,7 @@ export function codecVideo(v?: string | null): string {
   return v.toUpperCase();
 }
 export const porcentaje = (v?: number | null, dec = 1) => (v === null || v === undefined ? '—' : `${(v * 100).toFixed(dec)} %`);
+export const colorConfianza = (v: number | null) => v === null ? 'var(--text-3)' : v >= 0.9 ? 'var(--autorizado)' : v >= 0.75 ? 'var(--no-registrado)' : 'var(--alerta)';
 
 /** "hace 3 min", "hace 2 h", o la fecha si pasó más de un día. */
 export function relativo(v?: string | Date | null): string {
@@ -48,6 +49,7 @@ export const ESTADOS: Record<EstadoValidacion, { etiqueta: string; corta: string
   pendiente_revision: { etiqueta: 'Pendiente de revisión', corta: 'Pendiente', color: 'var(--pendiente)' },
   no_reconocido: { etiqueta: 'No registrado', corta: 'No registrado', color: 'var(--no-registrado-serie)' },
   alerta: { etiqueta: 'Alerta', corta: 'Alerta', color: 'var(--alerta)' },
+  salida_registrada: { etiqueta: 'Salida registrada', corta: 'Salida', color: 'var(--pendiente)' },
 };
 
 /** Orden fijo de las series de estado en gráficos (validado para daltonismo). */

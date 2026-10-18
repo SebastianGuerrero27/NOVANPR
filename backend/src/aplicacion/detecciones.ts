@@ -50,6 +50,7 @@ export interface NuevoIngreso {
   confianza: number | null;
   fuente: string;
   camaraId: number | null;
+  tipoMovimiento: 'ingreso' | 'salida';
 }
 
 export interface LecturaAutomatica {
@@ -81,16 +82,19 @@ export interface Descarte {
 export interface RepositorioDetecciones {
   obtener(id: number): Promise<Fila | null>;
   /** Ingreso del mismo paso físico (misma placa, o sin placa el mismo tracking, y misma cámara) dentro de la ventana */
-  mismoPaso(trackingId: number, pista: string, camaraId: number | null): Promise<{ id: number; fecha_hora_ingreso: Date } | null>;
+  mismoPaso(trackingId: number, pista: string, camaraId: number | null, tipoMovimiento: 'ingreso' | 'salida'): Promise<{ id: number; fecha_hora_ingreso: Date } | null>;
   existeCamara(id: number): Promise<boolean>;
+  direccionCamara(id: number): Promise<'ingreso' | 'salida' | null>;
   crearIngreso(n: NuevoIngreso): Promise<{ id: number; fecha_hora_ingreso: Date }>;
+  guardarSalida(id: number, lectura: { placa: string; confianza: number | null; rutaPlaca: string | null }): Promise<void>;
+  validarSalida(id: number, lectura: { placa: string; usuarioId: number }): Promise<void>;
   guardarMetadatos(id: number, metadatos: unknown): Promise<void>;
   /** Atributos del vehículo (tipo, color, marca, modelo) que llegan después del registro */
   guardarVehiculo(id: number, vehiculo: Record<string, unknown>): Promise<void>;
   registrarLecturaAutomatica(id: number, l: LecturaAutomatica): Promise<void>;
   marcarNoLegible(id: number, rutaPlaca: string | null): Promise<void>;
   /** Otro paso ya procesado con la misma placa en la ventana de 35 s */
-  pasoProcesadoConPlaca(idExcluido: number, placa: string): Promise<number | null>;
+  pasoProcesadoConPlaca(idExcluido: number, placa: string, camaraId: number | null, tipoMovimiento: 'ingreso' | 'salida'): Promise<number | null>;
   eliminarPendiente(id: number): Promise<void>;
   guardarVeredicto(id: number, valida: boolean | null, evidencia: string | null): Promise<void>;
   observacion(id: number): Promise<Observacion | null>;
@@ -107,6 +111,7 @@ export interface RepositorioDetecciones {
   auditoriaDe(id: number): Promise<Fila[]>;
   guardarValidacion(id: number, d: { placa: string; tipo: string | null; usuarioId: number }, cruce: Cruce, decision: Decision): Promise<void>;
   crearManual(d: { placa: string; camaraId: number | null; tipo: string | null; usuarioId: number }, cruce: Cruce, decision: Decision): Promise<number>;
+  crearSalidaManual(d: { placa: string; camaraId: number; usuarioId: number }): Promise<number>;
   eliminar(id: number): Promise<void>;
   /** Elimina las que cumplen los filtros (todas si `f` es null) y devuelve sus rutas de evidencia */
   eliminarFiltradas(f: FiltrosDetecciones | null): Promise<{ id: number; ruta_imagen_ingreso: string | null; ruta_imagen_placa: string | null }[]>;
@@ -236,8 +241,14 @@ export function casosDetecciones(d: DependenciasDetecciones) {
 
       let camaraId: number | null = null;
       if (camara_id !== null && Number.isInteger(Number(camara_id)) && await d.repositorio.existeCamara(Number(camara_id))) camaraId = Number(camara_id);
+      let tipoMovimiento: NuevoIngreso['tipoMovimiento'] = 'ingreso';
+      if (camaraId !== null) {
+        const direccion = await d.repositorio.direccionCamara(camaraId);
+        if (direccion === null) throw errorValidacion('No se pudo determinar la dirección de la cámara.');
+        tipoMovimiento = direccion;
+      }
 
-      const previo = await d.repositorio.mismoPaso(trackingId, pista, camaraId);
+      const previo = await d.repositorio.mismoPaso(trackingId, pista, camaraId, tipoMovimiento);
       if (previo) {
         return {
           nuevo: false,
@@ -248,10 +259,12 @@ export function casosDetecciones(d: DependenciasDetecciones) {
       const creado = await d.repositorio.crearIngreso({
         trackingId, pista: pista.length >= 4 ? pista : null, ruta: String(ruta_imagen_ingreso).substring(0, 255),
         confianza: typeof confianza_deteccion === 'number' ? confianza_deteccion : null, fuente: normalizarFuente(fuente), camaraId,
+        tipoMovimiento,
       });
       await d.repositorio.guardarMetadatos(creado.id, b.metadatos);
       await difundir(creado.id, 'deteccion:nueva');
-      return { nuevo: true, respuesta: { message: 'Ingreso registrado (pendiente de OCR).', ingreso_id: creado.id, fecha_hora_ingreso: creado.fecha_hora_ingreso } };
+      const mensaje = tipoMovimiento === 'salida' ? 'Salida registrada (pendiente de OCR).' : 'Ingreso registrado (pendiente de OCR).';
+      return { nuevo: true, respuesta: { message: mensaje, ingreso_id: creado.id, fecha_hora_ingreso: creado.fecha_hora_ingreso } };
     },
 
     /** Fase 2 · lectura OCR, segundo factor y decisión de acceso. */
@@ -278,8 +291,11 @@ export function casosDetecciones(d: DependenciasDetecciones) {
         return { message: 'Ingreso pendiente de validación manual.', deteccion: await difundir(id, 'deteccion:actualizada') };
       }
 
+      const actual = await d.repositorio.obtener(id);
+      if (!actual) throw errorNoEncontrado('Registro vehicular no encontrado.');
+      const tipoMovimiento = actual.tipo_movimiento === 'salida' ? 'salida' : 'ingreso';
       // Mismo paso físico ya procesado con la misma placa: se consolida
-      const previo = await d.repositorio.pasoProcesadoConPlaca(id, placa);
+      const previo = await d.repositorio.pasoProcesadoConPlaca(id, placa, actual.camara_id ?? null, tipoMovimiento);
       if (previo !== null) {
         await d.repositorio.eliminarPendiente(id);
         d.eventos.emitir('deteccion:eliminada', { id, consolidado_en: previo });
@@ -287,6 +303,11 @@ export function casosDetecciones(d: DependenciasDetecciones) {
       }
 
       await d.repositorio.guardarVeredicto(id, validez, evidencia);
+      if (actual.tipo_movimiento === 'salida') {
+        await d.repositorio.guardarSalida(id, { placa, confianza, rutaPlaca });
+        await lecturaAutomatica('salida_registrada');
+        return { message: 'Salida registrada.', deteccion: await difundir(id, 'deteccion:actualizada') };
+      }
       const { dto, decision, permiso } = await decidirLectura(id, {
         placa, confianza, rutaPlaca, validez, lecturaVerificador: lectura_verificador, latenciaMs: latencia_ms,
       });
@@ -310,6 +331,12 @@ export function casosDetecciones(d: DependenciasDetecciones) {
 
       if (vehiculo && typeof vehiculo === 'object' && !Array.isArray(vehiculo)) await d.repositorio.guardarVehiculo(id, vehiculo);
       const placa = normalizarPlaca(placa_reconocida) || normalizarPlaca(actual.placa_reconocida);
+      if (actual.tipo_movimiento === 'salida' && !actual.validado_manualmente && actual.estado_procesamiento === 'procesado' && placa) {
+        const confianza = typeof confianza_ocr === 'number' ? confianza_ocr : typeof actual.confianza_ocr === 'number' ? actual.confianza_ocr : null;
+        await d.repositorio.guardarSalida(id, { placa, confianza, rutaPlaca: null });
+        if (typeof lectura_valida === 'boolean') await d.repositorio.guardarVeredicto( id, lectura_valida, serializarEvidencia(evidencia_lectura));
+        return { message: 'Salida actualizada.', reevaluado: true, cambio: false, deteccion: await difundir(id, 'deteccion:actualizada') };
+      }
       if (actual.validado_manualmente || actual.estado_procesamiento !== 'procesado' || actual.estado_validacion === 'alerta' || !placa) {
         return { message: 'Se conserva la decisión vigente del paso.', reevaluado: false, deteccion: await difundir(id, 'deteccion:actualizada') };
       }
@@ -419,9 +446,14 @@ export function casosDetecciones(d: DependenciasDetecciones) {
       const datos = leerDatosValidacion(b, excepcion);
       if (!datos.ok) throw errorValidacion(datos.error);
       const { tipoVehiculo, observacion } = datos.valor;
-
       const actual = await d.repositorio.obtener(id);
       if (!actual) throw errorNoEncontrado('Detección no encontrada.');
+      if (actual.tipo_movimiento === 'salida') {
+        if (excepcion) throw errorValidacion('La excepción de acceso solo se aplica a ingresos.');
+        await d.repositorio.validarSalida(id, { placa: placa.valor.placa, usuarioId: actor.id });
+        await d.auditoria.operacion(actor, 'SALIDA_VALIDACION', 'deteccion', id, `${actual.placa_reconocida || 'sin lectura'} → ${placa.valor.placa}`);
+        return { message: 'Lectura de salida corregida.', deteccion: await difundir(id, 'deteccion:actualizada') };
+      }
 
       const cruce = await cruzarListas(placa.valor.placa, new Date(actual.fecha_hora_ingreso));
       const decision = decidirAcceso({ origen: 'manual', ...entradaListas(cruce), excepcion, politica: d.politica() });
@@ -449,6 +481,14 @@ export function casosDetecciones(d: DependenciasDetecciones) {
       const r = leerRegistroManual(cuerpo(entrada));
       if (!r.ok) throw errorValidacion(r.error);
       const { placa, motivo, camaraId, tipoVehiculo } = r.valor;
+      const direccion = camaraId === null ? 'ingreso' : await d.repositorio.direccionCamara(camaraId);
+      if (direccion === null) throw errorValidacion('La cámara seleccionada no existe o no tiene una dirección válida.');
+      if (direccion === 'salida') {
+        if (camaraId === null) throw errorValidacion('La salida manual requiere una cámara configurada como salida.');
+        const id = await d.repositorio.crearSalidaManual({ placa, camaraId, usuarioId: actor.id });
+        await d.auditoria.operacion(actor, 'REGISTRO_SALIDA_MANUAL', 'deteccion', id, `${placa} · ${motivo}`);
+        return { message: 'Salida registrada manualmente.', deteccion: await difundir(id, 'deteccion:nueva') };
+      }
       const cruce = await cruzarListas(placa, d.tiempo.ahora());
       const decision = decidirAcceso({ origen: 'manual', ...entradaListas(cruce), politica: d.politica() });
       const id = await d.repositorio.crearManual({

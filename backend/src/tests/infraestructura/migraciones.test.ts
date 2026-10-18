@@ -140,14 +140,29 @@ describe('migraciones de esquema', () => {
   describe('migración v12 · quitar notificaciones de la bandeja', () => {
     const v12 = fs.readFileSync(path.join(DIR_DB, 'migration_v12_eliminar_notificaciones.sql'), 'utf8');
 
-    it('es la última migración registrada', () => {
-      expect(MIGRACIONES[MIGRACIONES.length - 1]).toBe('migration_v12_eliminar_notificaciones.sql');
+    it('se aplica antes de la migración de direcciones', () => {
+      expect(MIGRACIONES.indexOf('migration_v12_eliminar_notificaciones.sql')).toBe(MIGRACIONES.indexOf('migration_v13_direccion_camara.sql') - 1);
     });
 
     it('agrega la marca por usuario de forma idempotente y no borra ni modifica registros', () => {
       expect(v12).toContain("IF COL_LENGTH('dbo.NotificacionUsuario', 'fecha_eliminacion') IS NULL");
       expect(v12).toMatch(/ALTER TABLE NotificacionUsuario ADD fecha_eliminacion DATETIME2 NULL;/);
       expect(v12).not.toMatch(/(UPDATE|DELETE|DROP)/i);
+    });
+  });
+  describe('migración v13 · dirección de cámaras y movimientos', () => {
+    const v13 = fs.readFileSync(path.join(DIR_DB, 'migration_v13_direccion_camara.sql'), 'utf8');
+
+    it('es la última migración registrada', () => {
+      expect(MIGRACIONES[MIGRACIONES.length - 1]).toBe('migration_v13_direccion_camara.sql');
+    });
+
+    it('agrega dirección con valor de compatibilidad para cámaras y registros anteriores', () => {
+      expect(v13).toContain("IF COL_LENGTH('dbo.Camaras', 'direccion') IS NULL");
+      expect(v13).toContain("DEFAULT ('ingreso')");
+      expect(v13).toContain("IF COL_LENGTH('dbo.DeteccionVehiculo', 'tipo_movimiento') IS NULL");
+      expect(v13).toContain("CHECK (tipo_movimiento IN ('ingreso', 'salida'))");
+      expect(v13).not.toMatch(/\b(UPDATE|DELETE|DROP)\b/i);
     });
   });
 });

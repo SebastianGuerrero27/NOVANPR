@@ -39,7 +39,7 @@ export const MENU: GrupoMenu[] = [
       { ruta: '/listas/autorizados', titulo: 'Lista blanca', descripcion: 'Vehículos autorizados a ingresar, con vigencia y horario', icono: <ShieldCheck size={18} />, permiso: 'listas:ver' },
       { ruta: '/listas/alertas', titulo: 'Lista negra', descripcion: 'Placas con alerta de seguridad: su paso genera una alarma', icono: <ShieldAlert size={18} />, permiso: 'listas:ver' },
       { ruta: '/solicitudes', titulo: 'Solicitudes de acceso', descripcion: 'Autorización de visitas, proveedores y vehículos sin permiso', icono: <FileCheck2 size={18} />, permiso: 'solicitudes:crear', contador: 'solicitudes' },
-      { ruta: '/detecciones', titulo: 'Registro de ingresos', descripcion: 'Historial de pasos vehiculares, validación y exportación', icono: <History size={18} />, permiso: 'operacion:monitorear', contador: 'revision' },
+      { ruta: '/detecciones', titulo: 'Registro de movimientos', descripcion: 'Historial de ingresos y salidas, validación y exportación', icono: <History size={18} />, permiso: 'operacion:monitorear', contador: 'revision' },
     ],
   },
   {
@@ -63,7 +63,7 @@ export const MENU: GrupoMenu[] = [
 export const RUTAS_EXTRA: ItemMenu[] = [
   { ruta: '/perfil', titulo: 'Mi perfil', descripcion: 'Datos de la cuenta y contraseña', icono: <UserCircle size={18} />, oculto: true },
   { ruta: '/notificaciones', titulo: 'Notificaciones', descripcion: 'Alarmas, avisos y notificaciones del navegador', icono: <Bell size={18} />, oculto: true },
-  { ruta: '/detecciones/', titulo: 'Detalle del ingreso', descripcion: 'Evidencia, lectura automática y trazabilidad', icono: <History size={18} />, permiso: 'operacion:monitorear', oculto: true },
+  { ruta: '/detecciones/', titulo: 'Detalle del movimiento', descripcion: 'Evidencia, lectura automática y trazabilidad', icono: <History size={18} />, permiso: 'operacion:monitorear', oculto: true },
 ];
 
 /**
@@ -92,7 +92,7 @@ export function menuPara(puede: (p: Permiso) => boolean): GrupoMenu[] {
 const PESTANAS: { ruta: string; etiqueta: string }[] = [
   { ruta: '/', etiqueta: 'Dashboard' },
   { ruta: '/monitoreo', etiqueta: 'Monitoreo' },
-  { ruta: '/detecciones', etiqueta: 'Ingresos' },
+  { ruta: '/detecciones', etiqueta: 'Movimientos' },
   { ruta: '/listas/autorizados', etiqueta: 'Lista blanca' },
   { ruta: '/listas/alertas', etiqueta: 'Lista negra' },
   { ruta: '/solicitudes', etiqueta: 'Solicitudes' },

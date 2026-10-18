@@ -18,6 +18,7 @@ import { type ReglaTexto, type Validado, validarEntero, validarHost, validarText
  */
 
 export type Punto = [number, number];
+export type DireccionCamara = 'ingreso' | 'salida';
 
 // ─── URL RTSP y credenciales ─────────────────────────────────────────────────
 
@@ -154,6 +155,7 @@ export interface EntradaCamara {
   nombre: string;
   ubicacion: string;
   rtsp: string;
+  direccion: DireccionCamara;
   /** Flujo de vista (null = la vista usa el principal) */
   rtspVista: string | null;
   ip: string | null;
@@ -166,6 +168,7 @@ export interface DatosCamara {
   rtsp: string;
   rtspVista: string | null;
   ip: string;
+  direccion: DireccionCamara;
 }
 
 /** Valida el alta o la edición; en la edición las URL guardadas permiten conservar la contraseña. */
@@ -182,19 +185,27 @@ export function leerCamara(entrada: Record<string, unknown> | null | undefined, 
   if (!vista.ok) return vista;
   const ip = leerIp(body.ip);
   if (!ip.ok) return ip;
+  const direccion = body.direccion === undefined ? 'ingreso' : body.direccion;
+  if (direccion !== 'ingreso' && direccion !== 'salida') {
+    return { ok: false, error: 'La dirección de la cámara debe ser ingreso o salida.' };
+  }
   return {
     ok: true,
-    valor: { nombre: nombre.valor as string, ubicacion: ubicacion.valor as string, rtsp: rtsp.valor, rtspVista: vista.valor, ip: ip.valor },
+    valor: {
+      nombre: nombre.valor as string, ubicacion: ubicacion.valor as string, rtsp: rtsp.valor,
+      rtspVista: vista.valor, ip: ip.valor, direccion,
+    },
   };
 }
 
 /** Campos que cambian en la edición (para la auditoría). */
-export function cambiosCamara(actual: { nombre: string; ubicacion: string; rtsp_url: string; rtsp_url_vista?: string | null; ip: string },
+export function cambiosCamara(actual: { nombre: string; ubicacion: string; rtsp_url: string; rtsp_url_vista?: string | null; ip: string; direccion?: DireccionCamara },
   nuevo: DatosCamara): string[] {
   return [
     actual.nombre !== nuevo.nombre && 'nombre', actual.ubicacion !== nuevo.ubicacion && 'ubicación',
     actual.rtsp_url !== nuevo.rtsp && 'URL RTSP', (actual.rtsp_url_vista ?? null) !== nuevo.rtspVista && 'URL de vista',
     actual.ip !== nuevo.ip && 'IP',
+    (actual.direccion ?? 'ingreso') !== nuevo.direccion && 'dirección',
   ].filter((c): c is string => Boolean(c));
 }
 
@@ -292,6 +303,7 @@ export interface CamaraGuardada {
   rtsp_url: string;
   rtsp_url_vista?: string | null;
   ubicacion: string;
+  direccion?: DireccionCamara;
   activa: boolean | number;
   estado: string | null;
   ultimo_ping: Date | null;
@@ -311,6 +323,7 @@ export interface CamaraPublica {
   nombre: string;
   ip: string;
   ubicacion: string;
+  direccion: DireccionCamara;
   /** Con la contraseña enmascarada */
   rtsp_url: string;
   /** Flujo de vista con la contraseña enmascarada (null = la vista usa el principal) */
@@ -332,7 +345,7 @@ export interface CamaraPublica {
 /** Presentación segura: contraseña enmascarada, región de interés y zonas de exclusión interpretadas. */
 export function presentarCamara(c: CamaraGuardada): CamaraPublica {
   return {
-    id: c.id, nombre: c.nombre, ip: c.ip, ubicacion: c.ubicacion,
+    id: c.id, nombre: c.nombre, ip: c.ip, ubicacion: c.ubicacion, direccion: c.direccion ?? 'ingreso',
     rtsp_url: enmascarar(c.rtsp_url || ''),
     rtsp_url_vista: c.rtsp_url_vista ? enmascarar(c.rtsp_url_vista) : null,
     tiene_credenciales: tieneCredenciales(c.rtsp_url || ''),

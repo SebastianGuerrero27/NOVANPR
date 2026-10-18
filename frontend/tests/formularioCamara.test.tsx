@@ -52,6 +52,7 @@ describe('Formulario de cámara', () => {
   it('al editar, si cambia la IP pide escribir de nuevo la contraseña (la guardada solo vale para el mismo equipo)', () => {
     const camara: Camara = {
       id: 3, nombre: 'Garita norte', ubicacion: 'Acceso vehicular norte', ip: '192.0.2.10',
+      direccion: 'ingreso',
       rtsp_url: 'rtsp://admin:******@192.0.2.10:554/Streaming/Channels/101',
       rtsp_url_vista: 'rtsp://admin:******@192.0.2.10:554/Streaming/Channels/102', tiene_credenciales: true,
       activa: true, estado: 'EN_LINEA', ultimo_ping: null, tiempo_respuesta_ms: null, mensaje_ping: null, created_at: '2026-10-09T10:00:00Z', roi: null,

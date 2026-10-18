@@ -76,7 +76,7 @@ const Camaras: React.FC = () => {
               accion={<button className="btn btn-navy btn-sm" onClick={() => setEditando('nueva')}><Plus size={14} /> Registrar cámara</button>} />
           ) : (
             <div className="tabla-contenedor"><table className="tabla">
-              <thead><tr><th>Cámara</th><th>Conectividad</th><th className="ocultar-movil">URL RTSP</th><th className="num">Detecciones</th><th>Habilitada</th><th /></tr></thead>
+              <thead><tr><th>Cámara</th><th>Dirección</th><th>Conectividad</th><th className="ocultar-movil">URL RTSP</th><th className="num">Detecciones</th><th>Habilitada</th><th /></tr></thead>
               <tbody>
                 {datos?.map(c => {
                   const e = ESTADO[c.estado] ?? ESTADO.SIN_VERIFICAR;
@@ -86,6 +86,7 @@ const Camaras: React.FC = () => {
                         {motor.datos?.camara_activa?.id === c.id && <span className="insignia info" style={{ marginTop: 4 }}><Cpu size={12} /> Procesando en el motor ANPR</span>}
                         {c.roi && <span className="insignia" style={{ marginTop: 4 }} title="El motor solo busca placas dentro del área marcada"><Crop size={12} /> Área de interés ({c.roi.length} vértices)</span>}
                         {Boolean(c.exclusiones?.length) && <span className="insignia" style={{ marginTop: 4 }} title="Ahí no cuenta el movimiento ni se buscan placas"><Ban size={12} /> {c.exclusiones!.length === 1 ? '1 zona excluida' : `${c.exclusiones!.length} zonas excluidas`}</span>}</td>
+                      <td><span className={`insignia ${c.direccion === 'salida' ? 'info' : 'autorizado'}`}>{c.direccion === 'salida' ? 'Salida' : 'Ingreso'}</span></td>
                       <td>
                         <span className="fila" style={{ gap: 6 }}><span className={`punto ${c.activa ? e.p : 'gris'}`} />{c.activa ? e.t : 'Deshabilitada'}{c.activa && c.tiempo_respuesta_ms !== null && c.estado === 'EN_LINEA' && <span className="texto-secundario">· {c.tiempo_respuesta_ms} ms</span>}</span>
                         <span className="secundario">{c.ultimo_ping ? `${c.mensaje_ping ?? ''} · ${relativo(c.ultimo_ping)}` : 'Aún no verificada'}</span>

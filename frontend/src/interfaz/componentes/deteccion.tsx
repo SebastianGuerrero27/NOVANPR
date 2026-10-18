@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { ImageOff, Loader2, Trash2 } from 'lucide-react';
 import api, { mensajeError } from '../../infraestructura/api';
 import type { Camara, Deteccion } from '../../dominio/tipos';
-import { ESTADOS, fechaHora, hora, porcentaje } from '../../dominio/formato';
+import { colorConfianza, ESTADOS, fechaHora, hora, porcentaje } from '../../dominio/formato';
 import { urlMedia } from '../../infraestructura/api';
 import { formatearPlaca, placaPropuesta, validarPlaca, validarTexto } from '../../dominio/validacion';
 import { REGLA_MOTIVO_EXCEPCION, REGLA_MOTIVO_MANUAL, REGLA_OBSERVACION_VALIDACION } from '../../dominio/reglas';
@@ -63,10 +63,10 @@ export const PlacaFoto: React.FC<{ d: Pick<Deteccion, 'placa' | 'imagen_placa' |
     );
   };
 
-export function describirVehiculo(d: Pick<Deteccion, 'vehiculo' | 'tipo_vehiculo'>): string {
+export function describirVehiculo(d: Pick<Deteccion, 'vehiculo'>): string {
   const v = d.vehiculo;
   const nombre = [v.marca, v.modelo].filter(Boolean).join(' ');
-  return [nombre, v.color].filter(Boolean).join(' · ') || d.tipo_vehiculo || '—';
+  return [nombre, v.color].filter(Boolean).join(' · ') || '—';
 }
 
 /** Tarjeta compacta de un paso vehicular (feed de monitoreo y listas cortas). */
@@ -93,8 +93,8 @@ export const TarjetaDeteccion: React.FC<{ d: Deteccion; onValidar?: (d: Deteccio
           <ImagenEvidencia ruta={d.imagen_placa || d.imagen_vehiculo} alt={`Placa ${d.placa ?? 'sin lectura'}`} alto={60} ajuste="contain" fondoOscuro />
         </div>
         <div className="fila" style={{ justifyContent: 'space-around', fontSize: 9.5, color: 'var(--text-3)', gap: 4 }}>
-          {pct(d.confianza_deteccion) && <span title="Confianza de la detección">Det {pct(d.confianza_deteccion)}</span>}
-          {procesando ? <span>OCR ⏳</span> : pct(d.confianza_ocr) && <span style={{ color: 'var(--pendiente)', fontWeight: 700 }} title="Confianza de la lectura">OCR {pct(d.confianza_ocr)}</span>}
+          {pct(d.confianza_deteccion) && <span style={{ color: colorConfianza(d.confianza_deteccion), fontWeight: 700 }} title="Confianza de la detección">Det {pct(d.confianza_deteccion)}</span>}
+          {procesando ? <span>OCR ⏳</span> : pct(d.confianza_ocr) && <span style={{ color: colorConfianza(d.confianza_ocr), fontWeight: 700 }} title="Confianza de la lectura">OCR {pct(d.confianza_ocr)}</span>}
         </div>
       </div>
       <div style={{ minWidth: 0, display: 'flex', flexDirection: 'column', gap: 5 }}>
@@ -153,7 +153,7 @@ export const ValidarModal: React.FC<{ d: Deteccion; onCerrar: () => void; onVali
   // La placa confirmada la escribe una persona: se valida con el formato ANT (la lectura de la cámara, no;
   // solo se propone como punto de partida)
   const [placa, setPlaca] = useState(() => placaPropuesta(d.placa_validada || d.placa_reconocida));
-  const [tipo, setTipo] = useState(d.tipo_vehiculo && TIPOS_VEHICULO.includes(d.tipo_vehiculo) ? d.tipo_vehiculo : '');
+  const [tipo, setTipo] = useState('');
   const [observacion, setObservacion] = useState('');
   const [enviando, setEnviando] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -169,7 +169,7 @@ export const ValidarModal: React.FC<{ d: Deteccion; onCerrar: () => void; onVali
         placa_validada: placa, tipo_vehiculo: tipo || undefined, observacion: observacion.trim() || undefined, excepcion: excepcion || undefined,
       });
       const det: Deteccion = r.data.deteccion;
-      notificar(det.estado_validacion === 'alerta' ? 'error' : 'exito', `Ingreso validado: ${formatearPlaca(det.placa)}`, ESTADOS[det.estado_validacion].etiqueta);
+      notificar(det.estado_validacion === 'alerta' ? 'error' : 'exito', `${det.tipo_movimiento === 'salida' ? 'Salida' : 'Ingreso'} validado: ${formatearPlaca(det.placa)}`, ESTADOS[det.estado_validacion].etiqueta);
       onValidada?.(det);
       onCerrar();
     } catch (e) {
@@ -179,10 +179,10 @@ export const ValidarModal: React.FC<{ d: Deteccion; onCerrar: () => void; onVali
   };
 
   return (
-    <Modal titulo={excepcion ? 'Autorizar ingreso por excepción' : 'Validar ingreso'} subtitulo={`${fechaHora(d.fecha_hora_ingreso)}${d.camara ? ` · ${d.camara.nombre}` : ''}`} onCerrar={onCerrar} bloquear={enviando}
+    <Modal titulo={d.tipo_movimiento === 'salida' ? 'Corregir lectura de salida' : excepcion ? 'Autorizar ingreso por excepción' : 'Validar ingreso'} subtitulo={`${fechaHora(d.fecha_hora_ingreso)}${d.camara ? ` · ${d.camara.nombre}` : ''}`} onCerrar={onCerrar} bloquear={enviando}
       pie={<>
         <button className="btn btn-secondary" onClick={onCerrar} disabled={enviando}>Cancelar</button>
-        <button className={`btn ${excepcion ? 'btn-exito' : 'btn-navy'}`} onClick={guardar} disabled={!valida || enviando}>{enviando && <Loader2 size={14} className="girar" />} {excepcion ? 'Autorizar por excepción' : 'Confirmar placa'}</button>
+        <button className={`btn ${excepcion ? 'btn-exito' : 'btn-navy'}`} onClick={guardar} disabled={!valida || enviando}>{enviando && <Loader2 size={14} className="girar" />} {excepcion ? 'Autorizar por excepción' : d.tipo_movimiento === 'salida' ? 'Registrar salida' : 'Confirmar placa'}</button>
       </>}>
       <div className="pila">
         <div className="grid-2" style={{ gap: 10 }}>
@@ -194,26 +194,26 @@ export const ValidarModal: React.FC<{ d: Deteccion; onCerrar: () => void; onVali
         {d.motivo_revision && <Aviso tipo="advertencia">{d.motivo_revision}</Aviso>}
         <div className="texto-secundario">
           Lectura automática: <b style={{ color: 'var(--text)' }}>{d.placa_reconocida ? formatearPlaca(d.placa_reconocida) : 'sin lectura'}</b>
-          {d.confianza_ocr !== null && <> · confianza {porcentaje(d.confianza_ocr)}</>}
+          {d.confianza_ocr !== null && <> · confianza <b style={{ color: colorConfianza(d.confianza_ocr) }}>{porcentaje(d.confianza_ocr)}</b></>}
         </div>
         <div className="form-grid">
           <CampoPlaca id="val-placa" etiqueta="Placa confirmada*" valor={placa} onCambiar={setPlaca} autoFocus
             onEnter={() => { if (valida && !enviando) guardar(); }} />
-          <div className="campo">
+          {d.tipo_movimiento !== 'salida' && <div className="campo">
             <label htmlFor="val-tipo">Tipo de vehículo</label>
             <select id="val-tipo" className="select" value={tipo} onChange={e => setTipo(e.target.value)}>
               <option value="">Según registro / formato de placa</option>
               {TIPOS_VEHICULO.map(t => <option key={t}>{t}</option>)}
             </select>
-          </div>
-          <CampoTexto id="val-obs" className="completo" etiqueta={excepcion ? 'Motivo de la excepción*' : 'Observación (opcional)'}
+          </div>}
+          {d.tipo_movimiento !== 'salida' && <CampoTexto id="val-obs" className="completo" etiqueta={excepcion ? 'Motivo de la excepción*' : 'Observación (opcional)'}
             valor={observacion} onCambiar={setObservacion} regla={reglaObservacion}
             onEnter={() => { if (valida && !enviando) guardar(); }}
-            placeholder={excepcion ? 'Ej.: reunión extraordinaria autorizada por la Coordinación Zonal' : 'Ej.: placa sucia, lectura corregida por el operador'} />
+            placeholder={excepcion ? 'Ej.: reunión extraordinaria autorizada por la Coordinación Zonal' : 'Ej.: placa sucia, lectura corregida por el operador'} />}
         </div>
-        <Aviso tipo="info">{excepcion
+        {d.tipo_movimiento === 'salida' ? <Aviso tipo="info">La corrección registra únicamente el egreso; no modifica listas ni decisiones de autorización de ingreso.</Aviso> : <Aviso tipo="info">{excepcion
           ? 'La excepción concede solo este paso: el permiso conserva su horario y vigencia. Queda registrada en la auditoría con su usuario y el motivo.'
-          : 'Al confirmar, la placa se vuelve a cruzar con la lista blanca (vigencia y horario) y la lista negra. La corrección queda registrada con su usuario.'}</Aviso>
+          : 'Al confirmar, la placa se vuelve a cruzar con la lista blanca (vigencia y horario) y la lista negra. La corrección queda registrada con su usuario.'}</Aviso>}
         {error && <Aviso tipo="error">{error}</Aviso>}
       </div>
       {zoom && <VisorZoom d={d} onCerrar={() => setZoom(false)} />}
@@ -232,6 +232,7 @@ export const RegistroManualModal: React.FC<{ onCerrar: () => void; placaInicial?
   const [enviando, setEnviando] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const navigate = useNavigate();
+  const camaraSeleccionada = camaras.find(c => c.id === Number(camara));
   useEffect(() => { api.get('/camaras').then(r => setCamaras(r.data)).catch(() => undefined); }, []);
   const valido = validarPlaca(placa).ok && validarTexto(motivo, REGLA_MOTIVO_MANUAL).ok;
 
@@ -241,7 +242,7 @@ export const RegistroManualModal: React.FC<{ onCerrar: () => void; placaInicial?
     try {
       const r = await api.post('/detecciones/registro-manual', { placa, motivo: motivo.trim(), tipo_vehiculo: tipo || undefined, camara_id: camara ? Number(camara) : undefined });
       const d: Deteccion = r.data.deteccion;
-      notificar(d.estado_validacion === 'alerta' ? 'error' : 'exito', `Ingreso manual registrado: ${formatearPlaca(d.placa)}`, ESTADOS[d.estado_validacion].etiqueta);
+      notificar(d.estado_validacion === 'alerta' ? 'error' : 'exito', `${d.tipo_movimiento === 'salida' ? 'Salida' : 'Ingreso'} manual registrada: ${formatearPlaca(d.placa)}`, ESTADOS[d.estado_validacion].etiqueta);
       onCerrar();
       if (d.estado_validacion === 'alerta') navigate(`/detecciones/${d.id}`);
     } catch (e) {
@@ -251,10 +252,10 @@ export const RegistroManualModal: React.FC<{ onCerrar: () => void; placaInicial?
   };
 
   return (
-    <Modal titulo="Registrar ingreso manual" subtitulo="Para vehículos que la cámara no registró o no pudo leer" onCerrar={onCerrar} bloquear={enviando}
+    <Modal titulo={`Registrar ${camaraSeleccionada?.direccion === 'salida' ? 'salida' : 'ingreso'} manual`} subtitulo="Para movimientos que la cámara no registró o no pudo leer" onCerrar={onCerrar} bloquear={enviando}
       pie={<>
         <button className="btn btn-secondary" onClick={onCerrar} disabled={enviando}>Cancelar</button>
-        <button className="btn btn-navy" onClick={guardar} disabled={!valido || enviando}>{enviando && <Loader2 size={14} className="girar" />} Registrar ingreso</button>
+        <button className="btn btn-navy" onClick={guardar} disabled={!valido || enviando}>{enviando && <Loader2 size={14} className="girar" />} Registrar {camaraSeleccionada?.direccion === 'salida' ? 'salida' : 'ingreso'}</button>
       </>}>
       <div className="form-grid">
         <CampoPlaca id="man-placa" etiqueta="Placa*" valor={placa} onCambiar={setPlaca} autoFocus />
@@ -266,16 +267,18 @@ export const RegistroManualModal: React.FC<{ onCerrar: () => void; placaInicial?
           </select>
         </div>
         <div className="campo completo">
-          <label htmlFor="man-camara">Acceso</label>
+          <label htmlFor="man-camara">Cámara asociada</label>
           <select id="man-camara" className="select" value={camara} onChange={e => setCamara(e.target.value)}>
             <option value="">Sin cámara asociada</option>
-            {camaras.map(c => <option key={c.id} value={c.id}>{c.nombre} · {c.ubicacion}</option>)}
+            {camaras.map(c => <option key={c.id} value={c.id}>{c.nombre} · {c.direccion === 'salida' ? 'Salida' : 'Ingreso'} · {c.ubicacion}</option>)}
           </select>
         </div>
         <CampoTexto id="man-motivo" className="completo" etiqueta="Motivo del registro manual*" valor={motivo} onCambiar={setMotivo}
           regla={REGLA_MOTIVO_MANUAL} multilinea ayuda="Entre 5 y 300 caracteres."
           placeholder="Ej.: cámara fuera de servicio, placa ilegible por suciedad, ingreso de visita" />
-        <div className="completo"><Aviso tipo="info">El ingreso se cruza con las listas como cualquier lectura. No modifica el padrón de autorizados: para autorizar un vehículo use la pantalla de listas.</Aviso></div>
+        <div className="completo"><Aviso tipo="info">{camaraSeleccionada?.direccion === 'salida'
+          ? 'La salida se registra como movimiento independiente y no modifica permisos ni decisiones de ingreso.'
+          : 'El ingreso se cruza con las listas como cualquier lectura. No modifica el padrón de autorizados: para autorizar un vehículo use la pantalla de listas.'}</Aviso></div>
         {error && <div className="completo"><Aviso tipo="error">{error}</Aviso></div>}
       </div>
     </Modal>

@@ -88,6 +88,41 @@
   --transition-smooth: all 0.2s ease;
 }
 
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --sidebar-bg: #111318;
+  --sidebar-borde: #292d35;
+  --sidebar-activo: #641018;
+  --toolbar-bg: #191d24;
+  --toolbar-borde: #343a45;
+  --bg: #101318;
+  --surface: #191d24;
+  --surface-2: #20252e;
+  --surface-3: #282e38;
+  --border: #343c49;
+  --border-strong: #4b5563;
+  --text: #e5e7eb;
+  --text-2: #cbd5e1;
+  --text-3: #9aa7b8;
+  --text-4: #718096;
+  --autorizado: #4ade80;
+  --autorizado-bg: #123323;
+  --autorizado-border: #22613d;
+  --pendiente: #60a5fa;
+  --pendiente-bg: #152b45;
+  --pendiente-border: #294c75;
+  --no-registrado: #fbbf24;
+  --no-registrado-serie: #f59e0b;
+  --no-registrado-bg: #382b13;
+  --no-registrado-border: #70531c;
+  --alerta: #f87171;
+  --alerta-bg: #3a1b1f;
+  --alerta-border: #713039;
+  --neutro: #cbd5e1;
+  --neutro-bg: #252b34;
+  --neutro-border: #414a58;
+}
+
 * { box-sizing: border-box; margin: 0; padding: 0; }
 
 html, body, #root { height: 100%; }
@@ -102,6 +137,15 @@ body {
   font-size: 13px;
   line-height: 1.5;
   -webkit-font-smoothing: antialiased;
+}
+
+:root[data-theme="dark"] body {
+  background-image: radial-gradient(circle at top left, rgba(255, 255, 255, 0.025), transparent 25%),
+                    radial-gradient(circle at bottom right, rgba(204, 25, 37, 0.09), transparent 30%);
+}
+
+@media (min-width: 1200px) {
+  body { zoom: 0.8; }
 }
 
 button, input, select, textarea { font-family: inherit; font-size: inherit; color: inherit; }
@@ -214,8 +258,15 @@ img { display: block; max-width: 100%; }
   align-items: center;
   justify-content: center;
 }
+.sidebar-camara { width: 100%; border: 0; background: transparent; text-align: left; cursor: grab; }
+.sidebar-camara:active { cursor: grabbing; }
+.sidebar-camara .sidebar-camara-arrastre { width: 12px; opacity: 0.55; }
+.sidebar-camara .etiqueta { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.sidebar-camara .etiqueta small { display: block; color: rgba(245, 245, 245, 0.52); font-size: 10px; font-weight: 400; letter-spacing: 0; }
+.sidebar-camaras-vacio { display: block; padding: 4px 10px; color: rgba(245, 245, 245, 0.45); font-size: 11px; }
 .sidebar.colapsado .sidebar-link { justify-content: center; padding: 10px 0; }
 .sidebar.colapsado .sidebar-link span.etiqueta { display: none; }
+.sidebar.colapsado .sidebar-camara-arrastre { display: none; }
 .sidebar.colapsado .sidebar-link .contador { position: absolute; top: 2px; right: 6px; min-width: 16px; height: 16px; font-size: 10px; padding: 0 4px; }
 
 .sidebar-pie { border-top: 1px solid var(--sidebar-borde); padding: 10px; flex-shrink: 0; }
@@ -481,8 +532,28 @@ a.kpi:hover, button.kpi:hover { border-color: var(--kpi-color, var(--border-stro
 .insignia.alerta { color: var(--alerta); background: var(--alerta-bg); border-color: var(--alerta-border); }
 .insignia.no_reconocido { color: var(--no-registrado); background: var(--no-registrado-bg); border-color: var(--no-registrado-border); }
 .insignia.pendiente_revision, .insignia.info { color: var(--pendiente); background: var(--pendiente-bg); border-color: var(--pendiente-border); }
+.insignia.salida_registrada { color: #0369a1; background: #e0f2fe; border-color: #7dd3fc; }
 .insignia.neutro { color: var(--neutro); background: var(--neutro-bg); border-color: var(--neutro-border); }
 .insignia.solido-alerta { color: #fff; background: var(--alerta); border-color: var(--alerta); }
+.nvr-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.nvr-celda { min-width: 0; overflow: hidden; border: 1px solid var(--border); border-radius: 8px; background: var(--surface-2); }
+.nvr-celda-cabecera { display: flex; align-items: center; justify-content: space-between; min-height: 34px; padding: 3px 7px 3px 9px; color: var(--text-2); }
+.nvr-celda-cabecera strong { font-size: 11.5px; }
+.nvr-direccion { flex-shrink: 0; color: var(--text-3); font-size: 9px; font-weight: 700; letter-spacing: .05em; }
+.nvr-video { min-height: 100px; background: #050b16; }
+.nvr-video > div { border-radius: 0 !important; }
+.nvr-vacio { display: flex; aspect-ratio: 16 / 9; align-items: center; justify-content: center; flex-direction: column; gap: 8px; color: #94a3b8; font-size: 11px; }
+.nvr-dock { position: fixed; right: 16px; bottom: 16px; z-index: 210; width: min(460px, calc(100vw - 32px)); overflow: hidden; border: 1px solid var(--border-strong); border-radius: 10px; background: var(--surface); box-shadow: var(--shadow-lg); }
+.nvr-dock-cabecera { display: flex; min-height: 42px; align-items: center; justify-content: space-between; padding: 4px 8px 4px 12px; color: var(--text-2); background: var(--surface-2); border-bottom: 1px solid var(--border); }
+.nvr-dock-cabecera strong { font-size: 12px; }
+.nvr-dock-cuerpo { max-height: min(56vh, 520px); overflow: auto; padding: 9px; }
+.nvr-dock:not(.expandido) .nvr-dock-cuerpo { display: none; }
+.nvr-dock .nvr-grid { gap: 6px; }
+.nvr-dock .nvr-celda-cabecera { min-height: 29px; padding: 2px 5px 2px 7px; }
+.nvr-dock .nvr-video { min-height: 60px; }
+.nvr-dock-ayuda { display: block; padding-top: 7px; font-size: 10px; }
+.nvr-dock-vacio { padding: 20px 10px; color: var(--text-3); text-align: center; }
+.nvr-monitor-resumen { display: flex; min-height: 240px; align-items: center; justify-content: center; flex-direction: column; gap: 12px; padding: 24px; border-radius: 8px; background: #050b16; color: #cbd5e1; text-align: center; }
 
 /* Placa: la imagen es siempre la foto real del recorte (.placa-foto) y la lectura va en texto, sin dibujo */
 .placa { display: inline-flex; align-items: center; font-family: var(--mono); font-weight: 800; font-size: 13px; letter-spacing: 1px; color: var(--text); white-space: nowrap; }
@@ -929,7 +1000,11 @@ a.kpi:hover, button.kpi:hover { border-color: var(--kpi-color, var(--border-stro
 .tabla tbody tr.fila-alerta:hover td { background: #fdecec; }
 .marca-estado { display: inline-block; margin-left: 6px; font-size: 9.5px; font-weight: 800; padding: 1px 5px; border-radius: 3px; vertical-align: middle; letter-spacing: 0.3px; }
 .marca-estado.ok { color: var(--autorizado); background: rgba(22, 163, 74, 0.12); }
+.marca-estado.salida { color: var(--pendiente); background: var(--pendiente-bg); }
 .marca-estado.alerta { color: var(--alerta); background: rgba(239, 68, 68, 0.12); }
+@media (max-width: 900px) {
+  .nvr-grid { grid-template-columns: minmax(0, 1fr); }
+}
 .aviso-autorizado.confirmar { background: #422006; color: #fef3c7; border-color: #f59e0b; box-shadow: 0 18px 40px -12px rgba(245, 158, 11, 0.5); cursor: default; }
 .aviso-autorizado.confirmar .icono { background: #d97706; }
 .aviso-autorizado.confirmar strong { color: #fcd34d; }

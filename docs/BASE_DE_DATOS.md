@@ -1,7 +1,7 @@
-# Base de datos · esquema v12
+# Base de datos · esquema v13
 
 SQL Server 2022, base `ANPR_ECU911`. Instalación nueva: `db/init.sql` seguido de las migraciones
-`db/migration_*.sql` (idempotentes, hasta `migration_v12_eliminar_notificaciones.sql`). El backend
+`db/migration_*.sql` (idempotentes, hasta `migration_v13_direccion_camara.sql`). El backend
 las aplica al arrancar en el orden de `MIGRACIONES` (`backend/src/infraestructura/db.ts`) y registra
 cada una en `SchemaMigraciones` con su suma SHA-256: una migración ya aplicada no se vuelve a
 ejecutar salvo que su archivo cambie.
@@ -36,11 +36,11 @@ ejecutar salvo que su archivo cambie.
 | | `AuditoriaOperaciones` | Acciones operativas: validaciones, registros manuales, eliminaciones, altas/ediciones/retiros en listas, cámaras, cambio de cámara del motor, exportaciones y configuración |
 | | `AuditoriaOperacionesArchivo`, `AuditoriaUsuariosArchivo`, `AuditoriaAccesosArchivo` | Archivo de la auditoría (v7): la retención traslada aquí los registros antiguos en una sola transacción; la auditoría nunca se edita ni se borra |
 | Sistema | `ConfiguracionSistema` | Parámetros editables desde la pantalla de configuración (sin filas iniciales: rige la variable de entorno o el valor por omisión) |
-| Infraestructura | `Camaras` | Canales RTSP: `rtsp_url` (flujo principal para el motor, con la contraseña cifrada AES-256-GCM), `rtsp_url_vista` (flujo secundario para el navegador, v9), `roi` (área de detección) y `exclusiones` (hasta 8 polígonos donde no se buscan placas, v11); `activa` = habilitación administrativa, `estado` = conectividad observada (EN_LINEA, SIN_CONEXION, SIN_VERIFICAR); `registrado_por` |
+| Infraestructura | `Camaras` | Canales RTSP: `rtsp_url` (flujo principal para el motor, con la contraseña cifrada AES-256-GCM), `rtsp_url_vista` (flujo secundario para el navegador, v9), `direccion` (`ingreso` o `salida`, v13), `roi` (área de detección) y `exclusiones` (hasta 8 polígonos donde no se buscan placas, v11); `activa` = habilitación administrativa, `estado` = conectividad observada (EN_LINEA, SIN_CONEXION, SIN_VERIFICAR); `registrado_por` |
 | Listas | `ListaNegra` | Placas con alerta (nivel CRÍTICA/ALTA/MEDIA), marca/modelo/color registrados, **fecha de vencimiento** y observaciones; `registrado_por` |
 | | `VehiculosAutorizados` | Permisos de placa: categoría, **vigencia desde/hasta**, **franjas horarias** (JSON), marca/modelo/color, observaciones, `registrado_por` y `solicitud_id` de origen |
 | | `SolicitudesAcceso` | Solicitudes de autorización (pendiente / aprobada / rechazada / cancelada) con solicitante, resolutor, vigencia y horario pedidos, ingreso de origen, permiso creado y `version` para la concurrencia optimista (v8) |
-| Operación | `DeteccionVehiculo` | Cada paso vehicular: captura (fotos del vehículo y del recorte de la placa), OCR, decisión, validez de la lectura (`lectura_valida`, `evidencia_lectura` en JSON con las evidencias E1–E5 y el texto crudo de cada lector), validación del guardia (`usuario_validador_id`), lectura y decisión automáticas originales, metadatos de evaluación, atributos del vehículo y fuente (`rtsp` o `manual`, nunca la URL) |
+| Operación | `DeteccionVehiculo` | Cada movimiento: `tipo_movimiento` (`ingreso` o `salida`, v13; los registros preexistentes quedan como ingreso), captura (fotos del vehículo y del recorte de la placa), OCR, decisión, validez de la lectura (`lectura_valida`, `evidencia_lectura` en JSON con las evidencias E1–E5 y el texto crudo de cada lector), validación del guardia (`usuario_validador_id`), lectura y decisión automáticas originales, metadatos de evaluación, atributos del vehículo y fuente (`rtsp` o `manual`, nunca la URL). Las salidas son eventos independientes y no ejecutan la decisión de autorización de ingreso. |
 | | `AuditoriaDescartes` | Pasos descartados por el motor con su motivo (p. ej. `region_sin_caracteres`, `formato_no_corresponde_a_la_placa`, foto ilegible tras los reintentos) |
 | | `AuditoriaConsultaPropietario` | Consultas de datos del propietario (solo con convenio oficial) |
 | Notificaciones | `Notificaciones` | Alarmas y avisos: tipo, prioridad, mensaje, enlace, clave de supresión y repeticiones, reconocimiento (quién y cuándo), resolución y escalamiento |

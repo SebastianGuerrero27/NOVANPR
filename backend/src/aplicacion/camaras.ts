@@ -265,6 +265,7 @@ export function casosCamaras(d: DependenciasCamaras) {
       nombre: r.valor.nombre, ubicacion: r.valor.ubicacion, ip: r.valor.ip || destino.host,
       rtsp: d.custodia.proteger(r.valor.rtsp),
       rtspVista: r.valor.rtspVista ? d.custodia.proteger(r.valor.rtspVista) : null,
+      direccion: r.valor.direccion,
     };
   }
 
