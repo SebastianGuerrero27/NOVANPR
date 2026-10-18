@@ -131,8 +131,8 @@ integraciones es usar **H.265 o H.264 estándar** con un intervalo de cuadros cl
  autorización ni altera el ingreso del mismo vehículo.
 
  **Límite de procesamiento vigente:** el servicio ANPR compone una sola instancia `MotorAnpr` y
- `camaraMotor` asigna una cámara activa a ese motor. La cuadrícula NVR de cuatro celdas reproduce
- flujos, pero no equivale a cuatro procesos ANPR; solo la cámara activa genera pistas, OCR y
+ `camaraMotor` asigna una cámara activa a ese motor. La Vista cuadrícula de 1, 2 o 4 celdas reproduce
+ flujos, pero no equivale a varios procesos ANPR; solo la cámara activa genera pistas, OCR y
  decisiones. Por ello el HUD se conecta únicamente al flujo de esa cámara. No se debe anunciar
  procesamiento simultáneo ni capacidad para cientos de cámaras hasta desplegar workers aislados
  por cámara y superar pruebas de carga en el hardware objetivo.
@@ -246,10 +246,10 @@ teleobjetivo (o una cámara ANPR dedicada con obturación de 1/1000 s o menos e 
 4. **Ping**: debe responder el principal (DESCRIBE con Digest) y el aviso del secundario debe
    decir «entrega video». **Play**: compruebe los dos flujos. Si el secundario llega en H.265,
    cámbielo a H.264 en la cámara.
-5. Guardar. En Monitoreo se puede arrastrar la cámara desde el menú lateral a una celda de la
-   cuadrícula NVR. La cuadrícula conserva sus cuatro asignaciones entre módulos y sesiones. Para
-   asignar el análisis ANPR, use el selector **Cámara que procesa el motor** en la vista ANPR; la
-   cuadrícula por sí sola solo visualiza video.
+5. Guardar. En Monitoreo, seleccione **Vista cuadrícula** y arrastre las cámaras desde el menú
+   lateral a las celdas. Puede mostrar 1, 2 o 4 cámaras; las asignaciones y la cantidad elegida se
+   conservan entre sesiones. Para asignar el análisis ANPR, use el selector **Cámara que procesa el
+   motor** en la vista ANPR; la cuadrícula por sí sola solo visualiza video.
 
 ## 6. Validación de punta a punta
 
@@ -368,9 +368,9 @@ ser pareada.
 
 ## 8. Limitaciones
 
-- El servicio ANPR procesa una sola cámara activa; la cuadrícula NVR de cuatro streams es solo de
-  visualización. Cientos de cámaras requieren workers distribuidos, aislamiento de trackers y
-  pruebas de capacidad (CPU/GPU) todavía no implementados.
+- El servicio ANPR procesa una sola cámara activa; la Vista cuadrícula de hasta cuatro streams es
+  solo de visualización. Cientos de cámaras requieren workers distribuidos, aislamiento de trackers
+  y pruebas de capacidad (CPU/GPU) todavía no implementados.
 - No se ha probado con la cámara física: la validación de §6 usa una cámara simulada que
   reproduce su comportamiento en la red (Digest, rutas, códecs, GOP). La prueba de campo de §7 es
   obligatoria antes de producción.

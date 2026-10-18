@@ -105,13 +105,13 @@ const Sidebar: React.FC<{ colapsado: boolean; onColapsar: () => void; abiertoMov
           ))}
           {puede('operacion:monitorear') && (
             <div className="sidebar-grupo sidebar-camaras">
-              <div className="sidebar-grupo-titulo">Cámaras · arrastrar al NVR</div>
+              <div className="sidebar-grupo-titulo">Cámaras · arrastrar a Vista cuadrícula</div>
               {camaras.filter(c => c.activa).map(c => (
                 <button key={c.id} type="button" className="sidebar-link sidebar-camara"
                   draggable
                   onDragStart={e => { e.dataTransfer.setData('application/x-anpr-camera', String(c.id)); e.dataTransfer.effectAllowed = 'copy'; }}
                   onClick={() => { if (window.location.pathname !== '/monitoreo') navigate('/monitoreo'); }}
-                  title={colapsado ? `${c.nombre} · ${c.direccion}` : `Arrastre ${c.nombre} a una celda NVR · ${c.direccion}`}>
+                  title={colapsado ? `${c.nombre} · ${c.direccion}` : `Arrastre ${c.nombre} a una celda de Vista cuadrícula · ${c.direccion}`}>
                   <GripVertical size={14} className="sidebar-camara-arrastre" />
                   <Camera size={16} />
                   <span className="etiqueta">{c.nombre}<small>{c.direccion === 'salida' ? 'Salida' : 'Ingreso'}</small></span>

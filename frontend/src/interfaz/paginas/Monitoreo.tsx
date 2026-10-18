@@ -17,11 +17,12 @@ import { alCambiarSonido, fijarSonido, sonarAutorizado, sonarDenegado, sonidoAct
 import { PERFILES, PerfilVideo, VisorVideo } from '../componentes/video';
 import { VisorEnVivo } from '../componentes/envivo';
 import { useNotificar } from '../componentes/Notificaciones';
-import { useNvrDock } from '../componentes/NvrDock';
+import { VistaCuadricula } from '../componentes/VistaCuadricula';
 
 const MAX_FEED = 30;
 const CLAVE_PERFIL = 'anpr_perfil_video';
 const CLAVE_MODO = 'anpr_modo_video';
+const CLAVE_VISTA = 'anpr_vista_monitoreo';
 
 const leer = (k: string, d: string) => { try { return localStorage.getItem(k) ?? d; } catch { return d; } };
 const guardar = (k: string, v: string) => { try { localStorage.setItem(k, v); } catch { /* sin almacenamiento */ } };
@@ -83,7 +84,6 @@ const BuscarPlacaModal: React.FC<{ onCerrar: () => void }> = ({ onCerrar }) => {
 
 const Monitoreo: React.FC = () => {
   const { user, puede } = useAuth();
-  const { abierto: nvrAbierto, alternar: alternarNvr } = useNvrDock();
   const navigate = useNavigate();
   const notificar = useNotificar();
   const visible = usePaginaVisible();
@@ -92,6 +92,8 @@ const Monitoreo: React.FC = () => {
   // WebRTC (MediaMTX, sin re-codificar, ~0,2–0,5 s) o compatibilidad (JPEG por WebSocket desde el motor)
   const [modo, setModo] = useState<'webrtc' | 'compat'>(() => (leer(CLAVE_MODO, 'webrtc') === 'compat' ? 'compat' : 'webrtc'));
   const cambiarModo = (m: 'webrtc' | 'compat') => { setModo(m); guardar(CLAVE_MODO, m); };
+  const [vista, setVista] = useState<'anpr' | 'cuadricula'>(() => leer(CLAVE_VISTA, 'cuadricula') === 'anpr' ? 'anpr' : 'cuadricula');
+  const cambiarVista = (v: 'anpr' | 'cuadricula') => { setVista(v); guardar(CLAVE_VISTA, v); };
   const [sonido, setSonido] = useState(sonidoActivo);
   useEffect(() => alCambiarSonido(setSonido), []);
   const [feed, setFeed] = useState<Deteccion[]>([]);
@@ -200,22 +202,23 @@ const Monitoreo: React.FC = () => {
               <div className="fila" style={{ marginLeft: 'auto', gap: 8 }}>
                 {hayCamaras && (
                   <>
-                    <button className="btn btn-secondary btn-sm" onClick={alternarNvr}>
-                      {nvrAbierto ? 'Ocultar NVR' : 'Cuadrícula NVR'}
-                    </button>
-                    <Segmentado valor={modo} onCambiar={cambiarModo} opciones={[
+                    <Segmentado valor={vista} onCambiar={cambiarVista} opciones={[
+                      { valor: 'anpr', etiqueta: 'Vista ANPR' },
+                      { valor: 'cuadricula', etiqueta: 'Vista cuadrícula' },
+                    ]} />
+                    {vista === 'anpr' && <Segmentado valor={modo} onCambiar={cambiarModo} opciones={[
                       { valor: 'webrtc', etiqueta: 'Tiempo real' },
                       { valor: 'compat', etiqueta: 'Compatibilidad' },
-                    ]} />
-                    {modo === 'compat' && (
+                    ]} />}
+                    {vista === 'anpr' && modo === 'compat' && (
                       <select className="select" style={{ height: 32, width: 'auto' }} value={perfil} aria-label="Calidad de video"
                         onChange={e => { const p = e.target.value as PerfilVideo; setPerfil(p); guardar(CLAVE_PERFIL, p); }}>
                         {(Object.keys(PERFILES) as PerfilVideo[]).map(p => <option key={p} value={p}>{PERFILES[p].etiqueta}</option>)}
                       </select>
                     )}
-                    <button className="btn btn-secondary btn-sm" onClick={() => setPausado(p => !p)}>
+                    {vista === 'anpr' && <button className="btn btn-secondary btn-sm" onClick={() => setPausado(p => !p)}>
                       {pausado ? <><Play size={14} /> Reanudar</> : <><Pause size={14} /> Pausar video</>}
-                    </button>
+                    </button>}
                   </>
                 )}
               </div>
@@ -229,13 +232,9 @@ const Monitoreo: React.FC = () => {
                   accion={puede('camaras:gestionar')
                     ? <button className="btn btn-navy btn-sm" onClick={() => navigate('/camaras')}><Plus size={14} /> Registrar cámara</button>
                     : undefined} />
-              ) : nvrAbierto ? (
-                <div className="nvr-monitor-resumen">
-                  <Camera size={19} />
-                  <span>La cuadrícula NVR está activa y permanecerá reproduciéndose al cambiar de módulo.</span>
-                  <button className="btn btn-secondary btn-sm" onClick={alternarNvr}>Contraer cuadrícula</button>
-                </div>
-              ) : modo === 'compat' ? <VisorVideo perfil={perfil} pausado={pausado} claveReinicio={reinicioVideo} />
+              ) : vista === 'cuadricula'
+                ? <VistaCuadricula camaras={camaras ?? []} motorId={motor?.camara_activa?.id ?? null} />
+                : modo === 'compat' ? <VisorVideo perfil={perfil} pausado={pausado} claveReinicio={reinicioVideo} />
                   : !motor && estadoMotor.cargando ? <div style={{ aspectRatio: '16 / 9', background: '#050b16', borderRadius: 10 }} />
                     : <VisorEnVivo camaraId={motor?.camara_activa?.id ?? null} vista={Boolean(camaraActiva?.rtsp_url_vista)} pausado={pausado} claveReinicio={reinicioVideo}
                         onFallo={m => { cambiarModo('compat'); notificar('advertencia', 'Se activó el modo de compatibilidad', `WebRTC no disponible: ${m}`); }} />}

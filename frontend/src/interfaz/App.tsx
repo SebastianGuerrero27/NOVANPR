@@ -29,16 +29,6 @@ const Perfil = lazy(() => import('./paginas/Perfil'));
 const Notificaciones = lazy(() => import('./paginas/Notificaciones'));
 const SolicitudesAcceso = lazy(() => import('./paginas/SolicitudesAcceso'));
 const EstadoSistema = lazy(() => import('./paginas/EstadoSistema'));
-const NvrDockProvider = lazy(() => import('./componentes/NvrDock').then(m => ({ default: m.NvrDockProvider })));
-
-/** Mantiene montado el reproductor entre rutas privadas; el video no se descarga en el acceso. */
-const NvrDockPersistente: React.FC<React.PropsWithChildren> = ({ children }) => {
-  const { user } = useAuth();
-  const rutas = <Suspense fallback={<PantallaCarga />}>{children}</Suspense>;
-  return user
-    ? <Suspense fallback={<PantallaCarga />}><NvrDockProvider>{rutas}</NvrDockProvider></Suspense>
-    : rutas;
-};
 
 /**
  * Exige sesión y, si se indica, el permiso de la pantalla (matriz RBAC del backend, entregada en
@@ -63,7 +53,7 @@ const App: React.FC = () => (
       <TiempoRealProvider>
         <NotificacionesProvider>
           <CentroNotificacionesProvider>
-            <NvrDockPersistente>
+            <Suspense fallback={<PantallaCarga />}>
             <Routes>
               {/* Acceso y ciclo de vida de la cuenta */}
               <Route path="/login" element={<Acceso />} />
@@ -101,7 +91,7 @@ const App: React.FC = () => (
               <Route path="/admin" element={<Navigate to="/usuarios" replace />} />
               <Route path="*" element={<Navigate to="/" replace />} />
             </Routes>
-            </NvrDockPersistente>
+            </Suspense>
           </CentroNotificacionesProvider>
         </NotificacionesProvider>
       </TiempoRealProvider>
