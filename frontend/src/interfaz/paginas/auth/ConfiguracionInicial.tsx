@@ -64,7 +64,7 @@ const ConfiguracionInicial: React.FC = () => {
   };
 
   return (
-    <PantallaSimple ancha>
+    <PantallaSimple ancha className="auth-configuracion-inicial">
       <Encabezado logoGrande={false} sobre="Primer arranque del sistema" titulo="Configuración inicial"
         subtitulo="Cree la cuenta del administrador principal" />
 

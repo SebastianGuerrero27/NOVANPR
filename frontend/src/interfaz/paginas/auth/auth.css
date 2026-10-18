@@ -19,7 +19,7 @@
 }
 
 @media (min-width: 1200px) {
-  .auth-root { min-height: 125vh; }
+  .auth-root.auth-configuracion-inicial { min-height: 125vh; }
 }
 
 /* ── Panel de imagen que se desliza entre las dos mitades ── */

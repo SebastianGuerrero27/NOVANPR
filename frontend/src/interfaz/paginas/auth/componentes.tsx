@@ -86,8 +86,8 @@ export const PanelImagen: React.FC = () => {
 };
 
 /** Pantalla con la imagen a la izquierda y un único formulario a la derecha. */
-export const PantallaSimple: React.FC<{ children: React.ReactNode; ancha?: boolean }> = ({ children, ancha }) => (
-  <div className="auth-root" data-lado="izquierda">
+export const PantallaSimple: React.FC<{ children: React.ReactNode; ancha?: boolean; className?: string }> = ({ children, ancha, className }) => (
+  <div className={`auth-root ${className ?? ''}`} data-lado="izquierda">
     <PanelImagen />
     <div className="auth-lado derecha visible">
       <div className={`auth-caja${ancha ? ' ancha' : ''}`}>{children}</div>
