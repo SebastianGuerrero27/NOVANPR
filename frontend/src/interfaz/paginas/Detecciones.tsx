@@ -5,12 +5,12 @@ import api, { mensajeError } from '../../infraestructura/api';
 import { useEvento, useReconexion } from '../../aplicacion/tiempoReal';
 import { useConsulta, useRetardado } from '../../aplicacion/hooks';
 import type { Camara, Deteccion, EstadoValidacion, Pagina } from '../../dominio/tipos';
-import { colorConfianza, ESTADOS, fecha, hora, limiteDia, nombreDescarga, porcentaje } from '../../dominio/formato';
+import { ESTADOS, fecha, hora, limiteDia, nombreDescarga } from '../../dominio/formato';
 import { descargarBlob } from '../../infraestructura/descargas';
 import { normalizarPlaca } from '../../dominio/validacion';
 import { Aviso, FilasEsqueleto, InsigniaEstado, Paginacion, Placa, Tarjeta, Vacio } from '../componentes/ui';
 import { filtrarEscrito } from '../componentes/campos';
-import { describirVehiculo, ImagenEvidencia, ValidarModal } from '../componentes/deteccion';
+import { ConfianzaBadge, describirVehiculo, ImagenEvidencia, ValidarModal } from '../componentes/deteccion';
 import { VisorZoom } from '../componentes/ZoomDual';
 import { EliminarUno, EliminarVarios } from '../componentes/EliminarDetecciones';
 import { useAuth } from '../../aplicacion/AuthContext';
@@ -178,7 +178,7 @@ const Detecciones: React.FC = () => {
                       <span className="truncar" style={{ display: 'block' }}>{d.alerta ? <b style={{ color: 'var(--alerta)' }}>{d.alerta.motivo}</b> : d.autorizado?.propietario ?? describirVehiculo(d)}</span>
                       {d.autorizado?.departamento && <span className="secundario">{d.autorizado.departamento}</span>}
                     </td>
-                    <td className="num ocultar-movil"><span style={{ color: colorConfianza(d.confianza_ocr), fontWeight: 700 }}>{porcentaje(d.confianza_ocr)}</span></td>
+                    <td className="num ocultar-movil"><ConfianzaBadge valor={d.confianza_ocr} /></td>
                     <td onClick={e => e.stopPropagation()}>
                       {d.validado_manualmente
                         ? <span className="texto-secundario" title={d.validacion?.usuario?.email}>{d.validacion?.usuario?.nombre ?? 'Personal'}</span>

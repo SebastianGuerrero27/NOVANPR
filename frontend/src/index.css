@@ -258,12 +258,16 @@ img { display: block; max-width: 100%; }
   align-items: center;
   justify-content: center;
 }
-.sidebar-camara { width: 100%; border: 0; background: transparent; text-align: left; cursor: grab; }
+.sidebar-submenu-camaras { margin: 2px 0 8px 18px; padding: 4px 0 2px 8px; border-left: 1px solid rgba(245, 245, 245, 0.17); }
+.sidebar-submenu-titulo { padding: 2px 8px 5px; color: rgba(245, 245, 245, 0.43); font-size: 9px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; }
+.sidebar-camara { width: 100%; border: 0; background: transparent; text-align: left; cursor: grab; padding: 7px 8px; gap: 8px; font-size: 11.5px; }
 .sidebar-camara:active { cursor: grabbing; }
+.sidebar-camara.deshabilitada { cursor: default; opacity: 0.7; }
 .sidebar-camara .sidebar-camara-arrastre { width: 12px; opacity: 0.55; }
 .sidebar-camara .etiqueta { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .sidebar-camara .etiqueta small { display: block; color: rgba(245, 245, 245, 0.52); font-size: 10px; font-weight: 400; letter-spacing: 0; }
 .sidebar-camaras-vacio { display: block; padding: 4px 10px; color: rgba(245, 245, 245, 0.45); font-size: 11px; }
+.sidebar.colapsado .sidebar-submenu-camaras { display: none; }
 .sidebar.colapsado .sidebar-link { justify-content: center; padding: 10px 0; }
 .sidebar.colapsado .sidebar-link span.etiqueta { display: none; }
 .sidebar.colapsado .sidebar-camara-arrastre { display: none; }
@@ -542,6 +546,12 @@ a.kpi:hover, button.kpi:hover { border-color: var(--kpi-color, var(--border-stro
 .nvr-direccion { flex-shrink: 0; color: var(--text-3); font-size: 9px; font-weight: 700; letter-spacing: .05em; }
 .nvr-video { min-height: 100px; background: #050b16; }
 .nvr-video > div { border-radius: 0 !important; }
+
+.confianza-badge { display: inline-flex; align-items: center; justify-content: center; white-space: nowrap; padding: 2px 7px; border: 1px solid transparent; border-radius: 999px; font-size: 10px; line-height: 1.35; font-weight: 700; font-variant-numeric: tabular-nums; }
+.confianza-alta { color: var(--autorizado); background: var(--autorizado-bg); border-color: var(--autorizado-border); }
+.confianza-media { color: var(--no-registrado); background: var(--no-registrado-bg); border-color: var(--no-registrado-border); }
+.confianza-baja { color: var(--alerta); background: var(--alerta-bg); border-color: var(--alerta-border); }
+.confianza-sin-dato { color: var(--text-3); background: var(--surface-3); border-color: var(--border); }
 .nvr-vacio { display: flex; aspect-ratio: 16 / 9; align-items: center; justify-content: center; flex-direction: column; gap: 8px; color: #94a3b8; font-size: 11px; }
 .nvr-grid-1 { grid-template-columns: minmax(0, 1fr); }
 .nvr-grid-1 .nvr-celda { width: min(100%, 900px); }

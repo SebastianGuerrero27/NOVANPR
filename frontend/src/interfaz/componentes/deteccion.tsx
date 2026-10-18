@@ -14,6 +14,13 @@ import { VisorZoom } from './ZoomDual';
 
 export const TIPOS_VEHICULO = ['Automóvil', 'Camioneta', 'SUV', 'Motocicleta', 'Camión', 'Bus', 'Furgoneta'];
 
+/** Confianza legible de placa: >=90 % verde, >=75 % amarilla y el resto roja. */
+export const ConfianzaBadge: React.FC<{ valor: number | null; etiqueta?: string }> = ({ valor, etiqueta = 'OCR' }) => {
+  if (valor === null) return <span className="confianza-badge confianza-sin-dato">{etiqueta} —</span>;
+  const nivel = valor >= 0.9 ? 'alta' : valor >= 0.75 ? 'media' : 'baja';
+  return <span className={`confianza-badge confianza-${nivel}`} title={`Confianza ${etiqueta}: ${porcentaje(valor)}`}>{etiqueta} {porcentaje(valor)}</span>;
+};
+
 /** Imagen de evidencia con carga diferida y marcador si no existe. */
 export const ImagenEvidencia: React.FC<{ ruta: string | null; alt: string; alto?: number | string; ajuste?: 'cover' | 'contain'; onClick?: () => void; fondoOscuro?: boolean }> =
   ({ ruta, alt, alto = 120, ajuste = 'cover', onClick, fondoOscuro }) => {
@@ -79,7 +86,6 @@ export const TarjetaDeteccion: React.FC<{ d: Deteccion; onValidar?: (d: Deteccio
   const alerta = !procesando && d.estado_validacion === 'alerta';
   const color = procesando ? 'var(--pendiente)' : ESTADOS[d.estado_validacion]?.color ?? 'var(--border)';
   const fondo = resaltada ? '#fffbeb' : autorizado ? '#f3fcf6' : alerta ? '#fef5f5' : 'var(--surface)';
-  const pct = (v: number | null) => (v === null ? null : `${Math.round(v * 100)} %`);
   return (
     <article className="animate-fade-in"
       onClick={() => navigate(`/detecciones/${d.id}`)}
@@ -92,9 +98,9 @@ export const TarjetaDeteccion: React.FC<{ d: Deteccion; onValidar?: (d: Deteccio
         <div className="miniatura-zoom" title="Clic para ver la fotografía y la placa con zoom" onClick={e => { e.stopPropagation(); if (d.imagen_placa || d.imagen_vehiculo) setZoom(true); }}>
           <ImagenEvidencia ruta={d.imagen_placa || d.imagen_vehiculo} alt={`Placa ${d.placa ?? 'sin lectura'}`} alto={60} ajuste="contain" fondoOscuro />
         </div>
-        <div className="fila" style={{ justifyContent: 'space-around', fontSize: 9.5, color: 'var(--text-3)', gap: 4 }}>
-          {pct(d.confianza_deteccion) && <span style={{ color: colorConfianza(d.confianza_deteccion), fontWeight: 700 }} title="Confianza de la detección">Det {pct(d.confianza_deteccion)}</span>}
-          {procesando ? <span>OCR ⏳</span> : pct(d.confianza_ocr) && <span style={{ color: colorConfianza(d.confianza_ocr), fontWeight: 700 }} title="Confianza de la lectura">OCR {pct(d.confianza_ocr)}</span>}
+        <div className="fila" style={{ justifyContent: 'space-around', fontSize: 9.5, gap: 4, flexWrap: 'wrap' }}>
+          {d.confianza_deteccion !== null && <ConfianzaBadge valor={d.confianza_deteccion} etiqueta="Det" />}
+          {procesando ? <span>OCR ⏳</span> : d.confianza_ocr !== null && <ConfianzaBadge valor={d.confianza_ocr} />}
         </div>
       </div>
       <div style={{ minWidth: 0, display: 'flex', flexDirection: 'column', gap: 5 }}>
@@ -134,7 +140,7 @@ export const TarjetaDeteccion: React.FC<{ d: Deteccion; onValidar?: (d: Deteccio
           </div>
         )}
         <div className="texto-secundario truncar" style={{ fontSize: 11.5 }}>
-          {[d.camara?.nombre ?? (d.fuente === 'manual' ? 'Registro manual' : null), describirVehiculo(d)].filter(x => x && x !== '—').join(' · ') || 'Sin datos adicionales'}
+          {d.camara?.nombre ?? (d.fuente === 'manual' ? 'Registro manual' : 'Sin datos adicionales')}
         </div>
       </div>
       {zoom && <div onClick={e => e.stopPropagation()}><VisorZoom d={d} onCerrar={() => setZoom(false)} /></div>}
@@ -153,7 +159,6 @@ export const ValidarModal: React.FC<{ d: Deteccion; onCerrar: () => void; onVali
   // La placa confirmada la escribe una persona: se valida con el formato ANT (la lectura de la cámara, no;
   // solo se propone como punto de partida)
   const [placa, setPlaca] = useState(() => placaPropuesta(d.placa_validada || d.placa_reconocida));
-  const [tipo, setTipo] = useState('');
   const [observacion, setObservacion] = useState('');
   const [enviando, setEnviando] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -166,7 +171,7 @@ export const ValidarModal: React.FC<{ d: Deteccion; onCerrar: () => void; onVali
     setError(null);
     try {
       const r = await api.post(`/detecciones/validar/${d.id}`, {
-        placa_validada: placa, tipo_vehiculo: tipo || undefined, observacion: observacion.trim() || undefined, excepcion: excepcion || undefined,
+        placa_validada: placa, observacion: observacion.trim() || undefined, excepcion: excepcion || undefined,
       });
       const det: Deteccion = r.data.deteccion;
       notificar(det.estado_validacion === 'alerta' ? 'error' : 'exito', `${det.tipo_movimiento === 'salida' ? 'Salida' : 'Ingreso'} validado: ${formatearPlaca(det.placa)}`, ESTADOS[det.estado_validacion].etiqueta);
@@ -199,13 +204,6 @@ export const ValidarModal: React.FC<{ d: Deteccion; onCerrar: () => void; onVali
         <div className="form-grid">
           <CampoPlaca id="val-placa" etiqueta="Placa confirmada*" valor={placa} onCambiar={setPlaca} autoFocus
             onEnter={() => { if (valida && !enviando) guardar(); }} />
-          {d.tipo_movimiento !== 'salida' && <div className="campo">
-            <label htmlFor="val-tipo">Tipo de vehículo</label>
-            <select id="val-tipo" className="select" value={tipo} onChange={e => setTipo(e.target.value)}>
-              <option value="">Según registro / formato de placa</option>
-              {TIPOS_VEHICULO.map(t => <option key={t}>{t}</option>)}
-            </select>
-          </div>}
           {d.tipo_movimiento !== 'salida' && <CampoTexto id="val-obs" className="completo" etiqueta={excepcion ? 'Motivo de la excepción*' : 'Observación (opcional)'}
             valor={observacion} onCambiar={setObservacion} regla={reglaObservacion}
             onEnter={() => { if (valida && !enviando) guardar(); }}
@@ -226,7 +224,6 @@ export const RegistroManualModal: React.FC<{ onCerrar: () => void; placaInicial?
   const notificar = useNotificar();
   const [placa, setPlaca] = useState(() => placaPropuesta(placaInicial));
   const [motivo, setMotivo] = useState('');
-  const [tipo, setTipo] = useState('');
   const [camara, setCamara] = useState('');
   const [camaras, setCamaras] = useState<Camara[]>([]);
   const [enviando, setEnviando] = useState(false);
@@ -240,7 +237,7 @@ export const RegistroManualModal: React.FC<{ onCerrar: () => void; placaInicial?
     setEnviando(true);
     setError(null);
     try {
-      const r = await api.post('/detecciones/registro-manual', { placa, motivo: motivo.trim(), tipo_vehiculo: tipo || undefined, camara_id: camara ? Number(camara) : undefined });
+      const r = await api.post('/detecciones/registro-manual', { placa, motivo: motivo.trim(), camara_id: camara ? Number(camara) : undefined });
       const d: Deteccion = r.data.deteccion;
       notificar(d.estado_validacion === 'alerta' ? 'error' : 'exito', `${d.tipo_movimiento === 'salida' ? 'Salida' : 'Ingreso'} manual registrada: ${formatearPlaca(d.placa)}`, ESTADOS[d.estado_validacion].etiqueta);
       onCerrar();
@@ -259,13 +256,6 @@ export const RegistroManualModal: React.FC<{ onCerrar: () => void; placaInicial?
       </>}>
       <div className="form-grid">
         <CampoPlaca id="man-placa" etiqueta="Placa*" valor={placa} onCambiar={setPlaca} autoFocus />
-        <div className="campo">
-          <label htmlFor="man-tipo">Tipo de vehículo</label>
-          <select id="man-tipo" className="select" value={tipo} onChange={e => setTipo(e.target.value)}>
-            <option value="">Según registro / formato de placa</option>
-            {TIPOS_VEHICULO.map(t => <option key={t}>{t}</option>)}
-          </select>
-        </div>
         <div className="campo completo">
           <label htmlFor="man-camara">Cámara asociada</label>
           <select id="man-camara" className="select" value={camara} onChange={e => setCamara(e.target.value)}>

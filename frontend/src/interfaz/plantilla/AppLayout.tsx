@@ -92,34 +92,36 @@ const Sidebar: React.FC<{ colapsado: boolean; onColapsar: () => void; abiertoMov
             <div className="sidebar-grupo" key={g.titulo}>
               <div className="sidebar-grupo-titulo">{g.titulo}</div>
               {g.items.map(i => (
-                <NavLink key={i.ruta} to={i.ruta} end={i.ruta === '/'} onClick={onCerrarMovil}
-                  className={({ isActive }) => `sidebar-link${isActive ? ' activo' : ''}`} title={colapsado ? i.titulo : undefined}>
-                  {i.icono}
-                  <span className="etiqueta">{i.titulo}</span>
-                  {i.contador && contadores[i.contador] > 0 && (
-                    <span className="contador" aria-label={`${contadores[i.contador]} pendientes`}>{contadores[i.contador] > 99 ? '99+' : contadores[i.contador]}</span>
+                <React.Fragment key={i.ruta}>
+                  <NavLink to={i.ruta} end={i.ruta === '/'} onClick={onCerrarMovil}
+                    className={({ isActive }) => `sidebar-link${isActive ? ' activo' : ''}`} title={colapsado ? i.titulo : undefined}>
+                    {i.icono}
+                    <span className="etiqueta">{i.titulo}</span>
+                    {i.contador && contadores[i.contador] > 0 && (
+                      <span className="contador" aria-label={`${contadores[i.contador]} pendientes`}>{contadores[i.contador] > 99 ? '99+' : contadores[i.contador]}</span>
+                    )}
+                  </NavLink>
+                  {i.ruta === '/camaras' && puede('operacion:monitorear') && (
+                    <div className="sidebar-submenu-camaras">
+                      <div className="sidebar-submenu-titulo">Cámaras registradas</div>
+                      {camaras.map(c => (
+                        <button key={c.id} type="button" className={`sidebar-link sidebar-camara${c.activa ? '' : ' deshabilitada'}`}
+                          draggable={c.activa}
+                          onDragStart={e => { e.dataTransfer.setData('application/x-anpr-camera', String(c.id)); e.dataTransfer.effectAllowed = 'copy'; }}
+                          onClick={() => { if (window.location.pathname !== '/monitoreo') navigate('/monitoreo'); }}
+                          title={colapsado ? `${c.nombre} · ${c.direccion}` : `Arrastre ${c.nombre} a una celda de Vista cuadrícula · ${c.direccion}`}>
+                          <GripVertical size={14} className="sidebar-camara-arrastre" />
+                          <Camera size={16} />
+                          <span className="etiqueta">{c.nombre}<small>{c.direccion === 'salida' ? 'Salida' : 'Ingreso'}{c.activa ? '' : ' · Deshabilitada'}</small></span>
+                        </button>
+                      ))}
+                      {camaras.length === 0 && !colapsado && <span className="sidebar-camaras-vacio">Sin cámaras registradas</span>}
+                    </div>
                   )}
-                </NavLink>
+                </React.Fragment>
               ))}
             </div>
           ))}
-          {puede('operacion:monitorear') && (
-            <div className="sidebar-grupo sidebar-camaras">
-              <div className="sidebar-grupo-titulo">Cámaras · arrastrar a Vista cuadrícula</div>
-              {camaras.filter(c => c.activa).map(c => (
-                <button key={c.id} type="button" className="sidebar-link sidebar-camara"
-                  draggable
-                  onDragStart={e => { e.dataTransfer.setData('application/x-anpr-camera', String(c.id)); e.dataTransfer.effectAllowed = 'copy'; }}
-                  onClick={() => { if (window.location.pathname !== '/monitoreo') navigate('/monitoreo'); }}
-                  title={colapsado ? `${c.nombre} · ${c.direccion}` : `Arrastre ${c.nombre} a una celda de Vista cuadrícula · ${c.direccion}`}>
-                  <GripVertical size={14} className="sidebar-camara-arrastre" />
-                  <Camera size={16} />
-                  <span className="etiqueta">{c.nombre}<small>{c.direccion === 'salida' ? 'Salida' : 'Ingreso'}</small></span>
-                </button>
-              ))}
-              {camaras.length === 0 && !colapsado && <span className="sidebar-camaras-vacio">Sin cámaras registradas</span>}
-            </div>
-          )}
         </nav>
         <div className="sidebar-pie">
           <button className="sidebar-colapsar" onClick={onColapsar} aria-label={colapsado ? 'Expandir menú' : 'Contraer menú'}>

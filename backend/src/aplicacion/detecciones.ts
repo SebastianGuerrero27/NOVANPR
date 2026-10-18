@@ -7,7 +7,7 @@ import {
 import {
   csvDetecciones, ETIQUETA_ESTADO, type FilaExportacion, type FiltrosDetecciones, fechaHoraLocal, leerDatosValidacion, leerFiltros,
   leerLimite, leerPaginacion, leerPlacaConsulta, leerRegistroManual, lecturaUtilizable, normalizarFuente, REGLA_MOTIVO_ELIMINACION,
-  REGLA_MOTIVO_ELIMINACION_MASIVA, serializarEvidencia, tieneFiltros, tipoPorFormato,
+  REGLA_MOTIVO_ELIMINACION_MASIVA, serializarEvidencia, tieneFiltros,
 } from '../dominio/detecciones';
 import { describirHorario, evaluarVigencia, type Vigencia } from '../dominio/horario';
 import { type Rol, tienePermiso } from '../dominio/permisos';
@@ -189,7 +189,7 @@ export function casosDetecciones(d: DependenciasDetecciones) {
     // El acceso se juzga en el instante del paso (horario y vigencia del permiso)
     let placa = l.placa;
     const cruce = await cruzarListas(placa, new Date(obs.fecha_hora_ingreso));
-    let tipo: string | null = tipoPorFormato(placa);
+    let tipo: string | null = null;
     if (cruce.permiso) {
       placa = normalizarPlaca(cruce.permiso.placa) || placa;
       tipo = cruce.permiso.tipo_vehiculo || tipo;
@@ -459,7 +459,7 @@ export function casosDetecciones(d: DependenciasDetecciones) {
       const decision = decidirAcceso({ origen: 'manual', ...entradaListas(cruce), excepcion, politica: d.politica() });
       const final = cruce.permiso ? normalizarPlaca(cruce.permiso.placa) || placa.valor.placa : placa.valor.placa;
       await d.repositorio.guardarValidacion(id, {
-        placa: final, tipo: tipoVehiculo || cruce.permiso?.tipo_vehiculo || tipoPorFormato(final), usuarioId: actor.id,
+        placa: final, tipo: tipoVehiculo || cruce.permiso?.tipo_vehiculo || null, usuarioId: actor.id,
       }, cruce, decision);
 
       const antes = actual.placa_validada || actual.placa_reconocida || 'sin lectura';
@@ -492,7 +492,7 @@ export function casosDetecciones(d: DependenciasDetecciones) {
       const cruce = await cruzarListas(placa, d.tiempo.ahora());
       const decision = decidirAcceso({ origen: 'manual', ...entradaListas(cruce), politica: d.politica() });
       const id = await d.repositorio.crearManual({
-        placa, camaraId, tipo: tipoVehiculo || cruce.permiso?.tipo_vehiculo || tipoPorFormato(placa), usuarioId: actor.id,
+        placa, camaraId, tipo: tipoVehiculo || cruce.permiso?.tipo_vehiculo || null, usuarioId: actor.id,
       }, cruce, decision);
       await d.auditoria.operacion(actor, 'REGISTRO_MANUAL', 'deteccion', id, `${placa} (${ETIQUETA_ESTADO[decision.estado]}) · ${motivo}`);
       const dto = await difundir(id, 'deteccion:nueva');

@@ -95,6 +95,8 @@ class ConfigMotor:
     registro_paralelo: bool = True
     #: Análisis del vehículo iniciado al aparecer la placa completa (False: al registrar)
     vehiculo_anticipado: bool = True
+    #: La clasificación visual del vehículo no se usa mientras su precisión no esté validada.
+    analizar_vehiculo: bool = False
     #: Fotos de un mismo track que se prueban antes de descartarlo (1: sin reintento)
     intentos_captura: int = MAX_INTENTOS_CAPTURA
     #: Enfriamiento entre lecturas OCR rápidas de un track RTSP
@@ -386,7 +388,8 @@ class MotorAnpr:
         self._trabajador_ocr.start()
         # Precarga del verificador PP-OCRv6 (la compilación OpenVINO tarda unos segundos) y del reconocedor
         threading.Thread(target=self._dep.verificador, daemon=True, name="OcrVerifierInit").start()
-        threading.Thread(target=self._dep.reconocedor_vehiculo, daemon=True, name="VehicleAttrInit").start()
+        if self._config.analizar_vehiculo:
+            threading.Thread(target=self._dep.reconocedor_vehiculo, daemon=True, name="VehicleAttrInit").start()
 
         self._activo = True
         self._hilo_captura = threading.Thread(
@@ -549,7 +552,7 @@ class MotorAnpr:
         el resultado no depende de esa foto y así no alarga el registro (era su etapa más lenta).
         """
         tid = roi.tracking_id
-        if not self._config.vehiculo_anticipado or not getattr(roi, "en_movimiento", False) or tid in self._vehiculos:
+        if not self._config.analizar_vehiculo or not self._config.vehiculo_anticipado or not getattr(roi, "en_movimiento", False) or tid in self._vehiculos:
             return
         if not leible(roi.plate_bbox, frame, ancho_min=30, alto_min=10):
             return
@@ -1028,7 +1031,7 @@ class MotorAnpr:
             #    otro, eran la mayor parte de la latencia del registro.
             agente = getattr(trabajador, "_agent", None) if trabajador else None
             verificador = self._dep.verificador()
-            reconocedor = self._dep.reconocedor_vehiculo()
+            reconocedor = self._dep.reconocedor_vehiculo() if self._config.analizar_vehiculo else None
             caja_placa = [int(v) for v in candidato.plate_bbox]
 
             def lanzar(funcion: Callable, *args, **kwargs) -> Future:

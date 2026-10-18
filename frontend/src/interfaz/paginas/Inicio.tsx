@@ -9,10 +9,10 @@ import { useAuth } from '../../aplicacion/AuthContext';
 import { useEvento, useReconexion } from '../../aplicacion/tiempoReal';
 import { useConsulta, useDiferido, usePaginaVisible } from '../../aplicacion/hooks';
 import type { Deteccion, ResumenPanel } from '../../dominio/tipos';
-import { colorConfianza, diaCorto, fecha, fechaHora, hora, numero, porcentaje, relativo, SERIES_ESTADO } from '../../dominio/formato';
+import { diaCorto, fecha, fechaHora, hora, numero, relativo, SERIES_ESTADO } from '../../dominio/formato';
 import { Aviso, Cargando, FilasEsqueleto, InsigniaEstado, Kpi, Tarjeta, Vacio } from '../componentes/ui';
 import { BarrasApiladas, BarrasHorizontales, Dona, Leyenda } from '../componentes/Graficos';
-import { describirVehiculo, PlacaFoto, RegistroManualModal, TarjetaDeteccion, ValidarModal } from '../componentes/deteccion';
+import { ConfianzaBadge, describirVehiculo, PlacaFoto, RegistroManualModal, TarjetaDeteccion, ValidarModal } from '../componentes/deteccion';
 import GestionPermisos from './GestionPermisos';
 
 function saludo(): string {
@@ -216,7 +216,7 @@ const IngresosRecientes: React.FC = () => {
                 <td className="ocultar-movil" style={{ maxWidth: 240 }}>
                   <span className="truncar" style={{ display: 'block' }}>{d.alerta ? <b style={{ color: 'var(--alerta)' }}>{d.alerta.motivo}</b> : d.autorizado?.propietario ?? describirVehiculo(d)}</span>
                 </td>
-                <td className="num ocultar-movil"><span style={{ color: colorConfianza(d.confianza_ocr), fontWeight: 700 }}>{porcentaje(d.confianza_ocr)}</span></td>
+                <td className="num ocultar-movil"><ConfianzaBadge valor={d.confianza_ocr} /></td>
                 <td>{d.validado_manualmente
                   ? <span title={d.validacion?.usuario?.email}>{d.validacion?.usuario?.nombre ?? 'Personal'}</span>
                   : <span className="texto-secundario">Automática</span>}</td>

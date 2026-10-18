@@ -6,11 +6,11 @@ import { useAuth } from '../../aplicacion/AuthContext';
 import { useEvento, useReconexion } from '../../aplicacion/tiempoReal';
 import { useConsulta, usePaginaVisible } from '../../aplicacion/hooks';
 import type { Camara, Deteccion, EstadoAnpr } from '../../dominio/tipos';
-import { codecVideo, colorConfianza, ESTADOS, fecha, fechaHora, hora, numero, relativo } from '../../dominio/formato';
+import { codecVideo, ESTADOS, fecha, fechaHora, hora, numero, relativo } from '../../dominio/formato';
 import { formatearPlaca, normalizarPlaca } from '../../dominio/validacion';
 import { Aviso, Cargando, InsigniaEstado, Modal, Placa, Segmentado, Tarjeta, Vacio } from '../componentes/ui';
 import { filtrarEscrito } from '../componentes/campos';
-import { ImagenEvidencia, RegistroManualModal, TarjetaDeteccion, ValidarModal } from '../componentes/deteccion';
+import { ConfianzaBadge, ImagenEvidencia, RegistroManualModal, TarjetaDeteccion, ValidarModal } from '../componentes/deteccion';
 import { VisorZoom } from '../componentes/ZoomDual';
 import { EliminarUno, EliminarVarios } from '../componentes/EliminarDetecciones';
 import { alCambiarSonido, fijarSonido, sonarAutorizado, sonarDenegado, sonidoActivo } from '../../infraestructura/avisos';
@@ -383,7 +383,7 @@ const TablaIngresosRecientes: React.FC<{ items: Deteccion[]; onValidar: (d: Dete
                       </span>
                       <span className="secundario truncar">{[d.tipo_movimiento === 'salida' ? 'Salida' : 'Ingreso', d.camara?.nombre].filter(Boolean).join(' · ')}</span>
                     </td>
-                    <td className="num ocultar-movil"><span style={{ color: colorConfianza(d.confianza_ocr), fontWeight: 700 }}>{d.confianza_ocr !== null ? `${(d.confianza_ocr * 100).toFixed(1)} %` : '—'}</span></td>
+                    <td className="num ocultar-movil"><ConfianzaBadge valor={d.confianza_ocr} /></td>
                     <td onClick={e => { e.stopPropagation(); setZoom(d); }} className="miniatura-zoom" title="Ampliar evidencia" style={{ width: 86 }}>
                       <ImagenEvidencia ruta={d.imagen_placa || d.imagen_vehiculo} alt="" alto={36} ajuste="contain" fondoOscuro />
                     </td>
