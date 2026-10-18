@@ -18,6 +18,10 @@
   font-family: var(--font-family);
 }
 
+@media (min-width: 1200px) {
+  .auth-root { min-height: 125vh; }
+}
+
 /* ── Panel de imagen que se desliza entre las dos mitades ── */
 .auth-imagen {
   position: absolute;
