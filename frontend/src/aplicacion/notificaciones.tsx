@@ -128,8 +128,10 @@ export const CentroNotificacionesProvider: React.FC<{ children: React.ReactNode 
   useEvento<Notificacion>('notificacion:nueva', n => {
     setItems(actuales => fusionar(actuales, [n]));
     resumenDiferido();
-    // Los avisos de acceso del personal de garita ya tienen su aviso a pantalla completa
-    const garita = puede('avisos:garita') && n.tipo.startsWith('acceso.') && n.tipo !== 'acceso.reincidencia' && n.tipo !== 'acceso.llegada_permiso';
+    // Las alertas que ya tienen protocolo a pantalla completa no duplican el toast.
+    // El ingreso autorizado no tiene ese protocolo: debe avisarse también como toast.
+    const garita = puede('avisos:garita') && n.tipo.startsWith('acceso.')
+      && n.tipo !== 'acceso.reincidencia' && n.tipo !== 'acceso.llegada_permiso';
     if (!garita) {
       // Pulsar el aviso abre su enlace (p. ej. la lista blanca filtrada por la placa del permiso otorgado)
       notificar(TIPO_TOAST[n.severidad], n.titulo, n.mensaje, n.enlace ? () => navigate(n.enlace!) : undefined);

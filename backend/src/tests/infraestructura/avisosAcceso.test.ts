@@ -29,20 +29,24 @@ describe('avisos de permisos de placa', () => {
     }));
   });
 
-  it('llegada: un paso autorizado se notifica solo a quien otorgó el permiso', async () => {
+  it('llegada: se notifica a la garita y a quien otorgó el permiso', async () => {
     await notificarDecision(paso, AUTORIZADO, { registrado_por: 9, propietario: 'Juan Pérez' });
     expect(mockNotificar).toHaveBeenCalledTimes(1);
     expect(mockNotificar).toHaveBeenCalledWith(expect.objectContaining({
       tipo: 'acceso.llegada_permiso',
       titulo: 'Llegó el vehículo autorizado · PBA1234',
       enlace: '/listas/autorizados?q=PBA1234',
-      destinatarios: { usuarios: [9] },
+      destinatarios: { permiso: 'avisos:garita', usuarios: [9] },
     }));
   });
 
-  it('llegada: sin autor conocido del permiso no se notifica a nadie', async () => {
+  it('llegada: sin autor conocido del permiso se notifica a la garita', async () => {
     await notificarDecision(paso, AUTORIZADO, { registrado_por: null });
     await notificarDecision(paso, AUTORIZADO);
-    expect(mockNotificar).not.toHaveBeenCalled();
+    expect(mockNotificar).toHaveBeenCalledTimes(2);
+    expect(mockNotificar).toHaveBeenCalledWith(expect.objectContaining({
+      tipo: 'acceso.llegada_permiso',
+      destinatarios: { permiso: 'avisos:garita', usuarios: [] },
+    }));
   });
 });

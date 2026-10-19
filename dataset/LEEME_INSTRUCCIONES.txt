@@ -1,51 +1,106 @@
 ==============================================================================
-GUIA RAPIDA: CAPTURA DE FOTOS Y ENTRENAMIENTO DEL MODELO DE PLACAS
+GUIA: ENTRENAR Y AFINAR EL DETECTOR DE PLACAS, LOCALMENTE O CON DOCKER
 ==============================================================================
 
-1. DONDE COLOCAR LAS FOTOS:
-   Coloca las fotos que tomes con tu celular en la carpeta:
-   -> dataset/raw/
-   
-   Puedes colocarlas directamente en "raw" o dividirlas en las subcarpetas:
-   - dataset/raw/1_metro/   (Fotos a 1 metro de distancia)
-   - dataset/raw/2_metros/  (Fotos a 2 metros de distancia)
-   - dataset/raw/3_metros/  (Fotos a 3 metros de distancia)
-   - dataset/raw/5_metros/  (Fotos a 5 metros de distancia)
-   - dataset/raw/8_metros/  (Fotos a 8 metros de distancia)
+1. IMAGENES SOLICITADAS Y ETIQUETAS
 
-2. RECOMENDACIONES AL TOMAR LAS FOTOS:
-   - NO recortes las fotos. Sube la foto completa tal como sale de la camara del celular.
-   - Toma entre 5 y 10 fotos por cada distancia.
-   - Variaciones sugeridas:
-     * Frontal recta (0 grados).
-     * Inclinada levemente hacia la izquierda (~15 grados).
-     * Inclinada levemente hacia la derecha (~15 grados).
-     * Unas con buena luz y otras con un poco de sombra o contraluz.
-   - Si tienes más de una placa o vehículo, tómale también a las otras para mayor variedad.
+   Origen: dataset/openimages_plates_ecuatorianas/
+   Contiene 8.000 recortes SINTETICOS de placas: 7.200 train y 800 val.
+   No son fotos reales de vehiculos de Open Images, aunque la carpeta tenga
+   ese nombre. Sus etiquetas son de pose (caja + cuatro esquinas).
+   El data.yaml original apunta a otra carpeta; NO usarlo para el detector.
 
-3. PASO 1: ETIQUETADO AUTOMATICO
-   Una vez que hayas pegado las fotos en "dataset/raw/", abre una terminal en la raiz y corre:
-   
-   .\services\anpr\.venv\Scripts\python services\anpr\scripts\auto_annotate.py
+   Las etiquetas ya existen: NO hay que volver a autoetiquetar estas imagenes.
+   Preparar una copia de deteccion que conserva las imagenes y cajas originales:
 
-   ¿Que hace este comando?
-   - Detecta la placa en cada foto automaticamente.
-   - Genera las etiquetas oficiales YOLO (.txt) con coordenadas normalizadas.
-   - Divide automaticamente 80% para entrenamiento (train) y 20% para validacion (val).
-   - Genera una copia visual en "dataset/preview/" con una caja verde dibujada sobre
-     cada foto para que puedas abrirla y verificar visualmente que la placa quedo
-     perfectamente encuadrada.
+   .\services\anpr\.venv\Scripts\python services\anpr\scripts\prepare_plate_dataset.py
 
-4. PASO 2: ENTRENAR EL MODELO
-   Despues de revisar las fotos en preview, corre:
+   Resultado: dataset/detector_ecuatorianas/
+   - images/{train,val}/ y labels/{train,val}/: etiquetas YOLO de 5 columnas.
+   - data.yaml: rutas portables entre Windows y Docker.
+   - provenance.json: auditoria, huellas SHA-256 y limitaciones.
+   - preview/contact_sheet.jpg: muestra de cajas verdes para revision visual.
 
-   .\services\anpr\.venv\Scripts\python services\anpr\scripts\train_plate_detector.py
+   Se conserva el reparto existente 90/10. No se inventa una particion test.
+   El preparador rechaza destinos existentes para no mezclar corridas; si la
+   copia ya esta preparada, continuar directamente con el siguiente paso.
 
-   ¿Que hace el entrenamiento?
-   - Entrena con aumentacion de datos multi-escala (zoom, rotacion, variacion de luz).
-   - Ajusta los pesos neuronales para que detecte placas tanto gigantes (1m) como diminutas (8-10m).
-   - Guarda el mejor modelo directamente en:
-     services/anpr/models/license_plate_detector.pt
-   - Exporta una version ultra-rapida ONNX (models/license_plate_detector.onnx) para que
-     el microservicio funcione a menos de 10 milisegundos sin latencia.
+2. VALIDAR Y ENTRENAR EN WINDOWS (TERMINAL EN LA RAIZ DEL PROYECTO)
+
+   Validar sin entrenar:
+
+   .\services\anpr\.venv\Scripts\python services\anpr\scripts\train_plate_detector.py --validate-only
+
+   Afinar desde el detector de placas actual (evita empezar desde COCO):
+
+   .\services\anpr\.venv\Scripts\python services\anpr\scripts\train_plate_detector.py --data dataset/detector_ecuatorianas/data.yaml --weights services/anpr/models/license_plate_detector.pt --nombre ecuatorianas --epochs 30 --imgsz 512 --batch 8 --device cpu --workers 0 --threads 4 --export-onnx
+
+   --epochs controla el maximo de epocas. --patience permite parada temprana.
+   --multi-scale 0.25 cambia la resolucion por lote; las aumentaciones incluyen
+   escala, rotacion, perspectiva y brillo, sin invertir los caracteres.
+   --freeze 10 permite congelar las primeras diez capas en un afinamiento.
+   No implica precision garantizada a una distancia concreta.
+
+3. ENTRENAR ESTANDO DOCKERIZADO: SI SE PUEDE
+
+   Abrir Docker Desktop en modo contenedores Linux y, desde la raiz, ejecutar:
+
+   docker compose -f docker-compose.train.yml build train
+   docker compose -f docker-compose.train.yml run --rm train --validate-only
+   docker compose -f docker-compose.train.yml up -d train
+   docker compose -f docker-compose.train.yml logs -f train
+
+   NOTA: run con argumentos sustituye el comando del servicio. --validate-only
+   funciona porque el script usa dataset/detector_ecuatorianas por defecto.
+   up inicia la configuracion completa: 30 epocas, 512 px, batch 8, CPU y ONNX.
+   El contenedor de entrenamiento es independiente del motor FastAPI.
+   Los montajes conservan datos, modelos y resultados en el disco del host.
+   Eliminar el contenedor no elimina esos archivos.
+
+   Reanudar una corrida interrumpida, sustituyendo RUTA por su checkpoint:
+
+   docker compose -f docker-compose.train.yml run --rm train --data /workspace/dataset/detector_ecuatorianas/data.yaml --resume /workspace/dataset/runs/RUTA/weights/last.pt --device cpu --workers 0 --export-onnx
+
+   Para afinar otra vez con imagenes nuevas, preparar un dataset revisado y usar
+   --weights /workspace/services/anpr/models/NOMBRE_candidato.pt.
+   --resume recupera una corrida interrumpida; --weights inicia un nuevo ajuste.
+   Mas instrucciones y activacion del motor: docs/ENTRENAMIENTO_DOCKER.md.
+
+4. RESULTADOS Y USO EN EL MOTOR
+
+   dataset/runs/<corrida>/weights/best.pt: mejor checkpoint de validacion.
+   dataset/runs/<corrida>/weights/last.pt: checkpoint para reanudar.
+   dataset/runs/<corrida>/results.csv: metricas por epoca.
+   services/anpr/models/<corrida>_candidato.pt: candidato con nombre unico.
+   services/anpr/models/<corrida>_candidato.json: datos y metricas de la corrida.
+   services/anpr/models/<corrida>_candidato.onnx: exportacion de tamano dinamico.
+   services/anpr/models/<corrida>_candidato.benchmark.json: medicion de ONNX.
+
+   Se verifica una inferencia con ONNX Runtime. Exportar NO garantiza menos
+   de 10 ms: depende del equipo, resolucion y carga. El benchmark solo mide
+   la red; no incluye video, preprocesamiento ni OCR.
+
+   El entrenamiento genera un candidato; no sustituye automaticamente
+   services/anpr/models/license_plate_detector.pt. Comparar en fotografias
+   reales independientes antes de activarlo; los sinteticos solos no bastan.
+   El motor carga pesos al arrancar: cambiar el archivo o PLATE_MODEL_PATH
+   requiere reiniciar el servicio, no existe aprendizaje continuo automatico.
+
+5. FOTOS REALES PARA UNA SIGUIENTE MEJORA
+
+   Guardar fotos completas en dataset/raw/, preferiblemente agrupadas por
+   vehiculo y dia. Se pueden crear subcarpetas de 1_metro, 2_metros, 3_metros,
+   5_metros y 8_metros. Tomar vistas frontales, inclinaciones y distintas luces.
+   Cinco o diez fotos por distancia sirven para explorar; para evaluar el motor
+   se necesita variedad de vehiculos, fondos, camaras y placas pequenas.
+
+   Para fotos nuevas sin etiquetas, usar scripts/annotate_plates.py, que propone
+   cajas a partir de OCR independiente y genera vistas para revision manual.
+   Consultar su --help antes de elegir origen, destino y grupos de prueba.
+   Conservar el mismo vehiculo/secuencia dentro de una sola particion evita
+   evaluar con fotos casi identicas a las del entrenamiento.
+
+   Los recortes sinteticos tambien son utiles para OCR y para el rectificador
+   de esquinas. Este procedimiento afina el DETECTOR, no entrena esos otros
+   modelos del motor ANPR.
 ==============================================================================

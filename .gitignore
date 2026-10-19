@@ -103,5 +103,8 @@ dataset/preds/
 backups/
 # Dataset público Open Images (scripts/prepare_openimages_plates.py) y corridas de entrenamiento
 dataset/openimages_plates/
+dataset/openimages_plates_ecuatorianas/labels/*.cache
+dataset/detector_ecuatorianas/
+dataset/.detector_ecuatorianas-prepare-*/
 dataset/openimages_cache/
 dataset/runs/

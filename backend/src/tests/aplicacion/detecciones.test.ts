@@ -311,7 +311,7 @@ describe('Detecciones · acciones del personal', () => {
     expect((await fallo(casos.registroManual({ placa: 'ABC123', motivo: 'Cámara caída' }, GUARDIA))).tipo).toBe('validacion');
     expect((await fallo(casos.registroManual({ placa: 'ABC1234', motivo: 'no' }, GUARDIA))).tipo).toBe('validacion');
     await casos.registroManual({ placa: 'ab-123c', motivo: 'Cámara fuera de servicio' }, GUARDIA);
-    expect(repositorio.crearManual).toHaveBeenCalledWith({ placa: 'AB123C', camaraId: null, tipo: 'Motocicleta', usuarioId: GUARDIA.id },
+    expect(repositorio.crearManual).toHaveBeenCalledWith({ placa: 'AB123C', camaraId: null, tipo: null, usuarioId: GUARDIA.id },
       expect.anything(), expect.objectContaining({ estado: 'no_reconocido' }));
     expect(auditoria.operacion).toHaveBeenCalledWith(GUARDIA, 'REGISTRO_MANUAL', 'deteccion', 30, 'AB123C (No registrado) · Cámara fuera de servicio');
   });

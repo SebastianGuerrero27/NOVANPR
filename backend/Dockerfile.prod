@@ -1,5 +1,5 @@
 # Imagen de producción del backend (la usa el CD). Contexto de construcción: raíz del repositorio,
-# porque el backend aplica en el arranque los scripts de db/ registrados en config/db.ts.
+# porque el backend carga db/postgresql/esquema.sql al arrancar.
 #   docker build -f backend/Dockerfile.prod -t anpr-backend .
 # El Dockerfile de desarrollo (backend/Dockerfile, ts-node-dev) sigue siendo el de docker compose.
 
@@ -20,7 +20,7 @@ WORKDIR /app
 COPY --from=build --chown=node:node /app/node_modules ./node_modules
 COPY --from=build --chown=node:node /app/dist ./dist
 COPY --chown=node:node backend/package.json ./
-# config/db.ts busca los scripts en path.join(__dirname, '../../db') → /app/db
+# db.ts busca el esquema PostgreSQL en path.join(__dirname, '../../db') → /app/db
 COPY --chown=node:node db ./db
 RUN mkdir -p /app/media /app/logs && chown node:node /app/media /app/logs
 USER node

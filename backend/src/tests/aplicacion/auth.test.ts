@@ -121,8 +121,7 @@ describe('Casos de uso · autenticación', () => {
     it('valida nombre, correo y contraseña antes de tocar la base', async () => {
       const { casos, repositorio } = preparar();
       expect((await fallo(casos.configuracionInicial({ ...DATOS, nombre_completo: 'María 2' }, VISITANTE))).tipo).toBe('validacion');
-      expect((await fallo(casos.configuracionInicial({ ...DATOS, email: 'admin@gmail.com' }, VISITANTE))).message)
-        .toBe('Solo se aceptan correos de: @ecu911.gob.ec.');
+      expect((await fallo(casos.configuracionInicial({ ...DATOS, email: 'no-es-correo' }, VISITANTE))).tipo).toBe('validacion');
       expect((await fallo(casos.configuracionInicial({ ...DATOS, password: 'corta' }, VISITANTE))).message)
         .toBe('La contraseña debe tener al menos 10 caracteres.');
       expect(repositorio.hayAdministrador).not.toHaveBeenCalled();

@@ -1,6 +1,6 @@
 import crypto from 'crypto';
 import bcrypt from 'bcryptjs';
-import sql from 'mssql';
+import sql from './postgres';
 import { getDB } from './db';
 import type { PuertoAuditoriaCuentas, PuertoClaves, PuertoTokens } from '../aplicacion/usuarios';
 import { generarToken, hashToken } from './servicios/seguridad';

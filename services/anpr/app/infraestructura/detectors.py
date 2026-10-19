@@ -13,6 +13,7 @@ import numpy as np
 
 from app.dominio.models import Detection
 from app.infraestructura.logger import get_logger
+from app.infraestructura.model_architecture import identificar_arquitectura, leer_arquitectura_onnx
 
 logger = get_logger("detectors")
 
@@ -28,32 +29,6 @@ class BaseDetector(ABC):
     def warmup(self, dummy_frame: Optional[np.ndarray] = None) -> None:
         """Precalienta el modelo si aplica."""
         pass
-
-
-def identificar_arquitectura(red: Any) -> str:
-    """
-    Identifica la familia YOLO de una red de Ultralytics por su estructura, no por el nombre del
-    archivo (un modelo afinado puede llamarse de cualquier forma):
-
-      - YOLO26: bloques C3k2 + C2PSA y cabeza Detect sin DFL (reg_max = 1, sin NMS).
-      - YOLO11: bloques C3k2 + C2PSA y cabeza Detect con DFL (reg_max = 16).
-      - YOLOv8: bloques C2f.
-
-    Recibe el nn.Module (``YOLO(...).model``). Devuelve "yolo26", "yolo11", "yolov8" o "desconocida".
-    """
-    capas = list(getattr(red, "model", None) or [])
-    if not capas:
-        return "desconocida"
-    tipos = {type(capa).__name__ for capa in capas}
-    reg_max = getattr(capas[-1], "reg_max", None)
-    if "C2f" in tipos:
-        return "yolov8"
-    if "C3k2" in tipos:
-        if reg_max == 1:
-            return "yolo26"
-        if reg_max == 16:
-            return "yolo11"
-    return "desconocida"
 
 
 class YoloDetector(BaseDetector):
@@ -85,6 +60,8 @@ class YoloDetector(BaseDetector):
             from ultralytics import YOLO
             self.model = YOLO(model_path)
             self.arquitectura = identificar_arquitectura(getattr(self.model, "model", None))
+            if self.arquitectura == "desconocida" and os.path.splitext(os.fspath(model_path))[1].lower() == ".onnx":
+                self.arquitectura = leer_arquitectura_onnx(model_path)
             logger.info("Arquitectura del detector %s: %s (clases: %s)",
                         os.path.basename(model_path), self.arquitectura, getattr(self.model, "names", {}))
             # Mapear nombres de clases a IDs si se pasaron strings

@@ -161,9 +161,12 @@ function dibujarPista(ctx: CanvasRenderingContext2D, a: AreaDibujo, p: PistaHud,
   ctx.save();
   ctx.globalAlpha = Math.max(0, Math.min(1, opacidad));
   ctx.shadowColor = conAlfa(color, 0.45);
-  ctx.shadowBlur = 10;
+  ctx.shadowBlur = 4;
   ctx.strokeStyle = color;
-  ctx.lineWidth = 2.5;
+  // Contorno fino y estable al escalar el video, legible sobre fondos claros y oscuros.
+  ctx.lineWidth = 1.8;
+  ctx.lineJoin = 'round';
+  ctx.lineCap = 'round';
 
   let ancla: [number, number];
   if (p.puntos && p.puntos.length === 4) {
@@ -187,7 +190,7 @@ function dibujarPista(ctx: CanvasRenderingContext2D, a: AreaDibujo, p: PistaHud,
     ctx.roundRect(x1, y1, x2 - x1, y2 - y1, 4);
     ctx.stroke();
     const l = Math.min(12, (x2 - x1) * 0.22, (y2 - y1) * 0.22);
-    ctx.lineWidth = 3.5;
+    ctx.lineWidth = 2.2;
     for (const [cx, cy, sx, sy] of [[x1, y1, 1, 1], [x2, y1, -1, 1], [x1, y2, 1, -1], [x2, y2, -1, -1]]) {
       ctx.beginPath();
       ctx.moveTo(cx, cy + sy * l);

@@ -1,5 +1,5 @@
 import crypto from 'crypto';
-import sql from 'mssql';
+import sql from '../postgres';
 import { getDB } from '../db';
 import { type AlcanceTicket, enmascararEnTexto, fuenteParaMediamtx } from '../../dominio/camaras';
 import { revelar } from './custodiaCredenciales';

@@ -104,7 +104,6 @@ _COLOR_ESTADO = {
     "no_reconocido": (6, 119, 217),
     "alerta": (28, 28, 185),
 }
-_COLOR_ESCANEANDO = (11, 158, 245)
 _COLOR_LEIDA = (94, 197, 34)
 _TEXTO_ESTADO = {
     "autorizado": "AUTORIZADO",
@@ -1131,31 +1130,24 @@ class DetectionPipeline:
                 )
                 tracked_rois.append(roi)
 
-                # 7.3. Qué se dibuja: una pista en movimiento (un vehículo) se dibuja desde el
-                # primer cuadro y la caja la sigue mientras el OCR la lee; una pista quieta solo
-                # cuando hay evidencia de placa (fila de caracteres o una lectura ANT), para no
-                # enmarcar rótulos o rejillas que el detector confunde con placas. Sin lectura
-                # muestra "ESCANEANDO OCR" (o el texto parcial) con la confianza del detector;
-                # con lectura ANT, la placa por consenso; con la decisión del backend, su estado.
-                # Qué se registra lo sigue decidiendo la verificación en dos fases, no este dibujo.
+                # 7.3. El HUD solo muestra una lectura OCR ANT completa. El seguimiento y el
+                # procesamiento siguen activos para pistas sin lectura; se ocultan para no dibujar
+                # recuadros naranjas de "ESCANEANDO OCR" ni detecciones provisionales.
                 lecturas = int(plate_info.get("lecturas", 0)) if plate_info else 0
                 verificada = bool(verif["es_placa"] or lecturas >= 2)
-                if not (en_movimiento or verificada or lecturas >= 1):
-                    continue
                 texto_ocr = plate_info.get("plate", "") if plate_info else ""
                 placa = texto_ocr if lecturas >= 1 else ""
-                parcial = "" if placa else texto_ocr[:8]
-                confianza_placa = float(plate_info.get("confidence", 0.0)) if placa else 0.0
+                if not placa:
+                    continue
+                parcial = ""
+                confianza_placa = float(plate_info.get("confidence", 0.0))
                 estado = plate_info.get("status", "") if plate_info else ""
                 if estado in _COLOR_ESTADO:
                     box_color = _COLOR_ESTADO[estado]
-                    box_label = f"{placa_con_guion(placa)}  {_TEXTO_ESTADO[estado]}" if placa else _TEXTO_ESTADO[estado]
-                elif placa:
+                    box_label = f"{placa_con_guion(placa)}  {_TEXTO_ESTADO[estado]}"
+                else:
                     box_color = _COLOR_LEIDA
                     box_label = f"{placa_con_guion(placa)}  {int(confianza_placa * 100)}%"
-                else:
-                    box_color = _COLOR_ESCANEANDO
-                    box_label = f"{parcial or 'ESCANEANDO OCR'}...  {int(trk.confidence * 100)}%"
 
                 new_overlays.append(VisualOverlayBox(
                     x1=x1,

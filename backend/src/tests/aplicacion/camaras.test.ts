@@ -138,7 +138,7 @@ describe('Casos de uso · cámaras', () => {
       const camara = await casos.registrar({ nombre: '  Garita   sur ', ubicacion: 'Acceso sur, bloque B', rtsp_url: URL_GUARDADA }, ADMIN);
       // Sin IP indicada, el ping usa el host de la URL
       expect(repositorio.crear).toHaveBeenCalledWith(
-        { nombre: 'Garita sur', ubicacion: 'Acceso sur, bloque B', rtsp: URL_GUARDADA, rtspVista: null, ip: '192.168.1.64' }, 1);
+        { nombre: 'Garita sur', ubicacion: 'Acceso sur, bloque B', rtsp: URL_GUARDADA, rtspVista: null, ip: '192.168.1.64', direccion: 'ingreso' }, 1);
       expect(auditoria.operacion).toHaveBeenCalledWith(ADMIN, 'CAMARA_ALTA', 'camara', 7, 'Garita sur · Acceso sur, bloque B');
       expect(camara).toMatchObject({ id: 7, rtsp_url: URL_ENMASCARADA });
       expect(eventos.emitir).toHaveBeenCalledWith('camara:actualizada', camara);
@@ -203,7 +203,7 @@ describe('Casos de uso · cámaras', () => {
       const { casos, repositorio, auditoria, eventos, conectividad, video } = preparar();
       const camara = await casos.editar(3, { ...VALIDA, nombre: 'Garita norte 2', rtsp_url: URL_ENMASCARADA }, ADMIN);
       expect(repositorio.actualizar).toHaveBeenCalledWith(3,
-        { nombre: 'Garita norte 2', ubicacion: 'Acceso vehicular norte', rtsp: URL_GUARDADA, rtspVista: null, ip: '192.168.1.64' });
+        { nombre: 'Garita norte 2', ubicacion: 'Acceso vehicular norte', rtsp: URL_GUARDADA, rtspVista: null, ip: '192.168.1.64', direccion: 'ingreso' });
       expect(auditoria.operacion).toHaveBeenCalledWith(ADMIN, 'CAMARA_EDICION', 'camara', 3, 'Garita norte 2: nombre');
       // La URL no cambió: no se vuelve a verificar la conexión ni se reconfigura MediaMTX
       await enCola();
@@ -225,7 +225,7 @@ describe('Casos de uso · cámaras', () => {
       const nueva = 'rtsp://admin:otra@192.168.1.65:554/Streaming/Channels/102';
       await casos.editar(3, { ...VALIDA, rtsp_url: nueva }, ADMIN);
       expect(repositorio.actualizar).toHaveBeenCalledWith(3,
-        { nombre: 'Garita norte', ubicacion: 'Acceso vehicular norte', rtsp: nueva, rtspVista: null, ip: '192.168.1.65' });
+        { nombre: 'Garita norte', ubicacion: 'Acceso vehicular norte', rtsp: nueva, rtspVista: null, ip: '192.168.1.65', direccion: 'ingreso' });
       expect(auditoria.operacion).toHaveBeenCalledWith(ADMIN, 'CAMARA_EDICION', 'camara', 3, 'Garita norte: URL RTSP, IP');
       await enCola();
       expect(conectividad.registrar).toHaveBeenCalledWith(3, RTSP_OK, true);

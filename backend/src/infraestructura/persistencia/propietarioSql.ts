@@ -1,4 +1,4 @@
-import sql from 'mssql';
+import sql from '../postgres';
 import { getDB } from '../db';
 import type { RepositorioPropietario } from '../../aplicacion/propietario';
 
@@ -6,7 +6,7 @@ import type { RepositorioPropietario } from '../../aplicacion/propietario';
 export const repositorioPropietarioSql: RepositorioPropietario = {
   async consultasUltimaHora(usuarioId) {
     const r = await getDB().request().input('uid', sql.Int, usuarioId)
-      .query('SELECT COUNT(*) AS n FROM AuditoriaConsultaPropietario WHERE usuario_id = @uid AND fecha >= DATEADD(HOUR, -1, GETDATE())');
+      .query("SELECT COUNT(*) AS n FROM AuditoriaConsultaPropietario WHERE usuario_id = @uid AND fecha >= CURRENT_TIMESTAMP - INTERVAL '1 hour'");
     return Number(r.recordset[0]?.n ?? 0);
   },
 

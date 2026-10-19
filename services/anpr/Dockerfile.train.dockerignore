@@ -1,0 +1,14 @@
+# Solo codigo de entrenamiento y sus restricciones; excluye datos, modelos,
+# credenciales y entornos locales del contexto de construccion.
+**
+!requirements.txt
+!requirements.train.txt
+!scripts/
+!scripts/**
+!app/
+!app/**
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+**/.env
+**/.env.*

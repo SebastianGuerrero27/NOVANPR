@@ -1,4 +1,4 @@
-import sql from 'mssql';
+import sql, { PostgresPool } from '../postgres';
 import { hoyLocalSql } from './tiempo';
 
 /**
@@ -21,7 +21,7 @@ export interface BlacklistMatch {
 }
 
 /** Busca la placa en la lista de alertas vigente priorizando coincidencias exactas. */
-export async function findBlacklistMatch(db: sql.ConnectionPool, placa: string): Promise<BlacklistMatch | null> {
+export async function findBlacklistMatch(db: PostgresPool, placa: string): Promise<BlacklistMatch | null> {
   if (!normalizePlate(placa)) return null;
   const result = await db.request().query(`
     SELECT id, placa, motivo, nivel_alerta, fecha_registro, marca, modelo, color
@@ -44,7 +44,7 @@ export async function findBlacklistMatch(db: sql.ConnectionPool, placa: string):
  * (dominio/horario.ts → evaluarVigencia) para poder explicar POR QUÉ un permiso existente no
  * concede el paso (fuera de horario, aún no vigente o vencido).
  */
-export async function findPermisoExacto(db: sql.ConnectionPool, placa: string): Promise<any | null> {
+export async function findPermisoExacto(db: PostgresPool, placa: string): Promise<any | null> {
   const clean = normalizePlate(placa);
   if (!clean) return null;
   const result = await db.request()

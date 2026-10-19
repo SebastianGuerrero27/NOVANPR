@@ -45,7 +45,7 @@ jest.mock('../../infraestructura/db', () => {
         }
         if (/FROM Camaras c WHERE c\.id = @id/.test(texto)) return resultado(c ? [c] : []);
         if (/FROM Camaras c ORDER BY c\.nombre/.test(texto)) return resultado([...mockBase.camaras.values()]);
-        if (/SELECT id, nombre, ip, rtsp_url, rtsp_url_vista, activa, roi, exclusiones FROM Camaras WHERE id = @id/.test(texto)) return resultado(c ? [c] : []);
+        if (/SELECT id, nombre, ip, rtsp_url, rtsp_url_vista, activa, direccion, roi, exclusiones FROM Camaras WHERE id = @id/.test(texto)) return resultado(c ? [c] : []);
         if (/SELECT id, nombre, rtsp_url, ip FROM Camaras WHERE activa = 1/.test(texto)) {
           return resultado([...mockBase.camaras.values()].filter(x => x.activa));
         }
@@ -66,7 +66,7 @@ jest.mock('../../infraestructura/db', () => {
           }
           return resultado();
         }
-        if (/UPDATE Camaras SET activa = CASE/.test(texto)) {
+        if (/UPDATE Camaras SET activa = NOT activa/.test(texto)) {
           if (!c) return resultado();
           c.activa = !c.activa;
           return resultado([{ nombre: c.nombre, activa: c.activa }]);
@@ -134,12 +134,14 @@ function reiniciar() {
   mockBase.camaras.set(3, {
     // Guardada como queda tras la migración v9: contraseña cifrada
     id: 3, nombre: 'Garita norte', ip: '192.168.1.64', rtsp_url: proteger(URL_GUARDADA), ubicacion: 'Acceso vehicular norte', activa: true,
+    direccion: 'ingreso',
     estado: 'EN_LINEA', ultimo_ping: null, tiempo_respuesta_ms: 9, mensaje_ping: 'Flujo de video disponible',
     created_at: '2026-10-01T08:00:00.000Z', roi: null, detecciones: 0,
   });
   // Deshabilitada y con historial
   mockBase.camaras.set(5, {
     id: 5, nombre: 'Garita sur', ip: '192.168.1.70', rtsp_url: 'rtsp://192.168.1.70/live', ubicacion: 'Acceso sur', activa: false,
+    direccion: 'ingreso',
     estado: 'SIN_CONEXION', ultimo_ping: null, tiempo_respuesta_ms: null, mensaje_ping: null,
     created_at: '2026-09-01T08:00:00.000Z', roi: null, detecciones: 12,
   });
@@ -221,7 +223,9 @@ describe('API · cámaras, monitoreo y medios', () => {
       expect(r.body.message).toBe('Cámara actualizada.');
       expect(r.body.camera.rtsp_url).toBe(URL_ENMASCARADA);
       // Conserva la contraseña guardada: cifrada en la base y, descifrada, la URL real
-      const guardada = consultas(/UPDATE Camaras SET nombre = @nombre/)[0].entradas.rtsp;
+      const edicion = consultas(/UPDATE Camaras SET nombre = @nombre/)[0];
+      expect(edicion.texto).toContain('rtsp_url IS DISTINCT FROM CAST(@rtsp AS VARCHAR(512))');
+      const guardada = edicion.entradas.rtsp;
       expect(guardada).toMatch(/^rtsp:\/\/admin:enc\.v1\./);
       expect(guardada).not.toContain(CLAVE);
       expect(revelar(guardada)).toBe(URL_GUARDADA);

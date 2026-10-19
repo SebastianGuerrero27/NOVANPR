@@ -19,7 +19,7 @@ jest.mock('../../infraestructura/db', () => {
           const codigo = ({ 1: 'ADMIN', 3: 'GUARDIA', 4: 'GESTOR_PERMISOS' } as Record<number, string>)[Number(entradas.id)];
           return { recordset: codigo ? [{ estado: 'activo', bloqueado: 0, bloqueado_hasta: null, codigo }] : [] };
         }
-        if (/MERGE ConfiguracionSistema|INSERT INTO AuditoriaOperaciones/.test(texto)) mockEscrituras.push({ texto, entradas: { ...entradas } });
+        if (/INSERT INTO ConfiguracionSistema|INSERT INTO AuditoriaOperaciones/.test(texto)) mockEscrituras.push({ texto, entradas: { ...entradas } });
         return { recordset: [], rowsAffected: [1] };
       },
     };

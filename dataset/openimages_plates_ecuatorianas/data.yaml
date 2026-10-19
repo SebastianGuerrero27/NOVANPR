@@ -1,0 +1,7 @@
+path: C:/Users/ASUS/Desktop/TITULACION/ANPR/dataset/pose
+train: images/train
+val: images/val
+kpt_shape: [4, 3]
+flip_idx: [1, 0, 3, 2]
+names:
+  0: placa

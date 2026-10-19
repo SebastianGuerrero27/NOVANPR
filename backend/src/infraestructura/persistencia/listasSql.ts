@@ -1,4 +1,4 @@
-import sql from 'mssql';
+import sql, { PostgresRequest } from '../postgres';
 import { getDB } from '../db';
 import { describirHorario, leerHorario } from '../../dominio/horario';
 import type { DefinicionLista, RegistroLista, TipoLista } from '../../dominio/listas';
@@ -14,7 +14,7 @@ const MISMA_PLACA = "REPLACE(REPLACE(placa, '-', ''), ' ', '') = @placa";
 const columnasDe = (def: DefinicionLista) => [...def.campos.map(c => c.nombre), ...(def.temporal ? ['fecha_inicio', 'horario'] : [])];
 const valorDe = (c: string) => (c === 'fecha_inicio' ? '@inicio' : `@${c}`);
 
-function parametros(request: sql.Request, def: DefinicionLista, r: RegistroLista) {
+function parametros(request: PostgresRequest, def: DefinicionLista, r: RegistroLista) {
   for (const c of def.campos) request.input(c.nombre, sql.NVarChar(c.max), r.datos[c.nombre]);
   request.input('placa', sql.VarChar(10), r.placa).input('vence', sql.Date, r.vence);
   if (def.temporal) request.input('inicio', sql.Date, r.inicio).input('horario', sql.NVarChar(600), r.horario);
@@ -79,7 +79,7 @@ export const repositorioListasSql: RepositorioListas = {
     const ins = await request.query(`
       INSERT INTO ${TABLA[def.tipo]} (placa, fecha_vencimiento, registrado_por, activo, fecha_registro, ${columnas.join(', ')}${conSolicitud ? ', solicitud_id' : ''})
       OUTPUT INSERTED.id
-      VALUES (@placa, @vence, @usuario, 1, GETDATE(), ${columnas.map(valorDe).join(', ')}${conSolicitud ? ', @solicitud' : ''})`);
+      VALUES (@placa, @vence, @usuario, TRUE, GETDATE(), ${columnas.map(valorDe).join(', ')}${conSolicitud ? ', @solicitud' : ''})`);
     return ins.recordset[0].id;
   },
 

@@ -1,4 +1,4 @@
-import sql from 'mssql';
+import sql from '../postgres';
 import { getDB } from '../db';
 import { enmascarar, parsearExclusiones, parsearRoi } from '../../dominio/camaras';
 import { cambiarCamaraAnpr, estadoServicioAnpr, fijarZonasAnpr, fuenteActivaAnpr, Punto, zonasActivasAnpr } from './servicioAnpr';
@@ -25,9 +25,10 @@ export async function guardarCamaraMotor(id: number, usuarioId: number | null): 
   await getDB().request()
     .input('clave', sql.VarChar(60), CLAVE).input('valor', sql.NVarChar(500), String(id)).input('uid', sql.Int, usuarioId)
     .query(`
-      MERGE ConfiguracionSistema AS t USING (SELECT @clave AS clave) AS s ON t.clave = s.clave
-      WHEN MATCHED THEN UPDATE SET valor = @valor, actualizado_por = @uid, fecha_actualizacion = SYSDATETIME()
-      WHEN NOT MATCHED THEN INSERT (clave, valor, actualizado_por) VALUES (@clave, @valor, @uid);`);
+      INSERT INTO ConfiguracionSistema (clave, valor, actualizado_por)
+      VALUES (@clave, @valor, @uid)
+      ON CONFLICT (clave) DO UPDATE SET valor = EXCLUDED.valor, actualizado_por = EXCLUDED.actualizado_por,
+        fecha_actualizacion = CURRENT_TIMESTAMP`);
 }
 
 /** Cámara que debería estar procesando el motor (elegida y habilitada, o la primera habilitada). */

@@ -1,4 +1,4 @@
-import sql from 'mssql';
+import sql, { PostgresRequest } from '../postgres';
 import { getDB } from '../db';
 import { describirHorario, leerHorario } from '../../dominio/horario';
 import type { DatosSolicitud } from '../../dominio/solicitudesAcceso';
@@ -48,7 +48,7 @@ function mapear(s: any): SolicitudDTO {
 }
 
 /** Columnas que se escriben en el alta y en la edición. */
-function parametros(request: sql.Request, s: DatosSolicitud): sql.Request {
+function parametros(request: PostgresRequest, s: DatosSolicitud): PostgresRequest {
   const d = s.registro.datos;
   return request
     .input('placa', sql.VarChar(10), s.registro.placa)
@@ -79,7 +79,7 @@ export const repositorioSolicitudesSql: RepositorioSolicitudes = {
     else if (vista === 'resueltas') filtros.push(`s.estado <> 'pendiente'`);
     const r = await db().request().input('uid', sql.Int, usuarioId).query(`${SELECT} ${filtros.length ? `WHERE ${filtros.join(' AND ')}` : ''}
       ORDER BY CASE WHEN s.estado = 'pendiente' THEN 0 ELSE 1 END, s.fecha_solicitud DESC
-      OFFSET 0 ROWS FETCH NEXT 200 ROWS ONLY`);
+      LIMIT 200`);
     return r.recordset.map(mapear);
   },
 

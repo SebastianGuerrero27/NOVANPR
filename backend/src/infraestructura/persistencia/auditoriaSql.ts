@@ -1,13 +1,9 @@
-import sql from 'mssql';
+import sql, { PostgresRequest } from '../postgres';
 import { getDB } from '../db';
 import { CAMPOS_AUDITORIA, FUENTES_AUDITORIA, type FiltrosAuditoria, type FuenteAuditoria } from '../../dominio/auditoria';
 import type { ConteoArchivado, RepositorioAuditoria } from '../../aplicacion/auditoria';
 
-/**
- * Repositorio SQL Server de la auditoría (AuditoriaOperaciones, AuditoriaUsuarios y
- * AuditoriaAccesos). Solo consulta y traslada al archivo: no existe UPDATE, y el único DELETE
- * está dentro de la transacción de retención, que elimina exactamente lo que acaba de copiar.
- */
+/** Repositorio PostgreSQL de auditoría con archivado transaccional de registros antiguos. */
 
 interface TablaAuditoria {
   tabla: string;
@@ -38,12 +34,12 @@ const TABLAS: Record<FuenteAuditoria, TablaAuditoria> = {
 };
 
 /** Cláusula WHERE de los filtros y una fábrica de peticiones con sus parámetros (@q, @desde, @hasta). */
-function filtrar(f: FiltrosAuditoria): { where: string; peticion: () => sql.Request } {
+function filtrar(f: FiltrosAuditoria): { where: string; peticion: () => PostgresRequest } {
   const condiciones = ['1 = 1'];
   if (f.q) condiciones.push(`(${TABLAS[f.fuente].busqueda.map(c => `${c} LIKE @q`).join(' OR ')})`);
   if (f.desde) condiciones.push('fecha >= @desde');
   if (f.hasta) condiciones.push('fecha <= @hasta');
-  if (f.fuente === 'accesos' && f.exito !== null) condiciones.push(`exito = ${f.exito ? 1 : 0}`);
+  if (f.fuente === 'accesos' && f.exito !== null) condiciones.push(`exito IS ${f.exito ? 'TRUE' : 'FALSE'}`);
   const peticion = () => {
     const r = getDB().request();
     if (f.q) r.input('q', sql.NVarChar(200), `%${f.q}%`);
@@ -53,40 +49,6 @@ function filtrar(f: FiltrosAuditoria): { where: string; peticion: () => sql.Requ
   };
   return { where: condiciones.join(' AND '), peticion };
 }
-
-/**
- * Traslado de una fuente al archivo: copia, elimina solo las filas cuyo id ya está en el archivo
- * y comprueba que se eliminó exactamente lo copiado; si no coincide, THROW revierte todo.
- */
-function trasladar(fuente: FuenteAuditoria): string {
-  const { tabla, archivo } = TABLAS[fuente];
-  const columnas = CAMPOS_AUDITORIA[fuente].join(', ');
-  return `
-    INSERT INTO ${archivo} (${columnas})
-    SELECT ${columnas} FROM ${tabla} WHERE fecha < @corte;
-    SET @${fuente} = @@ROWCOUNT;
-    DELETE t FROM ${tabla} t
-    WHERE t.fecha < @corte AND EXISTS (SELECT 1 FROM ${archivo} a WHERE a.id = t.id);
-    IF @@ROWCOUNT <> @${fuente} THROW 50001, N'Retención de ${tabla}: lo eliminado no coincide con lo archivado.', 1;`;
-}
-
-/**
- * Lote de la retención (parámetro @dias), que archivar() ejecuta dentro de su transacción: las
- * tres fuentes con el mismo corte. El primer error salta al CATCH, que lo devuelve sin ejecutar
- * nada más, y archivar() revierte la transacción completa. No usa SET XACT_ABORT ON: el pool de
- * mssql reutiliza las conexiones sin reiniciarlas y la opción seguiría activa en las consultas
- * siguientes de esa conexión. Exportado para verificar su forma en las pruebas.
- */
-export const LOTE_RETENCION = `
-  DECLARE @corte DATETIME2 = DATEADD(DAY, -@dias, SYSDATETIME());
-  DECLARE ${FUENTES_AUDITORIA.map(f => `@${f} INT = 0`).join(', ')};
-  BEGIN TRY
-  ${FUENTES_AUDITORIA.map(trasladar).join('\n')}
-  END TRY
-  BEGIN CATCH
-    THROW;
-  END CATCH;
-  SELECT ${FUENTES_AUDITORIA.map(f => `@${f} AS ${f}`).join(', ')};`;
 
 export const repositorioAuditoriaSql: RepositorioAuditoria = {
   async contar(f) {
@@ -100,7 +62,7 @@ export const repositorioAuditoriaSql: RepositorioAuditoria = {
     const { where, peticion } = filtrar(f);
     const r = await peticion().input('offset', sql.Int, desplazamiento).input('tamano', sql.Int, tamano)
       .query(`SELECT ${resumen} FROM ${tabla} WHERE ${where}
-              ORDER BY fecha DESC OFFSET @offset ROWS FETCH NEXT @tamano ROWS ONLY`);
+              ORDER BY fecha DESC LIMIT @tamano OFFSET @offset`);
     return r.recordset;
   },
 
@@ -119,18 +81,30 @@ export const repositorioAuditoriaSql: RepositorioAuditoria = {
   },
 
   async archivar(dias): Promise<ConteoArchivado> {
-    const tx = new sql.Transaction(getDB());
-    await tx.begin();
+    const client = await getDB().connect();
+    await client.query('BEGIN');
     try {
-      const r = await new sql.Request(tx).input('dias', sql.Int, dias).query(LOTE_RETENCION);
-      await tx.commit();
-      const f = r.recordset[0];
-      return { operaciones: Number(f.operaciones), cuentas: Number(f.cuentas), accesos: Number(f.accesos) };
+      const corte = new Date(Date.now() - dias * 86400000);
+      const resultado: Record<FuenteAuditoria, number> = { operaciones: 0, cuentas: 0, accesos: 0 };
+      for (const fuente of FUENTES_AUDITORIA) {
+        const { tabla, archivo } = TABLAS[fuente];
+        const columnas = CAMPOS_AUDITORIA[fuente].join(', ');
+        const r = await client.query(`WITH archivadas AS (
+          INSERT INTO ${archivo} (${columnas}, fecha_archivado)
+          SELECT ${columnas}, CURRENT_TIMESTAMP FROM ${tabla} WHERE fecha < $1
+          ON CONFLICT (id) DO NOTHING RETURNING id
+        ), eliminadas AS (
+          DELETE FROM ${tabla} t USING archivadas a WHERE t.id = a.id RETURNING t.id
+        ) SELECT COUNT(*) AS n FROM eliminadas`, [corte]);
+        resultado[fuente] = Number(r.rows[0]?.n ?? 0);
+      }
+      await client.query('COMMIT');
+      return { operaciones: resultado.operaciones, cuentas: resultado.cuentas, accesos: resultado.accesos };
     } catch (e) {
       // Cualquier error del lote o del commit revierte la copia y el borrado de las tres fuentes.
       // Si la conexión se perdió, el servidor ya revirtió la transacción al cerrar la sesión.
-      await tx.rollback().catch(() => undefined);
+      await client.query('ROLLBACK').catch(() => undefined);
       throw e;
-    }
+    } finally { client.release(); }
   },
 };

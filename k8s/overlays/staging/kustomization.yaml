@@ -27,8 +27,6 @@ configMapGenerator:
       - SMTP_FROM=
       - VAPID_PUBLIC_KEY=
       - VAPID_SUBJECT=mailto:anpr@ecu911.gob.ec
-      # Edición Developer: gratuita, solo para entornos que no son de producción
-      - MSSQL_PID=Developer
 
 patches:
   - target:

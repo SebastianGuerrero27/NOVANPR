@@ -1,4 +1,4 @@
-import sql from 'mssql';
+import sql, { PostgresRequest } from '../postgres';
 import { getDB } from '../db';
 import type { Cruce, RepositorioDetecciones } from '../../aplicacion/detecciones';
 import type { Decision } from '../../dominio/decisionAcceso';
@@ -29,7 +29,7 @@ const PLACA_D = "REPLACE(COALESCE(d.placa_validada, d.placa_reconocida, ''), '-'
 const db = () => getDB();
 
 /** Filtros del historial, la exportación y la eliminación masiva (ya validados en el dominio). */
-function aplicarFiltros(f: FiltrosDetecciones, request: sql.Request): string[] {
+function aplicarFiltros(f: FiltrosDetecciones, request: PostgresRequest): string[] {
   const w: string[] = [`d.estado_procesamiento IN ('procesado', 'no_legible', 'pendiente_ocr')`];
   if (f.placa) {
     request.input('placa', sql.VarChar(22), `%${f.placa}%`);
@@ -56,7 +56,7 @@ function aplicarFiltros(f: FiltrosDetecciones, request: sql.Request): string[] {
 }
 
 /** Decisión sobre el paso: estado, vínculos con las listas y restricción temporal. */
-function parametrosDecision(request: sql.Request, cruce: Cruce, decision: Decision): sql.Request {
+function parametrosDecision(request: PostgresRequest, cruce: Cruce, decision: Decision): PostgresRequest {
   return request
     .input('estado', sql.VarChar(30), decision.estado)
     .input('alerta', sql.Int, cruce.alerta?.id ?? null)
@@ -162,7 +162,7 @@ export const repositorioDeteccionesSql: RepositorioDetecciones = {
         )
         OUTPUT INSERTED.id
         VALUES (@placa, @placa, @camara, 'salida', 'manual', GETDATE(), GETDATE(),
-                'procesado', 'salida_registrada', 'salida_registrada', 1, @usuario, GETDATE())`);
+                'procesado', 'salida_registrada', 'salida_registrada', TRUE, @usuario, GETDATE())`);
     return r.recordset[0].id;
   },
 
@@ -272,7 +272,7 @@ export const repositorioDeteccionesSql: RepositorioDetecciones = {
     const w = aplicarFiltros(f, request);
     request.input('offset', sql.Int, offset).input('tamano', sql.Int, tamano);
     const r = await request.query(`${SELECT_DETECCION} WHERE ${w.join(' AND ')}
-      ORDER BY d.fecha_hora_ingreso DESC OFFSET @offset ROWS FETCH NEXT @tamano ROWS ONLY`);
+      ORDER BY d.fecha_hora_ingreso DESC LIMIT @tamano OFFSET @offset`);
     return r.recordset;
   },
 
@@ -280,7 +280,7 @@ export const repositorioDeteccionesSql: RepositorioDetecciones = {
     const r = await db().request().input('n', sql.Int, limite).query(`
       ${SELECT_DETECCION}
       WHERE d.estado_procesamiento IN ('procesado', 'no_legible', 'pendiente_ocr')
-      ORDER BY d.fecha_hora_ingreso DESC OFFSET 0 ROWS FETCH NEXT @n ROWS ONLY`);
+      ORDER BY d.fecha_hora_ingreso DESC LIMIT @n`);
     return r.recordset;
   },
 
@@ -296,7 +296,7 @@ export const repositorioDeteccionesSql: RepositorioDetecciones = {
     const r = await request.query(`
       ${SELECT_DETECCION}
       WHERE ${excluirId !== undefined ? 'd.id <> @id AND ' : ''}${PLACA_D} = @placa
-      ORDER BY d.fecha_hora_ingreso DESC OFFSET 0 ROWS FETCH NEXT 10 ROWS ONLY`);
+      ORDER BY d.fecha_hora_ingreso DESC LIMIT 10`);
     return r.recordset;
   },
 
@@ -349,8 +349,12 @@ export const repositorioDeteccionesSql: RepositorioDetecciones = {
     const request = db().request();
     const w = f ? aplicarFiltros(f, request) : ['1 = 1'];
     const r = await request.query(`
-      DELETE d OUTPUT DELETED.id, DELETED.ruta_imagen_ingreso, DELETED.ruta_imagen_placa
-      FROM DeteccionVehiculo d WHERE ${w.join(' AND ')}`);
+      WITH eliminadas AS (
+        DELETE FROM DeteccionVehiculo d
+        WHERE ${w.join(' AND ')}
+        RETURNING d.id, d.ruta_imagen_ingreso, d.ruta_imagen_placa
+      )
+      SELECT id, ruta_imagen_ingreso, ruta_imagen_placa FROM eliminadas`);
     return r.recordset;
   },
 };

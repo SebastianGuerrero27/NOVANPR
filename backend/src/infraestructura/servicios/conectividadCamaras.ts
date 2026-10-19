@@ -1,7 +1,7 @@
 import { execFile } from 'child_process';
 import crypto from 'crypto';
 import net from 'net';
-import sql from 'mssql';
+import sql from '../postgres';
 import { getDB } from '../db';
 import { revelar } from './custodiaCredenciales';
 import { verificarRed } from './redCamaras';

@@ -1,4 +1,4 @@
-import sql from 'mssql';
+import sql from '../postgres';
 import { getDB } from '../db';
 import { CODIGO_POR_ROL, rolesCon } from '../../dominio/permisos';
 import type { Permiso } from '../../dominio/permisos';
@@ -128,7 +128,7 @@ export const puertosSql: Puertos = {
   async buscarDuplicada(clave, ventanaS) {
     const r = await db().request().input('k', sql.VarChar(120), clave).input('v', sql.Int, ventanaS).query(`
       SELECT TOP 1 id FROM Notificaciones
-      WHERE clave_dedup = @k AND fecha_resolucion IS NULL AND fecha_creacion >= DATEADD(SECOND, -@v, SYSDATETIME())
+      WHERE clave_dedup = @k AND fecha_resolucion IS NULL AND fecha_creacion >= CURRENT_TIMESTAMP - (@v * INTERVAL '1 second')
       ORDER BY id DESC`);
     return r.recordset[0] ? Number(r.recordset[0].id) : null;
   },
@@ -302,13 +302,12 @@ export async function reconocer(usuarioId: number, filtro: { id?: number; detecc
   else if (filtro.deteccionId !== undefined) { req.input('det', sql.Int, filtro.deteccionId); donde = 'n.deteccion_id = @det'; }
   else return 0;
   const r = await req.query(`
-    UPDATE n SET atendida_por = @uid, fecha_atencion = SYSDATETIME()
-    OUTPUT INSERTED.id, INSERTED.severidad, DATEDIFF_BIG(MILLISECOND, INSERTED.fecha_creacion, INSERTED.fecha_atencion) AS ms
-    FROM Notificaciones n JOIN NotificacionUsuario nu ON nu.notificacion_id = n.id AND nu.usuario_id = @uid
-    WHERE ${donde} AND n.requiere_ack = 1 AND n.fecha_atencion IS NULL;
-    UPDATE nu SET fecha_lectura = COALESCE(nu.fecha_lectura, SYSDATETIME())
-    FROM NotificacionUsuario nu JOIN Notificaciones n ON n.id = nu.notificacion_id
-    WHERE nu.usuario_id = @uid AND ${donde};`);
+    UPDATE Notificaciones n SET atendida_por = @uid, fecha_atencion = CURRENT_TIMESTAMP
+    FROM NotificacionUsuario nu WHERE nu.notificacion_id = n.id AND nu.usuario_id = @uid
+      AND ${donde} AND n.requiere_ack IS TRUE AND n.fecha_atencion IS NULL
+    RETURNING n.id, n.severidad, EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - n.fecha_creacion)) * 1000 AS ms;
+    UPDATE NotificacionUsuario nu SET fecha_lectura = COALESCE(nu.fecha_lectura, CURRENT_TIMESTAMP)
+    FROM Notificaciones n WHERE n.id = nu.notificacion_id AND nu.usuario_id = @uid AND ${donde}`);
   const filas = (r.recordsets as any[])[0] ?? [];
   for (const f of filas) {
     notificacionReconocimiento.labels(f.severidad).observe(Number(f.ms) / 1000);
@@ -347,8 +346,8 @@ export async function escalarPendientes(): Promise<number> {
            INSERTED.deteccion_id, INSERTED.fecha_creacion
     WHERE requiere_ack = 1 AND fecha_atencion IS NULL AND fecha_resolucion IS NULL AND escalada = 0
       AND severidad IN ('critica', 'alta') AND tipo <> 'alarma.escalada'
-      AND fecha_creacion <= DATEADD(SECOND, -@u, SYSDATETIME())
-      AND fecha_creacion >= DATEADD(HOUR, -12, SYSDATETIME())`);
+      AND fecha_creacion <= CURRENT_TIMESTAMP - (@u * INTERVAL '1 second')
+      AND fecha_creacion >= CURRENT_TIMESTAMP - INTERVAL '12 hours'`);
   for (const a of r.recordset) {
     notificacionesEscaladas.inc();
     await difundirEstado(Number(a.id));
@@ -382,6 +381,6 @@ async function enviarCorreoEscalamiento(id: number, titulo: string, mensaje: str
 /** Elimina las notificaciones más antiguas que la retención configurada. */
 export async function purgarAntiguas(): Promise<number> {
   const r = await getDB().request().input('d', sql.Int, config.entero('notif_retencion_dias')).query(`
-    DELETE FROM Notificaciones WHERE fecha_creacion < DATEADD(DAY, -@d, SYSDATETIME())`);
+    DELETE FROM Notificaciones WHERE fecha_creacion < CURRENT_TIMESTAMP - (@d * INTERVAL '1 day')`);
   return r.rowsAffected[0] ?? 0;
 }

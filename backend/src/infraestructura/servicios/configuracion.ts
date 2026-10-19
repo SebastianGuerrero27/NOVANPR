@@ -1,4 +1,4 @@
-import sql from 'mssql';
+import sql, { PostgresPool } from '../postgres';
 import { cumpleCriterioLectura, CriterioAutorizacion, FuenteConfianza, PoliticaAutorizacion } from '../../dominio/decisionAcceso';
 import { validarParametro } from '../../dominio/configuracion';
 
@@ -148,7 +148,7 @@ export const config = {
   lista: (clave: string) => crudo(clave).split(',').map(x => x.trim().toLowerCase().replace(/^@/, '')).filter(Boolean),
 };
 
-export async function cargarConfiguracion(db: sql.ConnectionPool): Promise<void> {
+export async function cargarConfiguracion(db: PostgresPool): Promise<void> {
   try {
     const r = await db.request().query(`
       SELECT c.clave, c.valor, c.fecha_actualizacion, u.email
@@ -160,16 +160,16 @@ export async function cargarConfiguracion(db: sql.ConnectionPool): Promise<void>
   }
 }
 
-export async function guardarValor(db: sql.ConnectionPool, clave: string, valor: string, usuarioId: number): Promise<void> {
+export async function guardarValor(db: PostgresPool, clave: string, valor: string, usuarioId: number): Promise<void> {
   await db.request()
     .input('clave', sql.VarChar(60), clave)
     .input('valor', sql.NVarChar(500), valor)
     .input('uid', sql.Int, usuarioId)
     .query(`
-      MERGE ConfiguracionSistema AS t
-      USING (SELECT @clave AS clave) AS s ON t.clave = s.clave
-      WHEN MATCHED THEN UPDATE SET valor = @valor, actualizado_por = @uid, fecha_actualizacion = SYSDATETIME()
-      WHEN NOT MATCHED THEN INSERT (clave, valor, actualizado_por) VALUES (@clave, @valor, @uid);`);
+      INSERT INTO ConfiguracionSistema (clave, valor, actualizado_por)
+      VALUES (@clave, @valor, @uid)
+      ON CONFLICT (clave) DO UPDATE SET valor = EXCLUDED.valor, actualizado_por = EXCLUDED.actualizado_por,
+        fecha_actualizacion = CURRENT_TIMESTAMP`);
 }
 
 /** Listado para la pantalla de configuración: valor vigente y su origen. */

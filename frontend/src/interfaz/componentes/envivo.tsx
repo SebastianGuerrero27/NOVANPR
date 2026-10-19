@@ -3,7 +3,7 @@ import { AlertTriangle, Loader2, Maximize2, PauseCircle, Radio, VideoOff } from 
 import api, { mensajeError } from '../../infraestructura/api';
 import { usePaginaVisible } from '../../aplicacion/hooks';
 import { conectarWhep, crearMedidor, EstadisticasVideo, SesionWhep } from '../../infraestructura/webrtc';
-import { areaVideo, crearHud, Hud, MovimientoHud, PistaHud, Punto } from './hud';
+import { areaVideo, crearHud, Hud, PistaHud, Punto } from './hud';
 import { Aviso, Modal, Segmentado } from './ui';
 
 /**
@@ -41,7 +41,7 @@ interface PistaMotor {
 
 /** Pistas del WebSocket /ws/pistas del motor → HUD. */
 function pistasDelMotor(lista: PistaMotor[] | undefined): PistaHud[] {
-  return (lista ?? []).map(p => ({
+  return (lista ?? []).filter(p => Boolean(p.placa)).map(p => ({
     id: p.id,
     caja: p.caja,
     puntos: p.puntos ?? null,
@@ -99,9 +99,11 @@ export const ReproductorWebRTC: React.FC<{
   etiqueta?: string;
   onFallo?: (mensaje: string) => void;
   onEstadisticas?: (s: EstadisticasVideo | null) => void;
+  /** Muestra cajas y etiquetas ANPR. El procesamiento del motor no depende del HUD. */
+  mostrarHud?: boolean;
   /** Capa interactiva colocada exactamente sobre la imagen del video (p. ej. el editor de región) */
   capa?: React.ReactNode;
-}> = ({ obtener, pausado = false, claveReinicio, etiqueta = 'EN VIVO · WebRTC', onFallo, onEstadisticas, capa }) => {
+}> = ({ obtener, pausado = false, claveReinicio, etiqueta = 'EN VIVO · WebRTC', onFallo, onEstadisticas, mostrarHud = false, capa }) => {
   const visible = usePaginaVisible();
   const video = useRef<HTMLVideoElement>(null);
   const lienzo = useRef<HTMLCanvasElement>(null);
@@ -177,14 +179,13 @@ export const ReproductorWebRTC: React.FC<{
           setStats(s);
           onEstadisticas?.(s);
         }, 2000);
-        if (pistasWs) {
+        if (mostrarHud && pistasWs) {
           ws = new WebSocket(pistasWs);
           ws.onmessage = ev => {
             try {
               const m = JSON.parse(ev.data);
               if (typeof m.aspecto === 'number' && m.aspecto !== aspectoMotor) { aspectoMotor = m.aspecto; revisarAspecto(); }
-              hud.actualizar(pistasDelMotor(m.pistas), (m.movimiento as MovimientoHud | null) ?? null, (m.roi as Punto[] | null) ?? null,
-                Array.isArray(m.exclusiones) ? (m.exclusiones as Punto[][]) : []);
+              hud.actualizar(pistasDelMotor(m.pistas), null, null, []);
             } catch { /* mensaje inválido */ }
           };
           ws.onclose = () => hud.limpiar();
@@ -208,12 +209,12 @@ export const ReproductorWebRTC: React.FC<{
       onEstadisticas?.(null);
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activo, intento, claveReinicio]);
+  }, [activo, intento, claveReinicio, mostrarHud]);
 
   return (
     <div ref={contenedor} style={{ position: 'relative', width: '100%', aspectRatio: ajuste ? String(ajuste) : '16 / 9', background: '#050b16', borderRadius: 10, overflow: 'hidden' }}>
       <video ref={video} muted playsInline autoPlay style={{ width: '100%', height: '100%', objectFit: ajuste ? 'fill' : 'contain', display: 'block' }} />
-      <canvas ref={lienzo} style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', pointerEvents: 'none' }} />
+      <canvas ref={lienzo} style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', pointerEvents: 'none', display: mostrarHud ? 'block' : 'none' }} />
       {capa && area && estado === 'en_vivo' && (
         <div style={{ position: 'absolute', left: area.x, top: area.y, width: area.w, height: area.h }}>{capa}</div>
       )}
@@ -239,7 +240,7 @@ export const VisorEnVivo: React.FC<{ camaraId: number | null; vista?: boolean; p
       );
     }
     return (
-      <ReproductorWebRTC pausado={pausado} claveReinicio={`${camaraId}-${vista}-${String(claveReinicio)}`} onFallo={onFallo}
+      <ReproductorWebRTC pausado={pausado} mostrarHud claveReinicio={`${camaraId}-${vista}-${String(claveReinicio)}`} onFallo={onFallo}
         obtener={async () => {
           const t = (await api.post('/monitoreo/ticket', { alcance: 'stream' })).data;
           const q = `ticket=${encodeURIComponent(t.ticket)}`;

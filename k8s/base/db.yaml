@@ -1,4 +1,4 @@
-# SQL Server 2022. El esquema y las migraciones los aplica el backend al arrancar (SchemaMigraciones).
+# PostgreSQL 17: el esquema se aplica al arrancar el backend.
 apiVersion: v1
 kind: Service
 metadata:
@@ -10,9 +10,9 @@ spec:
   selector:
     app.kubernetes.io/name: db
   ports:
-    - name: tds
-      port: 1433
-      targetPort: 1433
+    - name: postgres
+      port: 5432
+      targetPort: 5432
 ---
 apiVersion: apps/v1
 kind: StatefulSet
@@ -32,49 +32,45 @@ spec:
         app.kubernetes.io/name: db
     spec:
       securityContext:
-        fsGroup: 10001
+        fsGroup: 999
       containers:
-        - name: mssql
-          image: mcr.microsoft.com/mssql/server:2022-latest
+        - name: postgres
+          image: postgres:17-alpine
           ports:
-            - containerPort: 1433
-              name: tds
+            - containerPort: 5432
+              name: postgres
           env:
-            - name: ACCEPT_EULA
-              value: "Y"
-            - name: MSSQL_PID
-              valueFrom:
-                configMapKeyRef:
-                  name: anpr-config
-                  key: MSSQL_PID
-            - name: MSSQL_SA_PASSWORD
+            - name: POSTGRES_DB
+              value: ANPR_ECU911
+            - name: POSTGRES_USER
+              value: anpr
+            - name: POSTGRES_PASSWORD
               valueFrom:
                 secretKeyRef:
                   name: anpr-secrets
-                  key: MSSQL_SA_PASSWORD
+                  key: DB_PASSWORD
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
           volumeMounts:
             - name: data
-              mountPath: /var/opt/mssql
+              mountPath: /var/lib/postgresql/data
           readinessProbe:
             exec:
-              command:
-                - /bin/sh
-                - -c
-                - /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P "$MSSQL_SA_PASSWORD" -C -Q "SELECT 1"
-            initialDelaySeconds: 20
+              command: ["sh", "-c", "pg_isready -U \"$POSTGRES_USER\" -d \"$POSTGRES_DB\""]
+            initialDelaySeconds: 10
             periodSeconds: 10
-            timeoutSeconds: 10
+            timeoutSeconds: 5
           livenessProbe:
             tcpSocket:
-              port: 1433
-            initialDelaySeconds: 60
+              port: 5432
+            initialDelaySeconds: 30
             periodSeconds: 20
           resources:
             requests:
-              cpu: 500m
-              memory: 2Gi
+              cpu: 250m
+              memory: 512Mi
             limits:
-              memory: 4Gi
+              memory: 1Gi
   volumeClaimTemplates:
     - metadata:
         name: data

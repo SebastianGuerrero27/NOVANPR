@@ -18,9 +18,9 @@ frontend 46, todas en verde.
 | Carpeta | Servicio | Tecnología |
 |---|---|---|
 | `frontend/` | Interfaz web por roles | React 18 + TypeScript + Vite, Socket.IO, service worker Web Push; diseño institucional ECU 911 |
-| `backend/` | API, política de acceso, centro de notificaciones | Express + TypeScript, Socket.IO (adaptador Redis), web-push, SQL Server |
+| `backend/` | API, política de acceso, centro de notificaciones | Express + TypeScript, Socket.IO (adaptador Redis), web-push, PostgreSQL (`pg`) |
 | `services/anpr/` | Motor de reconocimiento | FastAPI + Python: detector YOLO26n afinado (RF-DETR como alternativa), seguimiento con filtro de Kalman, OCR cct-s-v2-global (ONNX), verificador PP-OCRv6 (OpenVINO), atributos del vehículo con CLIP |
-| `db/` | Esquema y migraciones | SQL Server 2022 (`init.sql` + `migration_*.sql`, registradas en `SchemaMigraciones`) |
+| `db/` | Esquema y migraciones | PostgreSQL 17 (`postgresql/esquema.sql`) |
 | `mediamtx/` | Video | Relay RTSP → WebRTC (WHEP) |
 | `monitoring/` | Observabilidad | Prometheus + Grafana |
 | `k8s/` | Despliegue | Kustomize (base + overlays staging/producción); CI/CD con GitHub Actions y GHCR ([docs/CICD.md](docs/CICD.md)) |
@@ -40,29 +40,30 @@ Matriz completa de permisos: [docs/ROLES_Y_PERMISOS.md](docs/ROLES_Y_PERMISOS.md
 ## Puesta en marcha
 
 Guía paso a paso para el uso diario, la instalación en otro equipo, los ajustes y los problemas
-frecuentes: **[EJECUTAR_SISTEMA.md](EJECUTAR_SISTEMA.md)**.
+frecuentes: **[EJECUTAR_SISTEMA.md](EJECUTAR_SISTEMA.md)**. Instalación en el servidor de producción
+(imágenes compiladas, `docker-compose.prod.yml`): **[INSTALAR_PRODUCCION.md](INSTALAR_PRODUCCION.md)**.
 
 Requisitos: Docker Desktop y los puertos 3000 (frontend), 5000 (API), 8000 (motor), 8554/8889/8189
-(MediaMTX), 14333 (SQL Server), 9090/3001 (Prometheus/Grafana) libres.
+(MediaMTX), 5432 (PostgreSQL), 9090/3001 (Prometheus/Grafana) libres.
 
 ```bash
-cp .env.example .env     # defina MSSQL_SA_PASSWORD, JWT_SECRET, ANPR_SERVICE_TOKEN, GRAFANA_ADMIN_PASSWORD
+cp .env.example .env     # defina DB_PASSWORD, JWT_SECRET, ANPR_SERVICE_TOKEN, GRAFANA_ADMIN_PASSWORD
                          # y CAMARAS_CLAVE_CIFRADO (openssl rand -base64 32)
 docker compose up --build
 ```
 
 - Frontend: <http://localhost:3000> · API: <http://localhost:5000> · Motor: <http://localhost:8000>
 - Para la red local se publican el frontend, la API, el motor (solo WebSocket con ticket) y el
-  WebRTC de MediaMTX (8889, 8189). SQL Server (14333), Redis, Prometheus, Grafana y el RTSP de
+  WebRTC de MediaMTX (8889, 8189). PostgreSQL (5432), Redis, Prometheus, Grafana y el RTSP de
   MediaMTX (8554) quedan solo en `127.0.0.1` del equipo anfitrión.
 - Cada servicio tiene healthcheck (`docker compose ps` muestra *healthy*): el backend responde
-  `/health/ready` cuando SQL Server está disponible y el motor arranca después de él.
+  `/health/ready` cuando PostgreSQL está disponible y el motor arranca después de él.
 - **No hay cámaras predefinidas:** se registran en *Operación › Registro de cámaras* (URL RTSP con
   la contraseña cifrada en la base). Solo se aceptan direcciones dentro de
   `CAMARAS_REDES_PERMITIDAS` (por omisión, redes privadas); en producción, defina la VLAN de cámaras.
 - **No hay usuarios predefinidos:** al abrir el sistema por primera vez se muestra la configuración
   inicial para crear el primer administrador; luego se crean las demás cuentas en *Usuarios*.
-- El esquema y las migraciones se aplican solos al arrancar el backend.
+- El esquema PostgreSQL se aplica al arrancar el backend.
 - Las notificaciones push del navegador requieren `https` o `http://localhost` (ver
   [docs/NOTIFICACIONES.md](docs/NOTIFICACIONES.md)).
 
@@ -91,7 +92,7 @@ node backend/scripts/benchmark_notificaciones.js --api http://localhost:5000 --s
 | [docs/CAMARA_HIKVISION_ANPR.md](docs/CAMARA_HIKVISION_ANPR.md) | Cámaras Hikvision (H.265/H.265+): estado del arte, doble flujo, credenciales cifradas, configuración, validación y lista de producción |
 | [docs/METODO_VERIFICACION_LECTURA.md](docs/METODO_VERIFICACION_LECTURA.md) | Validez de la lectura y regla de autorización |
 | [docs/EXPERIMENTO_MODELOS.md](docs/EXPERIMENTO_MODELOS.md) | Experimento de detectores y OCR, estadística |
-| [docs/BASE_DE_DATOS.md](docs/BASE_DE_DATOS.md) | Esquema v12, migraciones y reglas de negocio |
+| [docs/BASE_DE_DATOS.md](docs/BASE_DE_DATOS.md) | Esquema PostgreSQL y reglas de negocio |
 | [docs/AUDITORIA_MOTOR_ANPR.md](docs/AUDITORIA_MOTOR_ANPR.md) | Flujo real del motor, deduplicación, OCR, registro en menos de 1 s, latencias medidas y riesgos |
 | [docs/PROTOCOLO_EVALUACION_SECUENCIAS.md](docs/PROTOCOLO_EVALUACION_SECUENCIAS.md) | Protocolo para evaluar el motor con video real etiquetado |
 | [docs/ARQUITECTURA_LIMPIA.md](docs/ARQUITECTURA_LIMPIA.md) | Capas y regla de dependencias de backend, frontend y motor |

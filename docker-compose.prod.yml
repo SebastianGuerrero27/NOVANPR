@@ -1,0 +1,247 @@
+# Despliegue de PRODUCCIÓN en un solo servidor con Docker Compose.
+#
+#   docker compose -f docker-compose.prod.yml up -d --build
+#
+# Diferencias con docker-compose.yml (desarrollo):
+#   - Imágenes de producción: backend compilado con tsc (backend/Dockerfile.prod), frontend estático
+#     en nginx con proxy a la API (frontend/Dockerfile.prod + nginx.compose.conf) y motor sin recarga.
+#   - Sin montar el código fuente: lo que corre es lo que se compiló en la imagen.
+#   - PostgreSQL 17 con volumen persistente y puerto enlazado solo a localhost.
+#   - La evidencia fotográfica vive en un volumen compartido por el backend y el motor.
+#   - El navegador entra por un solo puerto web (3000) y la API queda detrás de nginx.
+#
+# Guía completa: INSTALAR_PRODUCCION.md. Secretos en .env (copiar de .env.example).
+name: anpr-produccion
+
+services:
+  db:
+    image: postgres:17-alpine
+    environment:
+      - POSTGRES_DB=ANPR_ECU911
+      - POSTGRES_USER=${DB_USER:-anpr}
+      - POSTGRES_PASSWORD=${DB_PASSWORD:?Defina DB_PASSWORD en .env}
+      - PGDATA=/var/lib/postgresql/data/pgdata
+    ports:
+      - "127.0.0.1:5433:5432"
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    restart: always
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$POSTGRES_USER\" -d \"$POSTGRES_DB\""]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+    deploy:
+      resources:
+        limits:
+          memory: 768m
+  redis:
+    image: redis:7-alpine
+    # Sin puertos publicados: solo lo usa el backend dentro de la red de Docker
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    restart: always
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 384m
+
+  mediamtx:
+    image: bluenviron/mediamtx:1.21.1
+    environment:
+      # IP del servidor en la LAN que el navegador usa para WebRTC (además de 127.0.0.1)
+      - MTX_WEBRTCADDITIONALHOSTS=${WEBRTC_HOSTS:-127.0.0.1}
+    ports:
+      - "127.0.0.1:8554:8554"   # RTSP: solo diagnóstico local; el motor lo lee en la red de Docker
+      - "8889:8889"             # WebRTC (WHEP) para los navegadores, con ticket del backend
+      - "8189:8189/udp"
+      - "8189:8189/tcp"
+    volumes:
+      - ./mediamtx/mediamtx.yml:/mediamtx.yml:ro
+    restart: always
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile.prod
+    image: anpr-backend:produccion
+    ports:
+      # Solo en el servidor: los navegadores entran por nginx (puerto web)
+      - "127.0.0.1:5000:5000"
+    environment:
+      - PORT=5000
+      - NODE_ENV=production
+      - DB_USER=${DB_USER:-anpr}
+      - DB_PASSWORD=${DB_PASSWORD:?Defina DB_PASSWORD en .env}
+      - DB_SERVER=db
+      - DB_PORT=5432
+      - DB_NAME=ANPR_ECU911
+      - JWT_SECRET=${JWT_SECRET:?Defina JWT_SECRET en .env}
+      - CAMARAS_CLAVE_CIFRADO=${CAMARAS_CLAVE_CIFRADO:?Defina CAMARAS_CLAVE_CIFRADO en .env (openssl rand -base64 32)}
+      - CAMARAS_CLAVE_CIFRADO_ANTERIOR=${CAMARAS_CLAVE_CIFRADO_ANTERIOR:-}
+      - CAMARAS_REDES_PERMITIDAS=${CAMARAS_REDES_PERMITIDAS:-}
+      # nginx del frontend está delante del backend: un salto de proxy (IP real para los límites)
+      - TRUST_PROXY=${TRUST_PROXY:-1}
+      - LIMITE_API_POR_MINUTO=${LIMITE_API_POR_MINUTO:-600}
+      - LIMITE_ACCESO_POR_15_MIN=${LIMITE_ACCESO_POR_15_MIN:-20}
+      - ANPR_SERVICE_TOKEN=${ANPR_SERVICE_TOKEN:?Defina ANPR_SERVICE_TOKEN en .env}
+      - SMTP_HOST=${SMTP_HOST:-}
+      - SMTP_PORT=${SMTP_PORT:-587}
+      - SMTP_USER=${SMTP_USER:-}
+      - SMTP_PASSWORD=${SMTP_PASSWORD:-}
+      - SMTP_FROM=${SMTP_FROM:-}
+      - ALLOWED_EMAIL_DOMAINS=${ALLOWED_EMAIL_DOMAINS:-ecu911.gob.ec}
+      # URL con la que el personal abre el sistema (enlaces de correo y origen permitido)
+      - FRONTEND_URL=${FRONTEND_URL:-http://localhost:3000}
+      - CORS_ORIGINS=${CORS_ORIGINS:-}
+      - MEDIA_DIR=/app/media
+      - ANPR_SERVICE_URL=http://anpr:8000
+      - ANPR_PUBLIC_URL=${ANPR_PUBLIC_URL:-http://localhost:8000}
+      - MEDIAMTX_API_URL=http://mediamtx:9997
+      - MEDIAMTX_RTSP_URL=rtsp://mediamtx:8554
+      - WEBRTC_PUBLIC_URL=${WEBRTC_PUBLIC_URL:-http://localhost:8889}
+      - DOCKER_CONTAINER=true
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_PASSWORD=
+      - SOCKET_REDIS_ADAPTER=true
+      - VAPID_PUBLIC_KEY=${VAPID_PUBLIC_KEY:-}
+      - VAPID_PRIVATE_KEY=${VAPID_PRIVATE_KEY:-}
+      - VAPID_SUBJECT=${VAPID_SUBJECT:-mailto:anpr@ecu911.gob.ec}
+    volumes:
+      - anpr_media:/app/media
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: always
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:5000/health/ready').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+    deploy:
+      resources:
+        limits:
+          cpus: "2"
+          memory: 768m
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile.prod
+    image: anpr-frontend:produccion
+    ports:
+      - "${PUERTO_WEB:-3000}:8080"
+    volumes:
+      - ./frontend/nginx.compose.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: always
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 128m
+
+  anpr:
+    build: ./services/anpr
+    image: anpr-motor:produccion
+    ports:
+      # El navegador abre aquí los WebSocket de las cajas del HUD (con ticket de 60 s del backend)
+      - "8000:8000"
+    environment:
+      - BACKEND_URL=http://backend:5000
+      - ANPR_SERVICE_TOKEN=${ANPR_SERVICE_TOKEN:?Defina ANPR_SERVICE_TOKEN en .env}
+      - OCR_ENGINE=plate
+      - MEDIA_DIR=/app/media
+      - RTSP_URL=
+      - RUNNING_IN_DOCKER=true
+      - DEBUG_VISUAL=true
+      - DEBUG_SHOW_WINDOW=false
+    volumes:
+      - anpr_media:/app/media
+      # Pesos que el motor descarga en el primer arranque (OCR, verificador PP-OCRv6, CLIP)
+      - anpr_model_cache:/root/.cache
+    depends_on:
+      mediamtx:
+        condition: service_started
+      backend:
+        condition: service_healthy
+    restart: always
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/status', timeout=4)"]
+      interval: 30s
+      timeout: 6s
+      retries: 3
+      start_period: 300s
+    deploy:
+      resources:
+        limits:
+          memory: 6g
+
+  prometheus:
+    image: prom/prometheus:v3.5.0
+    ports:
+      - "127.0.0.1:9090:9090"
+    volumes:
+      - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./monitoring/prometheus/rules:/etc/prometheus/rules:ro
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=30d'
+    restart: always
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 512m
+    depends_on:
+      - backend
+      - anpr
+
+  grafana:
+    image: grafana/grafana:12.1.0
+    ports:
+      - "127.0.0.1:3001:3000"
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana_data:/var/lib/grafana
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:?Defina GRAFANA_ADMIN_PASSWORD en .env}
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_SERVER_ROOT_URL=http://localhost:3001
+    restart: always
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 512m
+    depends_on:
+      - prometheus
+
+volumes:
+  db_data:
+  redis_data:
+  anpr_media:
+  anpr_model_cache:
+  prometheus_data:
+  grafana_data:

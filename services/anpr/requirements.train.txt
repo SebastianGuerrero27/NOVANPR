@@ -1,0 +1,12 @@
+# Entrenamiento YOLO y exportacion ONNX; conserva las versiones validadas del motor
+# tambien para dependencias transitivas, sin instalar los motores OCR ni FastAPI.
+-c requirements.txt
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch==2.14.1+cpu
+torchvision==0.29.1+cpu
+ultralytics==8.4.174
+opencv-python==4.11.0.86
+numpy==2.5.3
+PyYAML==6.0.3
+onnx==1.19.1
+onnxruntime==1.30.0

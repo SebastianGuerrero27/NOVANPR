@@ -1,5 +1,5 @@
 import crypto from 'crypto';
-import sql from 'mssql';
+import sql, { PostgresPool } from '../postgres';
 import webpush from 'web-push';
 import { pushEnvios } from './metrics';
 
@@ -34,17 +34,17 @@ export interface MensajePush {
   enlace: string | null;
 }
 
-async function leerClave(db: sql.ConnectionPool, clave: string): Promise<string | null> {
+async function leerClave(db: PostgresPool, clave: string): Promise<string | null> {
   const r = await db.request().input('c', sql.VarChar(60), clave).query('SELECT valor FROM ClavesServicio WHERE clave = @c');
   return r.recordset[0]?.valor ?? null;
 }
 
-async function guardarClave(db: sql.ConnectionPool, clave: string, valor: string) {
+async function guardarClave(db: PostgresPool, clave: string, valor: string) {
   await db.request().input('c', sql.VarChar(60), clave).input('v', sql.NVarChar(1000), valor).query(`
-    IF NOT EXISTS (SELECT 1 FROM ClavesServicio WHERE clave = @c) INSERT INTO ClavesServicio (clave, valor) VALUES (@c, @v)`);
+    INSERT INTO ClavesServicio (clave, valor) VALUES (@c, @v) ON CONFLICT (clave) DO NOTHING`);
 }
 
-export async function iniciarWebPush(db: sql.ConnectionPool): Promise<void> {
+export async function iniciarWebPush(db: PostgresPool): Promise<void> {
   try {
     let publica = process.env.VAPID_PUBLIC_KEY?.trim() || null;
     let privada = process.env.VAPID_PRIVATE_KEY?.trim() || null;

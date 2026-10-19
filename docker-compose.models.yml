@@ -1,0 +1,15 @@
+# Override opcional para servir los modelos persistentes despues de evaluarlos.
+# Combinar con docker-compose.yml O con docker-compose.prod.yml.
+services:
+  anpr:
+    environment:
+      DETECTOR_BACKEND: yolo
+      PLATE_MODEL_PATH: /app/models/license_plate_detector.pt
+      PLATE_DETECTOR_ARCH: yolo26
+    volumes:
+      - type: bind
+        source: ./services/anpr/models
+        target: /app/models
+        read_only: true
+        bind:
+          create_host_path: false

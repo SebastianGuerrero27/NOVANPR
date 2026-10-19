@@ -1,3 +1,8 @@
 node_modules
 dist
 npm-debug.log*
+
+# Configuración local: nunca dentro de la imagen (la de producción usa VITE_API_URL vacío)
+.env
+.env.*
+!.env.example

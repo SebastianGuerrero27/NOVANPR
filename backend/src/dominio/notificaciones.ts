@@ -75,9 +75,9 @@ export const CATALOGO: Record<TipoNotificacion, DefinicionTipo> = {
     etiqueta: 'Intentos repetidos de una placa sin permiso', severidad: 'media', permiso: 'avisos:acceso',
     requiereAck: false, ventanaS: 86400, alDuplicar: 'omitir', push: false, ttlPushS: 0,
   },
-  // Sin permiso de destino: va solo a quien otorgó el permiso del vehículo que llegó
+  // Va a garita y al usuario que otorgó el permiso (destinatario explícito)
   'acceso.llegada_permiso': {
-    etiqueta: 'Llegó un vehículo con el permiso que otorgó', severidad: 'baja',
+    etiqueta: 'Ingreso autorizado de vehículo', severidad: 'baja', permiso: 'avisos:garita',
     requiereAck: false, ventanaS: 1800, alDuplicar: 'incrementar', push: true, ttlPushS: 3600,
   },
   'padron.permiso_otorgado': {

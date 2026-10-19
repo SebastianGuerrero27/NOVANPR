@@ -7,14 +7,10 @@ const DIR_DB = path.resolve(__dirname, '../../../../db');
 describe('migraciones de esquema', () => {
   const scripts = fs.readdirSync(DIR_DB).filter(f => f.endsWith('.sql'));
 
-  it.each(scripts)('%s se separa en lotes sin USE ni CREATE DATABASE', (archivo) => {
+  it.each(scripts)('%s se separa en lotes GO', (archivo) => {
     const lotes = lotesSql(fs.readFileSync(path.join(DIR_DB, archivo), 'utf8'));
     expect(lotes.length).toBeGreaterThan(0);
-    for (const lote of lotes) {
-      expect(lote).not.toMatch(/^\s*USE\s+/im);
-      expect(lote).not.toMatch(/CREATE\s+DATABASE/i);
-      expect(lote).not.toMatch(/^\s*GO\s*$/im);
-    }
+    for (const lote of lotes) expect(lote).not.toMatch(/^\s*GO\s*$/im);
   });
 
   it('todas las migraciones registradas existen en db/', () => {

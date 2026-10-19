@@ -151,7 +151,7 @@ const AvisoAutorizado: React.FC<{ d: Deteccion; onCerrar: () => void; onConfirma
   // El aviso de confirmación permanece hasta que el personal actúe; el de autorizado se cierra solo
   useEffect(() => {
     if (confirmar) return;
-    const t = window.setTimeout(onCerrar, 6000);
+    const t = window.setTimeout(onCerrar, 3500);
     return () => window.clearTimeout(t);
   }, [onCerrar, confirmar]);
   if (confirmar) {
@@ -203,7 +203,7 @@ export const AvisosAcceso: React.FC = () => {
     if (d.validado_manualmente) {
       if (d.estado_validacion === 'autorizado' && reciente(d, 900)) {
         avisados.current.add(clave);
-        setAutorizados(a => [d, ...a.filter(x => x.id !== d.id)].slice(0, 3));
+        setAutorizados(a => [...a.filter(x => x.estado_validacion === 'pendiente_revision'), d].slice(-3));
         sonarAutorizado();
       }
       return;
@@ -221,7 +221,7 @@ export const AvisosAcceso: React.FC = () => {
       sonarDenegado();
     } else if (d.estado_validacion === 'autorizado') {
       avisados.current.add(clave);
-      setAutorizados(a => [d, ...a.filter(x => x.id !== d.id)].slice(0, 3));
+      setAutorizados(a => [...a.filter(x => x.estado_validacion === 'pendiente_revision'), d].slice(-3));
       sonarAutorizado();
     }
   };

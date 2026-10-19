@@ -184,6 +184,12 @@ img { display: block; max-width: 100%; }
 }
 .sidebar.colapsado { width: var(--sidebar-w-min); }
 
+/* El zoom de escritorio es 80 %; compensa el alto para que el menú cubra el viewport visible. */
+@media (min-width: 1200px) {
+  .app { min-height: 125vh; }
+  .sidebar { height: 125vh; }
+}
+
 .sidebar-marca {
   height: var(--header-h);
   display: flex;

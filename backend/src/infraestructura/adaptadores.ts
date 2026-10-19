@@ -1,4 +1,4 @@
-import sql from 'mssql';
+import sql from './postgres';
 import { getDB } from './db';
 import { emitEvent } from './servicios/socket';
 import type { Actor, PuertoAuditoria, PuertoEventos } from '../aplicacion/comun';

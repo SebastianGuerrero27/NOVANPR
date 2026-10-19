@@ -27,9 +27,6 @@ configMapGenerator:
       - SMTP_FROM=
       - VAPID_PUBLIC_KEY=
       - VAPID_SUBJECT=mailto:anpr@ecu911.gob.ec
-      # Edición Express: gratuita y válida en producción (límite de 10 GB por base). Con licencia,
-      # use Standard o Enterprise.
-      - MSSQL_PID=Express
 
 patches:
   - target:

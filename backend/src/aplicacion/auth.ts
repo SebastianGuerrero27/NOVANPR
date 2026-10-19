@@ -221,7 +221,9 @@ export function casosAuth(d: DependenciasAuth) {
 
     /** Crea el PRIMER administrador (solo si no existe ninguno) y devuelve la sesión iniciada. */
     async configuracionInicial(entrada: unknown, visitante: Visitante): Promise<Sesion> {
-      const datos = leerRegistro(cuerpo(entrada), d.parametros.dominiosPermitidos());
+      // El primer administrador se configura directamente desde el servidor y puede usar
+      // cualquier correo válido. La restricción institucional sigue aplicando al registro público.
+      const datos = leerRegistro(cuerpo(entrada), []);
       if (!datos.ok) throw errorValidacion(datos.error);
       const { email, nombre_completo, cargo, password } = datos.valor;
       // Sin administrador se cifra la contraseña; la transacción vuelve a comprobarlo (dos solicitudes simultáneas)

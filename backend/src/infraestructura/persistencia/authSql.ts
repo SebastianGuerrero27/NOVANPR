@@ -1,4 +1,4 @@
-import sql from 'mssql';
+import sql, { PostgresRequest } from '../postgres';
 import { getDB } from '../db';
 import { ROL_POR_CODIGO } from '../../dominio/permisos';
 import type { CuentaAcceso, CuentaPropia, RepositorioAuth } from '../../aplicacion/auth';
@@ -35,7 +35,7 @@ function cuenta(u: any): CuentaAcceso {
 }
 
 /** Datos de una cuenta que elige su propia contraseña (configuración inicial y registro público). */
-const datosCuenta = (request: sql.Request, c: CuentaPropia, rol: number) => request
+const datosCuenta = (request: PostgresRequest, c: CuentaPropia, rol: number) => request
   .input('email', sql.NVarChar(150), c.email)
   .input('nombre', sql.NVarChar(150), c.nombre_completo)
   .input('cargo', sql.NVarChar(100), c.cargo)
@@ -44,9 +44,11 @@ const datosCuenta = (request: sql.Request, c: CuentaPropia, rol: number) => requ
 
 export const repositorioAuthSql: RepositorioAuth = {
   async hayAdministrador() {
-    const r = await db().request().query(`
-      SELECT COUNT(*) AS n FROM Usuarios u JOIN Roles r ON r.id = u.rol_id WHERE r.codigo = 'ADMIN'`);
-    return r.recordset[0].n > 0;
+    const r = await db().query(`
+      SELECT EXISTS (
+        SELECT 1 FROM usuarios u JOIN roles r ON r.id = u.rol_id WHERE r.codigo = $1
+      ) AS existe`, ['ADMIN']);
+    return r.rows[0]?.existe === true;
   },
 
   async porEmail(email) {
@@ -78,25 +80,32 @@ export const repositorioAuthSql: RepositorioAuth = {
   },
 
   async crearPrimerAdministrador(c) {
-    const tx = new sql.Transaction(db());
-    await tx.begin(sql.ISOLATION_LEVEL.SERIALIZABLE);
+    const client = await db().connect();
     try {
-      // Serializable: dos solicitudes simultáneas no pueden crear dos "primeros" administradores
-      const existe = await new sql.Request(tx).query(`
-        SELECT COUNT(*) AS n FROM Usuarios u WITH (UPDLOCK, HOLDLOCK)
-        JOIN Roles r ON r.id = u.rol_id WHERE r.codigo = 'ADMIN'`);
-      if (existe.recordset[0].n > 0) {
-        await tx.rollback();
+      await client.query('BEGIN');
+      // Serializa el primer arranque incluso cuando la tabla usuarios todavía está vacía.
+      await client.query('SELECT pg_advisory_xact_lock($1, $2)', [911, 1]);
+      const existe = await client.query(`
+        SELECT EXISTS (
+          SELECT 1 FROM usuarios u JOIN roles r ON r.id = u.rol_id WHERE r.codigo = $1
+        ) AS existe`, ['ADMIN']);
+      if (existe.rows[0]?.existe === true) {
+        await client.query('ROLLBACK');
         return false;
       }
-      await datosCuenta(new sql.Request(tx), c, await rolId('ADMIN'))
-        .query(`INSERT INTO Usuarios (email, nombre_completo, cargo, password_hash, rol_id, estado, email_verificado, fecha_cambio_password)
-                VALUES (@email, @nombre, @cargo, @hash, @rol, 'activo', 1, SYSDATETIME())`);
-      await tx.commit();
+      const rol = await client.query('SELECT id FROM roles WHERE codigo = $1', ['ADMIN']);
+      if (!rol.rows[0]) throw new Error('Rol ADMIN no existe en la base PostgreSQL.');
+      await client.query(`
+        INSERT INTO usuarios (email, nombre_completo, cargo, password_hash, rol_id, estado, email_verificado, fecha_cambio_password)
+        VALUES ($1, $2, $3, $4, $5, 'activo', TRUE, CURRENT_TIMESTAMP)`,
+      [c.email, c.nombre_completo, c.cargo, c.passwordHash, rol.rows[0].id]);
+      await client.query('COMMIT');
       return true;
     } catch (e) {
-      await tx.rollback().catch(() => undefined);
+      await client.query('ROLLBACK').catch(() => undefined);
       throw e;
+    } finally {
+      client.release();
     }
   },
 
@@ -104,7 +113,7 @@ export const repositorioAuthSql: RepositorioAuth = {
     const ins = await datosCuenta(db().request(), c, await rolId('GUARDIA'))
       .query(`INSERT INTO Usuarios (email, nombre_completo, cargo, password_hash, rol_id, estado, email_verificado, fecha_cambio_password)
               OUTPUT INSERTED.id
-              VALUES (@email, @nombre, @cargo, @hash, @rol, 'pendiente', 0, SYSDATETIME())`);
+              VALUES (@email, @nombre, @cargo, @hash, @rol, 'pendiente', FALSE, SYSDATETIME())`);
     return ins.recordset[0].id;
   },
 

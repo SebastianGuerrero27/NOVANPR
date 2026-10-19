@@ -1,4 +1,4 @@
-import sql from 'mssql';
+import sql, { PostgresPool } from '../postgres';
 export {
   bucketDistancia, bucketLuz, calcularEvaluacion, type FilaEvaluacion, tipoPlaca, wilson,
 } from '../../dominio/evaluacion';
@@ -38,7 +38,7 @@ const num = (v: unknown): number | null => (typeof v === 'number' && Number.isFi
 const str = (v: unknown, max = 100): string | null => (typeof v === 'string' && v ? v.substring(0, max) : null);
 
 /** Guarda los metadatos de la captura. No interrumpe el registro si falla (p. ej. migración pendiente). */
-export async function guardarMetadatosCaptura(db: sql.ConnectionPool, id: number, meta?: MetadatosCaptura): Promise<void> {
+export async function guardarMetadatosCaptura(db: PostgresPool, id: number, meta?: MetadatosCaptura): Promise<void> {
   if (!meta || typeof meta !== 'object') return;
   try {
     await db.request()
@@ -69,7 +69,7 @@ export async function guardarMetadatosCaptura(db: sql.ConnectionPool, id: number
 }
 
 /** Atributos del vehículo que llegan después del registro del paso (reevaluación). */
-export async function guardarAtributosVehiculo(db: sql.ConnectionPool, id: number, vehiculo: MetadatosCaptura['vehiculo']): Promise<void> {
+export async function guardarAtributosVehiculo(db: PostgresPool, id: number, vehiculo: MetadatosCaptura['vehiculo']): Promise<void> {
   if (!vehiculo || typeof vehiculo !== 'object') return;
   await db.request()
     .input('id', sql.Int, id)
@@ -95,7 +95,7 @@ export interface LecturaAutomatica {
 }
 
 /** Conserva la lectura y la decisión automáticas antes de cualquier corrección manual. */
-export async function registrarLecturaAutomatica(db: sql.ConnectionPool, id: number, l: LecturaAutomatica): Promise<void> {
+export async function registrarLecturaAutomatica(db: PostgresPool, id: number, l: LecturaAutomatica): Promise<void> {
   try {
     await db.request()
       .input('id', sql.Int, id)

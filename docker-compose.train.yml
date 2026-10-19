@@ -1,0 +1,63 @@
+# Proyecto independiente: no arranca ni modifica los servicios de inferencia.
+name: anpr-training
+
+services:
+  train:
+    image: ${TRAIN_IMAGE:-anpr-train:local}
+    build:
+      context: ./services/anpr
+      dockerfile: Dockerfile.train
+    init: true
+    restart: "no"
+    working_dir: /workspace/services/anpr
+    # Tambien permite TRAIN_IMAGE=anpr-anpr:latest para reutilizar la imagen local.
+    entrypoint: ["python", "scripts/train_plate_detector.py"]
+    shm_size: "1gb"
+    environment:
+      OMP_NUM_THREADS: "${TRAIN_THREADS:-4}"
+      MKL_NUM_THREADS: "${TRAIN_THREADS:-4}"
+      YOLO_AUTOINSTALL: "false"
+      YOLO_OFFLINE: "true"
+    volumes:
+      - type: bind
+        source: ./dataset
+        target: /workspace/dataset
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ./services/anpr/models
+        target: /workspace/services/anpr/models
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ./services/anpr/scripts
+        target: /workspace/services/anpr/scripts
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ./services/anpr/app
+        target: /workspace/services/anpr/app
+        read_only: true
+        bind:
+          create_host_path: false
+    command:
+      - --data
+      - /workspace/dataset/detector_ecuatorianas/data.yaml
+      - --weights
+      - /workspace/services/anpr/models/license_plate_detector.pt
+      - --epochs
+      - "30"
+      - --imgsz
+      - "512"
+      - --batch
+      - "8"
+      - --device
+      - cpu
+      - --workers
+      - "0"
+      - --threads
+      - "${TRAIN_THREADS:-4}"
+      - --nombre
+      - ecuatorianas
+      - --export-onnx

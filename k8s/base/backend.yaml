@@ -1,7 +1,6 @@
-# API, política de acceso y centro de notificaciones. Aplica las migraciones al arrancar.
-# Una réplica: el registro de migraciones no toma un bloqueo entre instancias. Para escalar, el
-# adaptador Redis de Socket.IO ya reparte las emisiones (el cliente usa solo WebSocket, no requiere
-# sesiones fijas) y el escalamiento de alarmas es atómico; basta con un volumen RWX de evidencia.
+# API, política de acceso y centro de notificaciones. Aplica el esquema PostgreSQL al arrancar.
+# Una réplica para evitar inicializaciones concurrentes del esquema; el adaptador Redis de Socket.IO
+# reparte emisiones y el escalamiento de alarmas es atómico.
 apiVersion: v1
 kind: Service
 metadata:
@@ -68,16 +67,16 @@ spec:
             - name: DB_SERVER
               value: db
             - name: DB_PORT
-              value: "1433"
+              value: "5432"
             - name: DB_NAME
               value: ANPR_ECU911
             - name: DB_USER
-              value: sa
+              value: anpr
             - name: DB_PASSWORD
               valueFrom:
                 secretKeyRef:
                   name: anpr-secrets
-                  key: MSSQL_SA_PASSWORD
+                  key: DB_PASSWORD
             - name: JWT_SECRET
               valueFrom:
                 secretKeyRef:
@@ -140,7 +139,7 @@ spec:
               port: http
             periodSeconds: 5
             failureThreshold: 60
-          # Listo = API arriba y SQL Server respondiendo; vivo = el proceso responde (sin depender de la base)
+          # Listo = API arriba y PostgreSQL respondiendo; vivo = proceso disponible.
           readinessProbe:
             httpGet:
               path: /health/ready

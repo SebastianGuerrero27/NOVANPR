@@ -1,4 +1,4 @@
-import sql from 'mssql';
+import sql from '../postgres';
 import { getDB } from '../db';
 import type { RepositorioEvaluacion } from '../../aplicacion/evaluacion';
 

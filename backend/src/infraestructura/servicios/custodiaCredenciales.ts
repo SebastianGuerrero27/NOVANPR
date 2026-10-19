@@ -1,5 +1,5 @@
 import crypto from 'crypto';
-import sql, { type ConnectionPool } from 'mssql';
+import sql from '../postgres';
 import { RE_CREDENCIALES } from '../../dominio/camaras';
 import type { PuertoCustodiaCredenciales } from '../../aplicacion/camaras';
 
@@ -119,7 +119,7 @@ export const custodiaCredenciales: PuertoCustodiaCredenciales = { proteger, reve
  * devuelve cuántas cámaras actualizó. Una contraseña que ninguna clave descifra no detiene el
  * arranque: se avisa para volver a escribirla.
  */
-export async function protegerCredencialesGuardadas(pool: ConnectionPool): Promise<number> {
+export async function protegerCredencialesGuardadas(pool: { request: () => any }): Promise<number> {
   const r = await pool.request().query('SELECT id, rtsp_url, rtsp_url_vista FROM Camaras');
   let actualizadas = 0;
   for (const c of r.recordset) {

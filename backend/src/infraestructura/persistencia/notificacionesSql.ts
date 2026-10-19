@@ -1,4 +1,4 @@
-import sql from 'mssql';
+import sql from '../postgres';
 import { getDB } from '../db';
 import type { RepositorioNotificaciones } from '../../aplicacion/notificaciones';
 import { mapearNotificacion, reconocer } from '../servicios/notificaciones';
@@ -68,19 +68,20 @@ export const repositorioNotificacionesSql: RepositorioNotificaciones = {
   // Misma regla que dominio/notificaciones.ts (puedeEliminarse), aplicada en la propia consulta
   async eliminar(usuarioId, id) {
     const r = await db().request().input('uid', sql.Int, usuarioId).input('id', sql.BigInt, id).query(`
-      UPDATE nu SET fecha_eliminacion = SYSDATETIME()
-      FROM NotificacionUsuario nu JOIN Notificaciones n ON n.id = nu.notificacion_id
-      WHERE nu.usuario_id = @uid AND nu.notificacion_id = @id AND nu.fecha_eliminacion IS NULL
+      UPDATE NotificacionUsuario nu SET fecha_eliminacion = SYSDATETIME()
+      FROM Notificaciones n
+      WHERE n.id = nu.notificacion_id
+        AND nu.usuario_id = @uid AND nu.notificacion_id = @id AND nu.fecha_eliminacion IS NULL
         AND nu.fecha_lectura IS NOT NULL AND NOT (${PENDIENTE})`);
     return r.rowsAffected[0] > 0;
   },
 
   async eliminarRevisadas(usuarioId) {
     const r = await db().request().input('uid', sql.Int, usuarioId).query(`
-      UPDATE nu SET fecha_eliminacion = SYSDATETIME()
+      UPDATE NotificacionUsuario nu SET fecha_eliminacion = SYSDATETIME()
       OUTPUT INSERTED.notificacion_id
-      FROM NotificacionUsuario nu JOIN Notificaciones n ON n.id = nu.notificacion_id
-      WHERE nu.usuario_id = @uid AND nu.fecha_eliminacion IS NULL
+      FROM Notificaciones n
+      WHERE n.id = nu.notificacion_id AND nu.usuario_id = @uid AND nu.fecha_eliminacion IS NULL
         AND nu.fecha_lectura IS NOT NULL AND NOT (${PENDIENTE})`);
     return r.recordset.map(x => Number(x.notificacion_id));
   },
@@ -94,10 +95,11 @@ export const repositorioNotificacionesSql: RepositorioNotificaciones = {
       .input('auth', sql.VarChar(100), s.auth)
       .input('ua', sql.NVarChar(255), agente)
       .query(`
-        MERGE SuscripcionesPush AS t USING (SELECT @hash AS endpoint_hash) AS s ON t.endpoint_hash = s.endpoint_hash
-        WHEN MATCHED THEN UPDATE SET usuario_id = @uid, p256dh = @p256dh, auth = @auth, user_agent = @ua, fallos = 0, fecha_ultimo_uso = SYSDATETIME()
-        WHEN NOT MATCHED THEN INSERT (usuario_id, endpoint, endpoint_hash, p256dh, auth, user_agent)
-             VALUES (@uid, @endpoint, @hash, @p256dh, @auth, @ua);`);
+        INSERT INTO SuscripcionesPush (usuario_id, endpoint, endpoint_hash, p256dh, auth, user_agent)
+        VALUES (@uid, @endpoint, @hash, @p256dh, @auth, @ua)
+        ON CONFLICT (endpoint_hash) DO UPDATE SET usuario_id = EXCLUDED.usuario_id,
+          endpoint = EXCLUDED.endpoint, p256dh = EXCLUDED.p256dh, auth = EXCLUDED.auth,
+          user_agent = EXCLUDED.user_agent, fallos = 0, fecha_ultimo_uso = CURRENT_TIMESTAMP`);
   },
 
   async eliminarSuscripcion(usuarioId, endpoint) {
@@ -129,17 +131,18 @@ export const repositorioNotificacionesSql: RepositorioNotificaciones = {
         FROM Notificaciones WHERE fecha_creacion >= DATEADD(DAY, -@d, SYSDATETIME()) AND tipo <> 'alarma.escalada'
         GROUP BY severidad`),
       p().query(`
-        SELECT DISTINCT severidad,
-          PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY DATEDIFF_BIG(MILLISECOND, fecha_creacion, fecha_atencion)) OVER (PARTITION BY severidad) / 1000.0 AS tta_mediana_s,
-          PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY DATEDIFF_BIG(MILLISECOND, fecha_creacion, fecha_atencion)) OVER (PARTITION BY severidad) / 1000.0 AS tta_p95_s
+        SELECT severidad,
+          percentile_cont(0.5) WITHIN GROUP (ORDER BY EXTRACT(EPOCH FROM (fecha_atencion - fecha_creacion))) AS tta_mediana_s,
+          percentile_cont(0.95) WITHIN GROUP (ORDER BY EXTRACT(EPOCH FROM (fecha_atencion - fecha_creacion))) AS tta_p95_s
         FROM Notificaciones
-        WHERE fecha_creacion >= DATEADD(DAY, -@d, SYSDATETIME()) AND fecha_atencion IS NOT NULL`),
+        WHERE fecha_creacion >= DATEADD(DAY, -@d, SYSDATETIME()) AND fecha_atencion IS NOT NULL
+        GROUP BY severidad`),
       p().query(`
         SELECT COUNT(*) AS ventanas_avalancha FROM (
-          SELECT DATEADD(MINUTE, (DATEDIFF(MINUTE, 0, fecha_creacion) / 10) * 10, 0) AS ventana, COUNT(*) AS n
+          SELECT date_bin(INTERVAL '10 minutes', fecha_creacion, TIMESTAMP '2000-01-01') AS ventana, COUNT(*) AS n
           FROM Notificaciones
           WHERE fecha_creacion >= DATEADD(DAY, -@d, SYSDATETIME()) AND severidad IN ('critica', 'alta')
-          GROUP BY DATEADD(MINUTE, (DATEDIFF(MINUTE, 0, fecha_creacion) / 10) * 10, 0)
+          GROUP BY date_bin(INTERVAL '10 minutes', fecha_creacion, TIMESTAMP '2000-01-01')
         ) v WHERE v.n > 10`),
     ]);
     return { porSeveridad: porSeveridad.recordset, tta: tta.recordset, avalanchas: avalanchas.recordset[0] };

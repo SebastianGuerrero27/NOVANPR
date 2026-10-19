@@ -10,3 +10,20 @@ media/
 .env
 .env.*
 !.env.example
+
+# Entornos y residuos locales que no van en la imagen
+.venv-train/
+C:/
+tests/
+docs/
+
+# Modelos que no usa producción (la imagen lleva models/license_plate_detector.pt y yolo26n.pt).
+# Candidatos, respaldos y exportaciones: ver models/MODEL_CARD.md
+models/archive/
+models/*_candidato*
+models/ocr/*_candidato*
+models/ocr/pretrained/
+models/*_openvino_model/
+models/baseline_*.pt
+yolo11n.pt
+yolo26n-pose.pt

@@ -1,4 +1,4 @@
-import sql from 'mssql';
+import sql from '../postgres';
 import { getDB } from '../db';
 import type { RepositorioReportes } from '../../aplicacion/reportes';
 
@@ -18,7 +18,7 @@ const CONTEOS = `
 const W = `d.estado_procesamiento IN ('procesado', 'no_legible', 'pendiente_ocr')
            AND COALESCE(d.tipo_movimiento, 'ingreso') = 'ingreso'
            AND d.fecha_hora_ingreso >= @desde AND d.fecha_hora_ingreso <= @hasta
-           AND (@camara IS NULL OR d.camara_id = @camara)`;
+           AND (@camara::integer IS NULL OR d.camara_id = @camara::integer)`;
 const DIA = 'CAST(DATEADD(MINUTE, @desfase, d.fecha_hora_ingreso) AS DATE)';
 const HORA = 'DATEPART(HOUR, DATEADD(MINUTE, @desfase, d.fecha_hora_ingreso))';
 

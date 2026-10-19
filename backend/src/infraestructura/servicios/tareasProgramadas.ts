@@ -27,7 +27,8 @@ export async function resumenPermisosPorVencer(): Promise<void> {
   const dias = config.entero('aviso_vencimiento_dias');
   const r = await getDB().request().query(`
     SELECT COUNT(*) AS n, MIN(fecha_vencimiento) AS primero FROM VehiculosAutorizados
-    WHERE activo = 1 AND fecha_vencimiento >= ${hoyLocalSql()} AND fecha_vencimiento <= DATEADD(DAY, ${Number(dias)}, ${hoyLocalSql()})`);
+    WHERE activo IS TRUE AND fecha_vencimiento >= ${hoyLocalSql()}
+      AND fecha_vencimiento <= ${hoyLocalSql()} + (${Number(dias)} * INTERVAL '1 day')`);
   const n = Number(r.recordset[0]?.n ?? 0);
   if (!n) return;
   const hoy = new Date().toISOString().slice(0, 10);

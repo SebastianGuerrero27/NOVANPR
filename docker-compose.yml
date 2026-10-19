@@ -1,29 +1,28 @@
 services:
   db:
-    image: mcr.microsoft.com/mssql/server:2022-latest
+    image: postgres:17-alpine
     container_name: anpr-db
     environment:
-      - ACCEPT_EULA=Y
-      - MSSQL_SA_PASSWORD=${MSSQL_SA_PASSWORD:?Defina MSSQL_SA_PASSWORD en .env}
-      - MSSQL_PID=Developer
+      - POSTGRES_DB=ANPR_ECU911
+      - POSTGRES_USER=${DB_USER:-anpr}
+      - POSTGRES_PASSWORD=${DB_PASSWORD:?Defina DB_PASSWORD en .env}
+      - PGDATA=/var/lib/postgresql/data/pgdata
     ports:
       # Solo en el equipo anfitrión (herramientas de administración); la aplicación usa la red de Docker
-      - "127.0.0.1:14333:1433"
+      - "127.0.0.1:5433:5432"
     volumes:
-      - db_data:/var/opt/mssql
-      - ./db:/docker-entrypoint-initdb.d
+      - db_data:/var/lib/postgresql/data
     restart: always
     healthcheck:
-      test: ["CMD-SHELL", "/opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P \"$$MSSQL_SA_PASSWORD\" -C -Q \"SELECT 1\""]
+      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
       interval: 10s
       timeout: 10s
       retries: 10
-    # Límites de memoria con holgura sobre lo medido en reposo (docker stats: SQL Server ≈1,8 GiB);
-    # SQL Server en Linux ajusta su caché al límite del contenedor
+    # PostgreSQL mantiene un límite de memoria pequeño para dejar recursos al motor ANPR.
     deploy:
       resources:
         limits:
-          memory: 3g
+          memory: 768m
 
   redis:
     image: redis:7-alpine
@@ -141,10 +140,10 @@ services:
     environment:
       - PORT=5000
       - NODE_ENV=development
-      - DB_USER=sa
-      - DB_PASSWORD=${MSSQL_SA_PASSWORD:?Defina MSSQL_SA_PASSWORD en .env}
+      - DB_USER=${DB_USER:-anpr}
+      - DB_PASSWORD=${DB_PASSWORD:?Defina DB_PASSWORD en .env}
       - DB_SERVER=db
-      - DB_PORT=1433
+      - DB_PORT=5432
       - DB_NAME=ANPR_ECU911
       - JWT_SECRET=${JWT_SECRET:?Defina JWT_SECRET en .env}
       # Clave AES-256 de las contraseñas RTSP (openssl rand -base64 32); sin ella se deriva de JWT_SECRET.
@@ -194,7 +193,7 @@ services:
         condition: service_healthy
     restart: always
     healthcheck:
-      # Listo = API arriba y SQL Server respondiendo (Redis se informa, pero no lo bloquea)
+      # Listo = API arriba y PostgreSQL respondiendo (Redis se informa, pero no lo bloquea)
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:5000/health/ready').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"]
       interval: 15s
       timeout: 5s
@@ -238,6 +237,8 @@ services:
       - BACKEND_URL=http://backend:5000
       - ANPR_SERVICE_TOKEN=${ANPR_SERVICE_TOKEN:?Defina ANPR_SERVICE_TOKEN en .env}
       - OCR_ENGINE=plate
+      # Revalidación de caracteres con el segundo OCR; no dibuja overlays en el flujo de video.
+      - OCR_VERIFIER_ENABLED=true
       - MEDIA_DIR=/app/media
       # Sin fuente inicial: el backend asigna la cámara registrada (su ruta en MediaMTX) al arrancar
       - RTSP_URL=

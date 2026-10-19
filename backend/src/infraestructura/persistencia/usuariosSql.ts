@@ -1,4 +1,4 @@
-import sql from 'mssql';
+import sql from '../postgres';
 import { getDB } from '../db';
 import { CODIGO_POR_ROL, ROL_POR_CODIGO } from '../../dominio/permisos';
 import { bloqueoTemporalVigente, type EstadoCuenta } from '../../dominio/usuarios';

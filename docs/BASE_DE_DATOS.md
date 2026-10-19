@@ -1,10 +1,12 @@
 # Base de datos · esquema v13
 
-SQL Server 2022, base `ANPR_ECU911`. Instalación nueva: `db/init.sql` seguido de las migraciones
-`db/migration_*.sql` (idempotentes, hasta `migration_v13_direccion_camara.sql`). El backend
-las aplica al arrancar en el orden de `MIGRACIONES` (`backend/src/infraestructura/db.ts`) y registra
-cada una en `SchemaMigraciones` con su suma SHA-256: una migración ya aplicada no se vuelve a
-ejecutar salvo que su archivo cambie.
+PostgreSQL 17, base `ANPR_ECU911`. En una instalación nueva el backend aplica
+[`db/postgresql/esquema.sql`](../db/postgresql/esquema.sql) al arrancar. Las migraciones SQL Server
+históricas (`db/migration_*.sql`) no se ejecutan en PostgreSQL.
+
+La copia disponible de `db/esquema_completo.sql` contiene estructura, no registros. Al no existir
+un respaldo de la base anterior, la instancia PostgreSQL inicia vacía; las placas, cámaras, cuentas
+y detecciones deben registrarse nuevamente. El esquema SQL Server por sí solo no permite reconstruir esos datos.
 
 ## Principios
 

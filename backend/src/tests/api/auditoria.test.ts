@@ -29,7 +29,7 @@ jest.mock('../../infraestructura/db', () => {
           return { recordset: [], rowsAffected: [1] };
         }
         if (/SELECT COUNT\(\*\) AS n FROM Auditoria/.test(texto)) return { recordset: [{ n: 1 }] };
-        if (/OFFSET @offset ROWS/.test(texto)) return { recordset: [{ id: '7', fecha: fila.fecha, actor: fila.actor_email, accion: fila.accion }] };
+        if (/LIMIT @tamano OFFSET @offset/.test(texto)) return { recordset: [{ id: '7', fecha: fila.fecha, actor: fila.actor_email, accion: fila.accion }] };
         if (/SELECT TOP \(@limite\)/.test(texto)) return { recordset: [fila] };
         if (/WHERE id = @id/.test(texto)) return { recordset: Number(entradas.id) === 7 ? [fila] : [] };
         return { recordset: [], rowsAffected: [0] };

@@ -8,10 +8,10 @@ Desktop. Todos los comandos se ejecutan desde la carpeta raíz del proyecto
 
 - **Docker Desktop** (con WSL 2) instalado.
 - **Memoria:** 16 GB de RAM recomendados. Los contenedores tienen topes que suman unos 12 GB; el
-  motor usa hasta 6 GB y SQL Server hasta 3 GB.
+  motor usa hasta 6 GB y PostgreSQL hasta 1 GB.
 - **Disco:** unos 15 GB libres para las imágenes (el motor ocupa ~9 GB) y la caché de modelos.
 - **Puertos libres:** 3000 (web), 5000 (API), 8000 (motor), 8889 y 8189 (video WebRTC), y en el
-  propio equipo 14333 (SQL Server), 6379 (Redis), 8554 (RTSP), 9090 (Prometheus) y 3001 (Grafana).
+  propio equipo 5432 (PostgreSQL), 6379 (Redis), 8554 (RTSP), 9090 (Prometheus) y 3001 (Grafana).
 
 ## 2. Uso diario (el sistema ya está instalado)
 
@@ -44,7 +44,7 @@ Desktop. Todos los comandos se ejecutan desde la carpeta raíz del proyecto
 | Motor ANPR | <http://localhost:8000/status> | Estado del motor, latencias y etapas |
 | Grafana | <http://127.0.0.1:3001> | Usuario `admin`, contraseña `GRAFANA_ADMIN_PASSWORD` del `.env` |
 | Prometheus | <http://127.0.0.1:9090> | Métricas del motor y de la API |
-| SQL Server | `127.0.0.1,14333` | Usuario `sa`, contraseña `MSSQL_SA_PASSWORD` del `.env` |
+| PostgreSQL | `127.0.0.1:5433` (host) / `db:5432` (Docker) | Base `ANPR_ECU911`, usuario `DB_USER`, contraseña `DB_PASSWORD` del `.env` |
 
 ## 4. Poner a funcionar el reconocimiento
 
@@ -96,21 +96,21 @@ docker compose stop      # detiene los contenedores y conserva todos los datos
    cp .env.example .env
    ```
 
-2. Complete en `.env` al menos: `MSSQL_SA_PASSWORD`, `JWT_SECRET`, `ANPR_SERVICE_TOKEN`,
+2. Complete en `.env` al menos: `DB_PASSWORD`, `JWT_SECRET`, `ANPR_SERVICE_TOKEN`,
    `GRAFANA_ADMIN_PASSWORD` y `CAMARAS_CLAVE_CIFRADO`. Valores aleatorios seguros:
 
    ```bash
    openssl rand -base64 32     # para JWT_SECRET, ANPR_SERVICE_TOKEN y CAMARAS_CLAVE_CIFRADO
    ```
 
-   La contraseña de SQL Server debe tener mayúsculas, minúsculas, números y símbolos (8+).
+   Use una contraseña fuerte para PostgreSQL.
 3. Construya y levante todo (la primera vez descarga imágenes y modelos; puede tardar bastante):
 
    ```bash
    docker compose up -d --build
    ```
 
-4. El esquema y las migraciones de la base se aplican solos al arrancar la API.
+4. El esquema PostgreSQL se aplica solo al arrancar la API.
 
 > **Importante:** el `.env` de este equipo ya existe. No lo regenere ni cambie
 > `CAMARAS_CLAVE_CIFRADO`: las contraseñas de las cámaras guardadas quedarían ilegibles (para

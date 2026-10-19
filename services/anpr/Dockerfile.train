@@ -1,0 +1,28 @@
+# Entorno de entrenamiento separado del proceso FastAPI de produccion.
+FROM python:3.12.15-slim-trixie
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libglib2.0-0 libgl1 libgomp1 \
+    && rm -rf /var/lib/apt/lists/*
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    YOLO_AUTOINSTALL=false \
+    YOLO_OFFLINE=true \
+    YOLO_CONFIG_DIR=/tmp/Ultralytics \
+    MPLCONFIGDIR=/tmp/matplotlib
+
+WORKDIR /workspace/services/anpr
+
+# El archivo de produccion solo fija versiones: no se instala todo su OCR.
+COPY requirements.txt requirements.train.txt ./
+RUN python -m pip install --no-cache-dir -r requirements.train.txt \
+    && python -m pip check
+
+# Las imagenes, etiquetas y pesos se montan al ejecutar; no quedan en la imagen.
+COPY scripts/ ./scripts/
+COPY app/ ./app/
+
+ENTRYPOINT ["python", "scripts/train_plate_detector.py"]
+CMD ["--help"]

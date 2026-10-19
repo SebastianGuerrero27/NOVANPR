@@ -14,14 +14,10 @@ export function desfaseMinutos(fecha = new Date()): number {
 }
 
 /** Desfase en formato SQL Server ('-05:00') para SWITCHOFFSET. */
-export function desfaseSql(): string {
-  const d = desfaseMinutos();
-  const abs = Math.abs(d);
-  return `${d < 0 ? '-' : '+'}${String(Math.floor(abs / 60)).padStart(2, '0')}:${String(abs % 60).padStart(2, '0')}`;
-}
+export function desfaseSql(): string { return String(ZONA_HORARIA); }
 
 /** Fecha local de hoy como expresión SQL (para comparar con columnas DATE). */
-export const hoyLocalSql = () => `CAST(SWITCHOFFSET(SYSDATETIMEOFFSET(), '${desfaseSql()}') AS DATE)`;
+export const hoyLocalSql = () => `(CURRENT_TIMESTAMP AT TIME ZONE '${desfaseSql()}')::date`;
 
 /** Instante UTC en que empieza el día local que contiene `fecha`, desplazado `dias`. */
 export function inicioDiaLocal(fecha = new Date(), dias = 0): Date {

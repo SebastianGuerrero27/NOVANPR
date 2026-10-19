@@ -3,7 +3,7 @@ import { Navigate, useNavigate } from 'react-router-dom';
 import { Briefcase, Mail, ShieldCheck, User } from 'lucide-react';
 import api, { mensajeError } from '../../../infraestructura/api';
 import { useAuth } from '../../../aplicacion/AuthContext';
-import { errorCorreoInstitucional, errorDe, filtrarTexto, sinErrores, validarTexto } from '../../../dominio/validacion';
+import { errorDe, filtrarTexto, sinErrores, validarEmail, validarTexto } from '../../../dominio/validacion';
 import { REGLAS_USUARIO } from '../../../dominio/reglas';
 import { filtrarEscrito } from '../../componentes/campos';
 import {
@@ -29,11 +29,12 @@ const ConfiguracionInicial: React.FC = () => {
   if (!estado && !errorEstado) return <PantallaCarga texto="CONECTANDO CON EL SISTEMA…" />;
   if (estado && !estado.configuracion_inicial_requerida) return <Navigate to="/login" replace />;
 
-  // Mismas reglas que la API (dominio/usuarios.ts → leerRegistro)
+  // El primer administrador puede usar cualquier correo válido; el registro público
+  // conserva la política de dominios institucionales.
   const errores = {
     nombre: errorDe(validarTexto(f.nombre, REGLAS_USUARIO.nombre_completo)),
     cargo: errorDe(validarTexto(f.cargo, REGLAS_USUARIO.cargo)),
-    email: errorCorreoInstitucional(f.email, estado?.dominios_permitidos),
+    email: errorDe(validarEmail(f.email, 'Correo electrónico')),
   };
   const errorCorreo = errores.email;
   const valido = sinErrores(errores) && passwordValida(f.password) && f.password === f.confirmar;
@@ -72,7 +73,7 @@ const ConfiguracionInicial: React.FC = () => {
         {errorEstado && <Aviso tipo="error">No se pudo contactar con el servidor. Verifique que el backend esté en ejecución.</Aviso>}
         <Aviso tipo="info">
           <strong>El sistema no tiene administradores.</strong> Esta cuenta tendrá control total: usuarios, cámaras,
-          listas y configuración. La pantalla se desactiva en cuanto se crea.
+          listas y configuración. Use un correo válido; la pantalla se desactiva en cuanto se crea.
         </Aviso>
         {error && <Aviso tipo="error">{error}</Aviso>}
 
@@ -82,10 +83,10 @@ const ConfiguracionInicial: React.FC = () => {
         <Campo id="ini-cargo" etiqueta="Cargo (opcional)" placeholder="Ej.: Coordinador de tecnología" value={f.cargo}
           onChange={campo('cargo', v => filtrarTexto(v, 'alfanumerico'))} onBlur={tocar('cargo')} disabled={enviando}
           maxLength={REGLAS_USUARIO.cargo.max} icono={<Briefcase size={20} />} error={tocado('cargo') ? errores.cargo : null} />
-        <Campo id="ini-email" etiqueta="Correo electrónico institucional*" type="email" value={f.email}
-          placeholder={`admin@${estado?.dominios_permitidos?.[0] ?? 'ecu911.gob.ec'}`} onChange={campo('email', v => v.replace(/\s/g, ''))}
+        <Campo id="ini-email" etiqueta="Correo electrónico*" type="email" value={f.email}
+          placeholder="admin@ejemplo.com" onChange={campo('email', v => v.replace(/\s/g, ''))}
           onBlur={tocar('email')} disabled={enviando} maxLength={150} autoComplete="username" autoCapitalize="none" spellCheck={false}
-          aria-required icono={<Mail size={20} />} error={tocado('email') ? errorCorreo : null} />
+          aria-required icono={<Mail size={20} />} error={errorCorreo} />
         <ParPassword prefijo="ini" password={f.password} confirmar={f.confirmar} deshabilitado={enviando}
           onPassword={v => setF(x => ({ ...x, password: v }))} onConfirmar={v => setF(x => ({ ...x, confirmar: v }))} />
 

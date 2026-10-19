@@ -3,7 +3,7 @@
 # backend, del motor y de MediaMTX funcione igual en ambos entornos.
 #
 # Requisitos previos en cada namespace (ver docs/CICD.md):
-#   - Secret "anpr-secrets" con MSSQL_SA_PASSWORD, JWT_SECRET, ANPR_SERVICE_TOKEN y CAMARAS_CLAVE_CIFRADO
+#   - Secret "anpr-secrets" con DB_PASSWORD, JWT_SECRET, ANPR_SERVICE_TOKEN y CAMARAS_CLAVE_CIFRADO
 #     (opcionales: SMTP_PASSWORD, VAPID_PRIVATE_KEY)
 #   - ConfigMap "mediamtx-config" (el CD lo genera desde mediamtx/mediamtx.yml)
 apiVersion: kustomize.config.k8s.io/v1beta1

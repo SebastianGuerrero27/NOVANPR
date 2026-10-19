@@ -1,4 +1,4 @@
-import sql from 'mssql';
+import sql from '../postgres';
 import { getDB } from '../db';
 import { describirHorario } from '../../dominio/horario';
 import { Decision, MOTIVO_RESTRICCION } from '../../dominio/decisionAcceso';
@@ -14,7 +14,7 @@ import { notificar } from './notificaciones';
  *   no_reconocido                → acceso.no_registrado      (avisos:acceso) + reincidencia al gestor
  *   pendiente por vehículo (R4)  → acceso.vehiculo_no_coincide
  *   pendiente por lectura (R3/R6)→ acceso.confirmacion       (avisos:garita)
- *   autorizado                   → acceso.llegada_permiso    (solo a quien otorgó el permiso)
+ *   autorizado                   → acceso.llegada_permiso    (garita y quien otorgó el permiso)
  *
  * Además, cada permiso otorgado se anuncia a la garita (padron.permiso_otorgado, avisos:padron)
  * con un enlace directo a la lista blanca filtrada por la placa.
@@ -117,23 +117,29 @@ export async function notificarDecision(d: PasoNotificable, decision: Decision, 
 }
 
 /**
- * Llegó un vehículo con permiso vigente: se avisa SOLO a quien otorgó ese permiso (el gestor de
- * permisos no recibe los avisos de monitoreo, pero sí la confirmación de que su permiso se usó).
+ * Llegó un vehículo con permiso vigente: se avisa al personal de garita y, si se conoce,
+ * también a quien otorgó el permiso. Los destinatarios explícitos se combinan con el permiso
+ * avisos:garita del catálogo, evitando que la falta de registrado_por silencie el aviso operativo.
  * Las entradas y salidas repetidas de la misma placa en la ventana se agrupan como repeticiones.
  */
 async function notificarLlegada(d: PasoNotificable, permiso?: ContextoPermiso | null): Promise<void> {
-  if (!permiso?.registrado_por || !d.placa) return;
-  const propietario = permiso.propietario ?? d.autorizado?.propietario ?? 'El titular del permiso';
+  if (!d.placa) return;
+  const propietario = permiso?.propietario ?? d.autorizado?.propietario ?? 'El titular del permiso';
   await notificar({
     tipo: 'acceso.llegada_permiso',
     titulo: `Llegó el vehículo autorizado · ${d.placa}`,
-    mensaje: `${propietario} ingresó con el permiso que usted otorgó · ${lugar(d)}`,
+    mensaje: permiso?.registrado_por
+      ? `${propietario} ingresó con el permiso que usted otorgó · ${lugar(d)}`
+      : `${propietario} ingresó con un permiso vigente · ${lugar(d)}`,
     enlace: enlaceListaBlanca(d.placa),
     deteccionId: d.id,
     origen: new Date(d.fecha_hora_ingreso),
     datos: { deteccion_id: d.id, placa: d.placa },
-    claveDedup: `llegada:${d.placa}:${permiso.registrado_por}`,
-    destinatarios: { usuarios: [permiso.registrado_por] },
+    claveDedup: `llegada:${d.placa}`,
+    destinatarios: {
+      permiso: 'avisos:garita',
+      usuarios: permiso?.registrado_por ? [permiso.registrado_por] : [],
+    },
   });
 }
 
@@ -181,7 +187,7 @@ async function revisarReincidencia(placa: string): Promise<void> {
       SELECT COUNT(*) AS n FROM DeteccionVehiculo
       WHERE estado_validacion = 'no_reconocido' AND restriccion_acceso IS NULL
         AND REPLACE(COALESCE(placa_validada, placa_reconocida, ''), '-', '') = @placa
-        AND fecha_hora_ingreso >= DATEADD(HOUR, -24, GETDATE())`);
+        AND fecha_hora_ingreso >= CURRENT_TIMESTAMP - INTERVAL '24 hours'`);
     const n = Number(r.recordset[0]?.n ?? 0);
     if (n < umbral) return;
     await notificar({
